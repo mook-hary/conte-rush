@@ -53,6 +53,10 @@ export function createPanelStore() {
     return panels.filter((panel) => panel.pageNumber === pageNumber);
   }
 
+  function getById(id) {
+    return panels.find((panel) => panel.id === id) ?? null;
+  }
+
   function count() {
     return panels.length;
   }
@@ -69,5 +73,6 @@ export function createPanelStore() {
     listByPage,
     count,
     countByPage,
+    getById,
   };
 }

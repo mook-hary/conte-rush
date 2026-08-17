@@ -27,9 +27,34 @@
           </div>
         </section>
 
-        <aside class="panel-sidebar" aria-label="Panel一覧">
-          <p id="panel-counts" class="panel-counts">全0件 / このページ0件</p>
-          <ul id="panel-list" class="panel-list"></ul>
+        <aside class="right-sidebar">
+          <section class="panel-sidebar" aria-label="Panel一覧">
+            <p id="panel-counts" class="panel-counts">全0件 / このページ0件</p>
+            <ul id="panel-list" class="panel-list"></ul>
+          </section>
+
+          <section class="cut-sidebar" aria-label="Cut">
+            <h2>Cut</h2>
+            <form id="cut-form" class="cut-form">
+              <label>
+                CUT番号
+                <input id="cut-number-input" type="text" autocomplete="off" />
+              </label>
+              <label>
+                尺（秒+コマ）
+                <input
+                  id="cut-duration-input"
+                  type="text"
+                  placeholder="3+12"
+                  autocomplete="off"
+                />
+              </label>
+              <button id="cut-submit" type="submit">この選択でCutを作成</button>
+              <button id="cut-cancel-edit" type="button" hidden>編集をやめる</button>
+            </form>
+            <p id="cut-message" class="cut-message" role="status"></p>
+            <ul id="cut-list" class="cut-list"></ul>
+          </section>
         </aside>
       </div>
 

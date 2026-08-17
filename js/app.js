@@ -1,5 +1,7 @@
 import { destroyPdfDocument, loadPdfFromFile } from "./pdf-loader.js";
 import { createPdfViewer } from "./pdf-viewer.js";
+import { createPanelOverlay } from "./panel-overlay.js";
+import { createPanelStore } from "./panel-store.js";
 
 const pdfInput = document.querySelector("#pdf-input");
 const fileNameEl = document.querySelector("#file-name");
@@ -9,16 +11,29 @@ const prevButton = document.querySelector("#prev-page");
 const nextButton = document.querySelector("#next-page");
 const canvas = document.querySelector("#pdf-canvas");
 const viewerEl = document.querySelector(".viewer");
-
-const viewer = createPdfViewer(canvas, viewerEl);
+const overlayEl = document.querySelector("#panel-overlay");
+const panelCountsEl = document.querySelector("#panel-counts");
+const panelListEl = document.querySelector("#panel-list");
 
 let session = null;
 let loadToken = 0;
 let resizeTimer = 0;
 
+const viewer = createPdfViewer(canvas, viewerEl);
+const panelStore = createPanelStore();
+const overlay = createPanelOverlay(overlayEl, {
+  isEnabled: () => document.body.dataset.state === "viewing" && Boolean(session),
+  getPageNumber: () => session?.currentPage ?? null,
+  onCreate(rect) {
+    panelStore.add(rect);
+    syncPanels();
+  },
+});
+
 function setState(state, message) {
   document.body.dataset.state = state;
   statusEl.textContent = message;
+  overlay.setEnabled(state === "viewing" && Boolean(session));
 }
 
 function updatePager() {
@@ -34,10 +49,65 @@ function updatePager() {
   nextButton.disabled = session.currentPage >= session.pageCount;
 }
 
+function renderPanelList() {
+  const currentPage = session?.currentPage ?? null;
+  const panels = panelStore.listAll();
+  const pageCount =
+    currentPage === null ? 0 : panelStore.countByPage(currentPage);
+
+  panelCountsEl.textContent = `全${panelStore.count()}件 / このページ${pageCount}件`;
+  panelListEl.replaceChildren();
+
+  for (const panel of panels) {
+    const item = document.createElement("li");
+    item.className = "panel-item";
+    if (panel.pageNumber === currentPage) {
+      item.classList.add("is-current-page");
+    }
+
+    const idEl = document.createElement("span");
+    idEl.className = "panel-id";
+    idEl.textContent = panel.id;
+    idEl.title = panel.id;
+
+    const pageEl = document.createElement("span");
+    pageEl.className = "panel-page";
+    pageEl.textContent = `ページ ${panel.pageNumber}`;
+
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.textContent = "削除";
+    deleteButton.addEventListener("click", () => {
+      panelStore.remove(panel.id);
+      syncPanels();
+    });
+
+    item.append(idEl, pageEl, deleteButton);
+    panelListEl.append(item);
+  }
+}
+
+function syncPanels() {
+  const currentPage = session?.currentPage ?? null;
+  const pagePanels =
+    currentPage === null ? [] : panelStore.listByPage(currentPage);
+  overlay.renderPanels(pagePanels);
+  renderPanelList();
+}
+
+function clearPanels() {
+  panelStore.clear();
+  overlay.clear();
+  renderPanelList();
+}
+
 function showIdle() {
   fileNameEl.textContent = "";
   viewer.clear();
+  overlay.setEnabled(false);
+  overlay.clear();
   updatePager();
+  renderPanelList();
   setState("idle", "PDFファイルを選択してください");
 }
 
@@ -47,6 +117,7 @@ async function showPage() {
   }
   await viewer.renderPage(session.document, session.currentPage);
   updatePager();
+  syncPanels();
 }
 
 async function replaceSession(nextSession) {
@@ -84,6 +155,7 @@ async function handleFileChange(event) {
       currentPage: 1,
       document: loaded.document,
     });
+    clearPanels();
 
     try {
       await showPage();
@@ -97,6 +169,7 @@ async function handleFileChange(event) {
       console.error(renderError);
       setState("error", "ページを表示できませんでした。");
       updatePager();
+      syncPanels();
       return;
     }
 
@@ -104,6 +177,7 @@ async function handleFileChange(event) {
       return;
     }
     setState("viewing", "");
+    syncPanels();
   } catch (error) {
     if (token !== loadToken) {
       return;
@@ -116,11 +190,14 @@ async function handleFileChange(event) {
         "新しいPDFを読み込めませんでした。直前のPDFを表示しています。",
       );
       updatePager();
+      syncPanels();
       return;
     }
     fileNameEl.textContent = "";
     viewer.clear();
+    overlay.clear();
     updatePager();
+    renderPanelList();
     setState(
       "error",
       "PDFを読み込めませんでした。ファイルが壊れているか、PDFではない可能性があります。",
@@ -141,12 +218,14 @@ async function goToPage(pageNumber) {
   try {
     await viewer.renderPage(session.document, session.currentPage);
     setState("viewing", "");
+    syncPanels();
   } catch (error) {
     if (error?.name === "RenderingCancelledException") {
       return;
     }
     console.error(error);
     setState("error", "ページを表示できませんでした。");
+    syncPanels();
   }
 }
 

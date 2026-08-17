@@ -19,9 +19,19 @@
     <main class="app">
       <p id="status" class="status" role="status">PDFファイルを選択してください</p>
 
-      <section class="viewer" aria-label="PDF表示">
-        <canvas id="pdf-canvas"></canvas>
-      </section>
+      <div class="workspace">
+        <section class="viewer" aria-label="PDF表示">
+          <div class="page-stage">
+            <canvas id="pdf-canvas"></canvas>
+            <div id="panel-overlay" class="panel-overlay"></div>
+          </div>
+        </section>
+
+        <aside class="panel-sidebar" aria-label="Panel一覧">
+          <p id="panel-counts" class="panel-counts">全0件 / このページ0件</p>
+          <ul id="panel-list" class="panel-list"></ul>
+        </aside>
+      </div>
 
       <nav class="pager" aria-label="ページ操作">
         <button id="prev-page" type="button" disabled>前へ</button>

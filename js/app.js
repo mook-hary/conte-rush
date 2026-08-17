@@ -1,7 +1,9 @@
 import { destroyPdfDocument, loadPdfFromFile } from "./pdf-loader.js";
+import { canvasToObjectUrl, cropPanelImage, PREVIEW_SCALE } from "./panel-image.js";
 import { createPdfViewer } from "./pdf-viewer.js";
 import { createPanelOverlay } from "./panel-overlay.js";
 import { createPanelStore } from "./panel-store.js";
+import { createThumbnailCache } from "./thumbnail-cache.js";
 
 const pdfInput = document.querySelector("#pdf-input");
 const fileNameEl = document.querySelector("#file-name");
@@ -18,15 +20,24 @@ const panelListEl = document.querySelector("#panel-list");
 let session = null;
 let loadToken = 0;
 let resizeTimer = 0;
+let thumbnailToken = 0;
+let drainingThumbnails = false;
+
+const queuedThumbnails = [];
+const queuedThumbnailIds = new Set();
+const inFlightThumbnailIds = new Set();
+const failedThumbnailIds = new Set();
 
 const viewer = createPdfViewer(canvas, viewerEl);
 const panelStore = createPanelStore();
+const thumbnailCache = createThumbnailCache();
 const overlay = createPanelOverlay(overlayEl, {
   isEnabled: () => document.body.dataset.state === "viewing" && Boolean(session),
   getPageNumber: () => session?.currentPage ?? null,
   onCreate(rect) {
-    panelStore.add(rect);
+    const panel = panelStore.add(rect);
     syncPanels();
+    requestThumbnail(panel);
   },
 });
 
@@ -47,6 +58,54 @@ function updatePager() {
   pageInfoEl.textContent = `${session.currentPage} / ${session.pageCount}`;
   prevButton.disabled = session.currentPage <= 1;
   nextButton.disabled = session.currentPage >= session.pageCount;
+}
+
+function panelExists(panelId) {
+  return panelStore.listAll().some((panel) => panel.id === panelId);
+}
+
+function thumbnailStatus(panelId) {
+  if (thumbnailCache.has(panelId)) {
+    return "ready";
+  }
+  if (failedThumbnailIds.has(panelId)) {
+    return "error";
+  }
+  if (inFlightThumbnailIds.has(panelId)) {
+    return "generating";
+  }
+  if (queuedThumbnailIds.has(panelId)) {
+    return "queued";
+  }
+  return "queued";
+}
+
+function createThumbnailEl(panel) {
+  const wrap = document.createElement("div");
+  wrap.className = "panel-thumb";
+  const cached = thumbnailCache.get(panel.id);
+
+  if (cached?.url) {
+    const image = document.createElement("img");
+    image.alt = `ページ ${panel.pageNumber} の Panel プレビュー`;
+    image.src = cached.url;
+    wrap.append(image);
+    return wrap;
+  }
+
+  const status = document.createElement("p");
+  status.className = "panel-thumb-status";
+  const kind = thumbnailStatus(panel.id);
+  if (kind === "error") {
+    status.classList.add("is-error");
+    status.textContent = "画像を作れませんでした";
+  } else if (kind === "generating") {
+    status.textContent = "生成中…";
+  } else {
+    status.textContent = "生成待ち";
+  }
+  wrap.append(status);
+  return wrap;
 }
 
 function renderPanelList() {
@@ -78,13 +137,106 @@ function renderPanelList() {
     deleteButton.type = "button";
     deleteButton.textContent = "削除";
     deleteButton.addEventListener("click", () => {
-      panelStore.remove(panel.id);
-      syncPanels();
+      deletePanel(panel.id);
     });
 
-    item.append(idEl, pageEl, deleteButton);
+    item.append(idEl, createThumbnailEl(panel), pageEl, deleteButton);
     panelListEl.append(item);
   }
+}
+
+function cancelQueuedThumbnail(panelId) {
+  const index = queuedThumbnails.findIndex((job) => job.panel.id === panelId);
+  if (index !== -1) {
+    queuedThumbnails.splice(index, 1);
+  }
+  queuedThumbnailIds.delete(panelId);
+}
+
+function requestThumbnail(panel) {
+  if (!session?.document || !panel) {
+    return;
+  }
+  if (thumbnailCache.has(panel.id)) {
+    return;
+  }
+  if (queuedThumbnailIds.has(panel.id) || inFlightThumbnailIds.has(panel.id)) {
+    return;
+  }
+  queuedThumbnails.push({
+    panel,
+    pdfDocument: session.document,
+    generation: thumbnailToken,
+  });
+  queuedThumbnailIds.add(panel.id);
+  drainThumbnailQueue();
+}
+
+async function drainThumbnailQueue() {
+  if (drainingThumbnails) {
+    return;
+  }
+  drainingThumbnails = true;
+
+  while (queuedThumbnails.length > 0) {
+    const job = queuedThumbnails.shift();
+    queuedThumbnailIds.delete(job.panel.id);
+
+    if (job.generation !== thumbnailToken) {
+      continue;
+    }
+    if (!panelExists(job.panel.id) || thumbnailCache.has(job.panel.id)) {
+      continue;
+    }
+
+    inFlightThumbnailIds.add(job.panel.id);
+    renderPanelList();
+
+    try {
+      const cropped = await cropPanelImage(job.pdfDocument, job.panel, {
+        scale: PREVIEW_SCALE,
+      });
+      if (job.generation !== thumbnailToken || !panelExists(job.panel.id)) {
+        continue;
+      }
+      const url = await canvasToObjectUrl(cropped);
+      if (job.generation !== thumbnailToken || !panelExists(job.panel.id)) {
+        URL.revokeObjectURL(url);
+        continue;
+      }
+      thumbnailCache.set(job.panel.id, { url });
+      failedThumbnailIds.delete(job.panel.id);
+    } catch (error) {
+      console.error(error);
+      if (job.generation === thumbnailToken && panelExists(job.panel.id)) {
+        failedThumbnailIds.add(job.panel.id);
+      }
+    } finally {
+      inFlightThumbnailIds.delete(job.panel.id);
+      if (job.generation === thumbnailToken) {
+        renderPanelList();
+      }
+    }
+  }
+
+  drainingThumbnails = false;
+}
+
+function deletePanel(panelId) {
+  panelStore.remove(panelId);
+  cancelQueuedThumbnail(panelId);
+  thumbnailCache.delete(panelId);
+  failedThumbnailIds.delete(panelId);
+  syncPanels();
+}
+
+function resetThumbnails() {
+  thumbnailToken += 1;
+  queuedThumbnails.length = 0;
+  queuedThumbnailIds.clear();
+  inFlightThumbnailIds.clear();
+  failedThumbnailIds.clear();
+  thumbnailCache.clear();
 }
 
 function syncPanels() {
@@ -92,12 +244,6 @@ function syncPanels() {
   const pagePanels =
     currentPage === null ? [] : panelStore.listByPage(currentPage);
   overlay.renderPanels(pagePanels);
-  renderPanelList();
-}
-
-function clearPanels() {
-  panelStore.clear();
-  overlay.clear();
   renderPanelList();
 }
 
@@ -148,6 +294,9 @@ async function handleFileChange(event) {
       return;
     }
 
+    resetThumbnails();
+    panelStore.clear();
+    overlay.clear();
     await replaceSession({
       fileName: file.name,
       fileSize: file.size,
@@ -155,7 +304,7 @@ async function handleFileChange(event) {
       currentPage: 1,
       document: loaded.document,
     });
-    clearPanels();
+    renderPanelList();
 
     try {
       await showPage();

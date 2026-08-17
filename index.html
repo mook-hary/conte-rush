@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>conte-rush</title>
+    <link rel="stylesheet" href="css/style.css" />
+  </head>
+  <body data-state="idle">
+    <header class="toolbar">
+      <h1>conte-rush</h1>
+      <label class="file-picker">
+        PDFを選択
+        <input id="pdf-input" type="file" accept="application/pdf" />
+      </label>
+      <p id="file-name" class="file-name"></p>
+    </header>
+
+    <main class="app">
+      <p id="status" class="status" role="status">PDFファイルを選択してください</p>
+
+      <section class="viewer" aria-label="PDF表示">
+        <canvas id="pdf-canvas"></canvas>
+      </section>
+
+      <nav class="pager" aria-label="ページ操作">
+        <button id="prev-page" type="button" disabled>前へ</button>
+        <span id="page-info" class="page-info"></span>
+        <button id="next-page" type="button" disabled>次へ</button>
+      </nav>
+    </main>
+
+    <script type="module" src="js/app.js"></script>
+  </body>
+</html>

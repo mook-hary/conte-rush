@@ -14,6 +14,17 @@ import {
   createTimelineStore,
   parseStartFrameInput,
 } from "./timeline-store.js";
+import {
+  createRushImageCache,
+  RUSH_SCALE,
+} from "./rush-image-cache.js";
+import {
+  buildSnapshot,
+  createRushPlayer,
+  cutNumberForPanel,
+  describeIncomplete,
+  uniquePanelIds,
+} from "./rush-player.js";
 
 const pdfInput = document.querySelector("#pdf-input");
 const fileNameEl = document.querySelector("#file-name");
@@ -40,14 +51,29 @@ const timelineStatusEl = document.querySelector("#timeline-status");
 const timelineRowsEl = document.querySelector("#timeline-rows");
 const timelineRangesEl = document.querySelector("#timeline-ranges");
 const timelineMessageEl = document.querySelector("#timeline-message");
+const rushStatusEl = document.querySelector("#rush-status");
+const rushCutEl = document.querySelector("#rush-cut");
+const rushLocalEl = document.querySelector("#rush-local");
+const rushGlobalEl = document.querySelector("#rush-global");
+const rushMessageEl = document.querySelector("#rush-message");
+const rushPlaceholderEl = document.querySelector("#rush-placeholder");
+const rushImageEl = document.querySelector("#rush-image");
+const rushPlayButton = document.querySelector("#rush-play");
+const rushPauseButton = document.querySelector("#rush-pause");
+const rushResetButton = document.querySelector("#rush-reset");
 
 let session = null;
 let loadToken = 0;
 let resizeTimer = 0;
 let thumbnailToken = 0;
 let drainingThumbnails = false;
+let panelCropQueue = Promise.resolve();
 let editingCutId = null;
 let timelineCutId = null;
+let rushPrepToken = 0;
+let rushPreparing = false;
+let rushError = "";
+let rushView = null;
 
 const queuedThumbnails = [];
 const queuedThumbnailIds = new Set();
@@ -61,6 +87,7 @@ const panelStore = createPanelStore();
 const cutStore = createCutStore();
 const timelineStore = createTimelineStore();
 const thumbnailCache = createThumbnailCache();
+const rushImageCache = createRushImageCache();
 const overlay = createPanelOverlay(overlayEl, {
   isEnabled: () => document.body.dataset.state === "viewing" && Boolean(session),
   getPageNumber: () => session?.currentPage ?? null,
@@ -106,6 +133,275 @@ function setTimelineMessage(message) {
   timelineMessageEl.textContent = message ?? "";
 }
 
+function setRushMessage(message) {
+  rushMessageEl.textContent = message ?? "";
+}
+
+function enqueuePanelCrop(work) {
+  const result = panelCropQueue.then(work, work);
+  panelCropQueue = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
+function markRushDirty() {
+  rushPlayer.markDirty();
+  if (rushPreparing) {
+    rushPrepToken += 1;
+    rushPreparing = false;
+    renderRush();
+  }
+}
+
+function formatRushIssues(issues) {
+  return issues
+    .map((issue) =>
+      issue.cutNumber
+        ? `CUT ${issue.cutNumber}: ${issue.reason}`
+        : issue.reason,
+    )
+    .join("\n");
+}
+
+function rushStatusLabel() {
+  if (rushError) {
+    return "エラー";
+  }
+  if (rushPreparing) {
+    return "再生準備中";
+  }
+  if (rushPlayer.isPlaying()) {
+    return "再生中";
+  }
+  if (rushPlayer.hasEnded()) {
+    return "終了";
+  }
+  if (rushPlayer.hasSnapshot()) {
+    return "一時停止";
+  }
+  return "未準備";
+}
+
+function showRushView(view) {
+  rushView = view;
+  const cached = view?.panelId ? rushImageCache.get(view.panelId) : null;
+  if (cached?.url) {
+    rushImageEl.hidden = false;
+    rushImageEl.src = cached.url;
+    rushPlaceholderEl.hidden = true;
+  } else {
+    rushImageEl.hidden = true;
+    rushImageEl.removeAttribute("src");
+    rushPlaceholderEl.hidden = false;
+    rushPlaceholderEl.textContent = rushPreparing
+      ? "画像を準備しています"
+      : "未準備";
+  }
+
+  rushCutEl.textContent = view ? `CUT ${view.cutNumber}` : "";
+  rushLocalEl.textContent = view
+    ? `${view.localFrame} / ${view.durationFrames}f`
+    : "";
+  rushGlobalEl.textContent = view
+    ? `Global ${view.globalFrame} / ${view.totalFrames}f`
+    : "";
+}
+
+function renderRush() {
+  rushStatusEl.textContent = rushStatusLabel();
+  if (rushPreparing && !rushError) {
+    setRushMessage("画像を準備しています");
+  } else {
+    setRushMessage(rushError);
+  }
+
+  if (rushPreparing && !rushView) {
+    showRushView(null);
+    rushPlaceholderEl.hidden = false;
+    rushPlaceholderEl.textContent = "画像を準備しています";
+  } else if (rushView) {
+    showRushView(rushView);
+  } else {
+    showRushView(null);
+  }
+
+  const canControl = Boolean(session);
+  rushPlayButton.disabled = !canControl || rushPreparing;
+  rushPauseButton.disabled = !canControl || !rushPlayer.isPlaying();
+  rushResetButton.disabled = !canControl;
+}
+
+const rushPlayer = createRushPlayer({
+  onFrame(view) {
+    showRushView(view);
+    renderRush();
+  },
+});
+
+async function prepareRushImages(snapshot, token) {
+  const panelIds = uniquePanelIds(snapshot);
+  for (const panelId of panelIds) {
+    if (token !== rushPrepToken) {
+      return { ok: false, cancelled: true };
+    }
+    if (rushImageCache.has(panelId)) {
+      continue;
+    }
+    const panel = panelStore.getById(panelId);
+    const cutNumber = cutNumberForPanel(snapshot, panelId);
+    if (!session?.document || !panel) {
+      return { ok: false, panelId, cutNumber };
+    }
+    try {
+      const cropped = await enqueuePanelCrop(() =>
+        cropPanelImage(session.document, panel, {
+          scale: RUSH_SCALE,
+        }),
+      );
+      if (token !== rushPrepToken) {
+        return { ok: false, cancelled: true };
+      }
+      const url = await canvasToObjectUrl(cropped);
+      if (token !== rushPrepToken) {
+        URL.revokeObjectURL(url);
+        return { ok: false, cancelled: true };
+      }
+      rushImageCache.set(panelId, { url });
+    } catch (error) {
+      console.error(error);
+      return { ok: false, panelId, cutNumber };
+    }
+  }
+
+  for (const panelId of panelIds) {
+    if (!rushImageCache.has(panelId)) {
+      return {
+        ok: false,
+        panelId,
+        cutNumber: cutNumberForPanel(snapshot, panelId),
+      };
+    }
+  }
+  return { ok: true };
+}
+
+async function handleRushPlay() {
+  if (!session || rushPreparing || rushPlayer.isPlaying()) {
+    return;
+  }
+  if (
+    rushPlayer.hasSnapshot() &&
+    !rushPlayer.isDirty() &&
+    rushPlayer.hasEnded()
+  ) {
+    return;
+  }
+  if (
+    rushPlayer.hasSnapshot() &&
+    !rushPlayer.isDirty() &&
+    !rushPlayer.hasEnded()
+  ) {
+    rushError = "";
+    rushPlayer.resume();
+    renderRush();
+    return;
+  }
+
+  const token = ++rushPrepToken;
+  rushPreparing = true;
+  rushError = "";
+  renderRush();
+
+  const cuts = cutStore.listAll();
+  if (cuts.length === 0) {
+    if (token !== rushPrepToken) {
+      return;
+    }
+    rushPreparing = false;
+    rushError = "Cutがありません。";
+    renderRush();
+    return;
+  }
+  const incomplete = [];
+  for (const cut of cuts) {
+    if (timelineStore.isComplete(cut)) {
+      continue;
+    }
+    const timeline = timelineStore.getByCutId(cut.id);
+    incomplete.push({
+      cutNumber: cut.cutNumber,
+      reason: describeIncomplete(cut, timeline) ?? "Timelineが未完成です。",
+    });
+  }
+  if (incomplete.length > 0) {
+    if (token !== rushPrepToken) {
+      return;
+    }
+    rushPreparing = false;
+    rushError = formatRushIssues(incomplete);
+    renderRush();
+    return;
+  }
+
+  const snapshot = buildSnapshot(cuts, (cutId) => timelineStore.getByCutId(cutId));
+  const prepared = await prepareRushImages(snapshot, token);
+  if (token !== rushPrepToken) {
+    return;
+  }
+  rushPreparing = false;
+  if (!prepared.ok) {
+    rushError = prepared.cutNumber
+      ? `CUT ${prepared.cutNumber}: Panel ${prepared.panelId} の画像を準備できませんでした。`
+      : `Panel ${prepared.panelId} の画像を準備できませんでした。`;
+    renderRush();
+    return;
+  }
+
+  rushPlayer.replaceSnapshot(snapshot);
+  rushPlayer.resume();
+  renderRush();
+}
+
+function handleRushPause() {
+  if (rushPreparing) {
+    return;
+  }
+  rushPlayer.pause();
+  renderRush();
+}
+
+function handleRushReset() {
+  if (rushPreparing) {
+    rushPrepToken += 1;
+    rushPreparing = false;
+  }
+  rushError = "";
+  rushPlayer.reset();
+  if (!rushPlayer.hasSnapshot()) {
+    rushView = null;
+  }
+  renderRush();
+}
+
+function discardRush() {
+  rushPrepToken += 1;
+  rushPreparing = false;
+  rushError = "";
+  rushView = null;
+  rushPlayer.discard();
+  rushImageCache.clear();
+  renderRush();
+}
+
+function stopRushKeepData() {
+  rushPrepToken += 1;
+  rushPreparing = false;
+  rushPlayer.pause();
+  renderRush();
+}
+
 function panelLabel(panelId) {
   const panel = panelStore.getById(panelId);
   return panel ? `p.${panel.pageNumber}` : panelId;
@@ -125,6 +421,7 @@ function maybeInitSinglePanelTimeline(cut) {
   timelineStore.create(cut.id, [
     { panelId: cut.panelIds[0], startFrame: 0 },
   ]);
+  markRushDirty();
 }
 
 function closeTimelineEditor() {
@@ -270,6 +567,7 @@ function createTimelineRowEl(cut, panelId, { placed, range, startFrame }) {
     deleteButton.addEventListener("click", () => {
       timelineStore.removePlacement(cut.id, panelId);
       timelineDrafts.delete(panelId);
+      markRushDirty();
       setTimelineMessage("");
       renderTimelineEditor();
       renderCutList();
@@ -303,6 +601,7 @@ function saveTimelinePlacement(cutId, panelId, rawValue, placed) {
     return;
   }
   timelineDrafts.set(panelId, String(parsed.startFrame));
+  markRushDirty();
   setTimelineMessage("");
   renderTimelineEditor();
   renderCutList();
@@ -439,6 +738,7 @@ function createCutMemberEl(cutId, panelId) {
   removeButton.addEventListener("click", () => {
     cutStore.removePanel(cutId, panelId);
     timelineStore.removePlacement(cutId, panelId);
+    markRushDirty();
     setCutMessage("");
     renderCutList();
     renderTimelineEditor();
@@ -507,6 +807,7 @@ function renderCutList() {
     deleteButton.addEventListener("click", () => {
       cutStore.remove(cut.id);
       timelineStore.removeByCutId(cut.id);
+      markRushDirty();
       if (editingCutId === cut.id) {
         resetCutForm();
       }
@@ -582,6 +883,7 @@ function addSelectedPanelsToCut(cutId) {
   for (const panelId of toAdd) {
     cutStore.appendPanel(cutId, panelId);
   }
+  markRushDirty();
   selectedPanelIds.clear();
   setCutMessage("");
   renderPanelList();
@@ -623,6 +925,7 @@ function handleCutFormSubmit(event) {
       cutNumber,
       durationFrames: duration.durationFrames,
     });
+    markRushDirty();
     resetCutForm();
     setCutMessage("");
     renderCutList();
@@ -661,7 +964,8 @@ function handleCutFormSubmit(event) {
     durationFrames: duration.durationFrames,
     panelIds,
   });
-  maybeInitSinglePanelTimeline(created);
+  maybeInitSinglePanelTimeline(cutStore.getById(created.id) ?? created);
+  markRushDirty();
   selectedPanelIds.clear();
   resetCutForm();
   setCutMessage("");
@@ -718,9 +1022,11 @@ async function drainThumbnailQueue() {
     renderPanelList();
 
     try {
-      const cropped = await cropPanelImage(job.pdfDocument, job.panel, {
-        scale: PREVIEW_SCALE,
-      });
+      const cropped = await enqueuePanelCrop(() =>
+        cropPanelImage(job.pdfDocument, job.panel, {
+          scale: PREVIEW_SCALE,
+        }),
+      );
       if (job.generation !== thumbnailToken || !panelExists(job.panel.id)) {
         continue;
       }
@@ -756,8 +1062,10 @@ function deletePanel(panelId) {
   panelStore.remove(panelId);
   cancelQueuedThumbnail(panelId);
   thumbnailCache.delete(panelId);
+  rushImageCache.delete(panelId);
   failedThumbnailIds.delete(panelId);
   timelineDrafts.delete(panelId);
+  markRushDirty();
   syncPanels();
 }
 
@@ -783,6 +1091,7 @@ function clearSessionData() {
   setCutMessage("");
   setTimelineMessage("");
   overlay.clear();
+  discardRush();
 }
 
 function syncPanels() {
@@ -793,6 +1102,7 @@ function syncPanels() {
   renderPanelList();
   renderCutList();
   renderTimelineEditor();
+  renderRush();
 }
 
 function showIdle() {
@@ -804,6 +1114,7 @@ function showIdle() {
   renderPanelList();
   renderCutList();
   renderTimelineEditor();
+  renderRush();
   setState("idle", "PDFファイルを選択してください");
 }
 
@@ -884,6 +1195,7 @@ async function handleFileChange(event) {
     console.error(error);
     if (session) {
       fileNameEl.textContent = session.fileName;
+      stopRushKeepData();
       setState(
         "viewing",
         "新しいPDFを読み込めませんでした。直前のPDFを表示しています。",
@@ -899,6 +1211,7 @@ async function handleFileChange(event) {
     renderPanelList();
     renderCutList();
     renderTimelineEditor();
+    renderRush();
     setState(
       "error",
       "PDFを読み込めませんでした。ファイルが壊れているか、PDFではない可能性があります。",
@@ -952,6 +1265,15 @@ cutCancelEditButton.addEventListener("click", () => {
 });
 timelineCloseButton.addEventListener("click", () => {
   closeTimelineEditor();
+});
+rushPlayButton.addEventListener("click", () => {
+  handleRushPlay();
+});
+rushPauseButton.addEventListener("click", () => {
+  handleRushPause();
+});
+rushResetButton.addEventListener("click", () => {
+  handleRushReset();
 });
 pdfInput.addEventListener("change", handleFileChange);
 prevButton.addEventListener("click", () => {

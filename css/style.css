@@ -87,6 +87,14 @@ body[data-state="loading"] .status {
   display: flex;
 }
 
+.stage-column {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .viewer {
   flex: 1;
   min-width: 0;
@@ -525,6 +533,81 @@ body[data-state="viewing"] .page-stage {
   min-height: 1.2em;
   padding: 0 0.9rem 0.45rem;
   color: var(--danger);
+  font-size: 0.8rem;
+}
+
+.rush {
+  flex: 0 0 13.5rem;
+  display: flex;
+  gap: 0.75rem;
+  min-height: 13.5rem;
+  padding: 0.55rem 0.75rem;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.rush-frame {
+  width: 12rem;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #111;
+}
+
+.rush-frame img {
+  display: block;
+  max-width: 100%;
+  max-height: 12.2rem;
+  object-fit: contain;
+}
+
+.rush-placeholder {
+  margin: 0;
+  padding: 0.5rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.rush-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.rush-status {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.rush-cut,
+.rush-meter {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.rush-message {
+  margin: 0.2rem 0 0;
+  min-height: 1.2em;
+  color: var(--danger);
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+}
+
+.rush-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: auto;
+}
+
+.rush-actions button {
+  padding: 0.25rem 0.65rem;
   font-size: 0.8rem;
 }
 

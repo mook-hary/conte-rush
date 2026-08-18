@@ -11,7 +11,7 @@
 - Panel = PDF 上のコンテ画像領域
 - Cut = CUT 番号、総尺、所属 Panel
 - Timeline = Cut 内で各 Panel をいつ表示するか（開始フレーム）
-- Rush = Timeline を時間軸に沿って再生したもの（未定義）
+- Rush = Cut と Timeline を時間軸に沿って再生したもの（M5 で再生時の一時構造を定義）
 
 ### PdfSession（M0）
 
@@ -113,7 +113,7 @@ M2 のアプリ実装は、この境界に従う。
 - 読み込み失敗で直前の PDF を維持する場合は残す
 - ファイルへ保存しない
 
-M2 のプレビューは OCR 用画像ではない。解析が必要になったら、切り出し処理を別倍率で呼び出す。キャッシュ済みプレビューを解析入力とはしない。
+M2 のプレビューは OCR 用画像ではない。解析が必要になったら、切り出し処理を別倍率で呼び出す。キャッシュ済みプレビューを解析入力とはしない。Rush 表示にも使わない。
 
 ### Cut（M3）
 
@@ -171,6 +171,7 @@ M3 のアプリ実装は、この定義に従う。
 
 - `placements`
 - 各 Panel の `startFrame` / `endFrame`
+- global 開始 / 終了フレーム
 - 表示区間
 - 切替タイミング
 - トランジション
@@ -278,14 +279,112 @@ M4 のアプリ実装は、この定義に従う。
 - 新しい PDF の読み込み成功時にすべて破棄する
 - 読み込み失敗で直前の PDF を維持する場合は破棄しない
 
+### RushPlayback（M5）
+
+Cut と Timeline から、再生時にだけ導出する一時構造である。永続データではない。Cut / Timeline の一部でもない。
+
+M5 のアプリ実装は、この定義に従う。
+
+| 項目 | 意味 |
+|---|---|
+| `totalFrames` | 連結した総尺（フレーム） |
+| `segments` | 登録順の Cut 区間 |
+
+segment:
+
+| 項目 | 意味 |
+|---|---|
+| `cutId` | 対象 Cut の `id` |
+| `cutNumber` | 表示用。Cut からコピーした値 |
+| `durationFrames` | その Cut の総尺 |
+| `globalStart` | 全体時間軸での開始（含む）。導出のみ |
+| `globalEndExclusive` | 全体時間軸での終了（排他）。導出のみ |
+| `placements` | `{ panelId, startFrame }`。`startFrame` 昇順 |
+
+例:
+
+```json
+{
+  "totalFrames": 204,
+  "segments": [
+    {
+      "cutId": "cut-001",
+      "cutNumber": "001",
+      "durationFrames": 84,
+      "globalStart": 0,
+      "globalEndExclusive": 84,
+      "placements": [
+        { "panelId": "panel-a", "startFrame": 0 },
+        { "panelId": "panel-b", "startFrame": 36 }
+      ]
+    }
+  ]
+}
+```
+
+導出:
+
+- 再生順は Cut の登録順
+- `globalStart` は直前までの `durationFrames` の合計
+- `globalEndExclusive = globalStart + durationFrames`
+- `totalFrames` は全 `durationFrames` の合計
+- `localFrame = globalFrame - globalStart`
+- 表示 Panel は、`startFrame ≤ localFrame` のうち最大の `startFrame`
+
+再生対象:
+
+- すべての Cut が配置完了であること
+- 未完成が 1 件でもあればスナップショットを作らず、再生しない
+
+持たないもの:
+
+- ファイルへの保存
+- MP4 / 音声
+- トランジション
+- 再生速度
+- Cut への書き戻し
+
+保持と寿命:
+
+- Play 時に構築する。メモリ上のみ
+- 再生中は live の Cut / Timeline を読まない
+- dirty な次回 Play で作り直す
+- 新しい PDF の読み込み成功時に破棄する
+
+### RushImageCache（M5）
+
+Rush 表示用の Panel 画像だけを、メモリ上に持つ。M2 の ThumbnailCache ではない。Panel の一部でもない。
+
+| 項目 | 意味 |
+|---|---|
+| キー | Panel の `id` |
+| 値 | Rush 表示用画像（Blob URL） |
+
+補足:
+
+- `cropPanelImage(..., { scale: RUSH_SCALE })` で作る。`RUSH_SCALE = 2`
+- `PREVIEW_SCALE` とは共有しない
+- 同一 `id` は 1 回だけ生成する
+- 1 件ずつ生成する
+- ウィンドウリサイズでは再生成しない
+- MP4 素材とは定義しない
+
+寿命:
+
+- その Panel を削除したら破棄する
+- 新しい PDF の読み込み成功時にすべて破棄する
+- 読み込み失敗で直前の PDF を維持する場合は残す
+- ファイルへ保存しない
+
 ### 持たないもの（現行）
 
-- Rush
+- 永続化した Rush Data
+- MP4 / 音声
 - 自動検出結果
 - `source: "auto"`
 - `confidence`
 - Panel に埋め込んだ画像、CUT 番号、尺、`cutId`、`startFrame`
-- Cut に埋め込んだ `placements` / `startFrame`
+- Cut に埋め込んだ `placements` / `startFrame` / global 区間
 - Timeline に埋め込んだ `endFrame`
 - ユーザー設定の永続化
 - Storyboard Data の完全なスキーマ
@@ -310,8 +409,8 @@ Storyboard Data
 | Storyboard Data | 読み込んだ絵コンテ PDF と、そのページ単位の情報 |
 | Cut Data | CUT 番号、総尺、所属 Panel（M3 の Cut がその人手入力部分） |
 | Timeline | Cut 内で各 Panel をいつ表示するか（M4 で開始フレームまで定義） |
-| Rush | Timeline を時間軸に沿って再生したもの |
+| Rush | Cut と Timeline を時間軸に沿って再生したもの（M5 でブラウザ再生の一時構造まで定義） |
 
-流れは一方向を想定する。逆方向の編集はまだ定義しない。Storyboard Data と Rush の中身はまだ定義しない。
+流れは一方向を想定する。逆方向の編集はまだ定義しない。Storyboard Data と MP4 の中身はまだ定義しない。
 
-M4 では Timeline の開始フレームまでを定義する。Rush の再生データはまだ定義しない。
+M5 では Rush のブラウザ再生までを定義する。MP4 出力はまだ定義しない。

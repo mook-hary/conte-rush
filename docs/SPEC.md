@@ -9,6 +9,7 @@
 - **M2**: 実装済み
 - **M3**: 実装済み
 - **M4**: 実装済み
+- **M5**: 実装済み
 
 ## 目的
 
@@ -17,13 +18,14 @@
 - M2: Panel の相対座標から PDF ページ画像を切り出し、一覧で確認用プレビューを表示する
 - M3: 人手で Cut を持ち、CUT 番号・総尺・所属 Panel を関連付ける
 - M4: Cut 内の各 Panel に開始フレームを人手で置く
+- M5: 配置完了した Cut を時間軸に沿って静止画ラッシュとして再生する
 
 責務の境界:
 
 - Panel = PDF 上のコンテ画像領域
 - Cut = CUT 番号、総尺、所属 Panel
 - Timeline = Cut 内で各 Panel をいつ表示するか（開始フレーム）
-- Rush = Timeline を時間軸に沿って再生したもの（M4 では扱わない）
+- Rush = Cut と Timeline を時間軸に沿って再生したもの（M5 ではブラウザ再生のみ）
 
 M1 の Panel は絵コンテ上の 1 つのコマ候補である。CUT 番号でも尺でもない。
 
@@ -32,6 +34,8 @@ M2 の切り出し画像は確認用プレビューである。OCR や画像解�
 M3 の Cut は所属の関連付けまでである。各 Panel の開始フレームや切替タイミングではない。
 
 M4 の Timeline は開始フレームだけである。再生や `endFrame` の保存ではない。
+
+M5 の Rush は再生時に導出した一時構造である。Cut / Timeline へ埋め込まない。MP4 ではない。
 
 ## 制約
 
@@ -42,13 +46,18 @@ M4 の Timeline は開始フレームだけである。再生や `endFrame` の�
 - PDF データをサーバーや外部サービスへ送信しない
 - PDF の処理はブラウザ内で完結させる
 - 表示には PDF.js を使う
-- Panel、Cut、Timeline はブラウザのメモリ上のみとする。保存しない
+- Panel、Cut、Timeline、Rush の再生状態はブラウザのメモリ上のみとする。保存しない
 - M0 の PDF 読み込み・描画の責務を、Panel 操作と混ぜない
 - 表示用 canvas と切り出し用 canvas を分けて使う
 - Panel 本体に画像データ、CUT 番号、尺を持たせない
 - 切り出し処理とサムネイルキャッシュを分ける
 - Cut に各 Panel の時間配置を持たせない
+- Cut に global 開始 / 終了フレームを持たせない
 - Timeline に `endFrame` を保存しない
+- Rush 専用の永続データモデルを足さない
+- M2 のサムネイルキャッシュを Rush 表示に使わない
+- 再生開始前に、スナップショットで使う Panel 画像をすべて用意する
+- 24fps 定数は `duration.js` の `FRAMES_PER_SECOND` のみとする
 
 ## M0 で実装する機能（実装済み）
 
@@ -356,6 +365,124 @@ M4 実装開始時点では、M3 までに作った Cut が残っていること
 - Rush / 再生用の空ファイルは作らない
 - `duration.js` の 24fps 換算は Cut 総尺専用のままとする。`startFrame` の入力には使わない
 
+## M5 で実装する機能（実装済み）
+
+配置完了した Cut を登録順に連結し、24fps の静止画ラッシュとして再生する。MP4 は出力しない。Panel / Cut / Timeline の保存構造は変えない。
+
+### 1. 再生対象
+
+- 配置完了した Timeline を持つ Cut だけを再生する
+- 判定は M4 の配置完了条件とする（`timelineStore.isComplete` 相当）
+- Cut が 0 件、Timeline 未作成、未配置、`0f` なし、所属 0 件も未完成とする
+- 未完成が 1 件でもあれば、Rush **全体**の再生開始を拒否する。未完成 Cut を飛ばさない
+- 拒否時は、どの CUT が未完成か、何が不足しているかを画面に出す
+
+### 2. 再生順と全体時間軸
+
+- 再生順は Cut Store の登録順とする。CUT 番号の数値順・文字列順には並べない
+- 並べ替え UI は置かない
+- 各 Cut の `durationFrames` を登録順に連結し、global 区間を再生時に導出する
+- global 開始 / 終了は Cut に保存しない
+- 例: 84f + 48f + 72f なら、CUT 001 は global 0〜83、002 は 84〜131、003 は 132〜203。総尺は 204f
+
+### 3. 再生用スナップショット
+
+Play 時にだけ作る一時構造とする。ファイルへ保存しない。
+
+- 含むもの: `totalFrames` と、登録順の segment（`cutId`、`cutNumber`、`durationFrames`、導出した `globalStart` / `globalEndExclusive`、`placements`）
+- Panel / Cut / Timeline 本体へ埋め込まない
+- 再生中は live の M3/M4 データを読まず、このスナップショットだけを使う
+
+### 4. globalFrame → Cut → Panel
+
+- `globalStart ≤ G < globalEndExclusive` の segment を選ぶ
+- `localFrame = G - globalStart`
+- その Cut の placements を `startFrame` 昇順に見て、`startFrame ≤ localFrame` のうち最大の開始の Panel を表示する
+- 配置完了なら 0f があるため、Cut 先頭から末尾まで Panel が決まる
+- Cut 境界・Panel 境界はハードカットのみとする。トランジションはない
+
+### 5. 再生開始前の画像準備
+
+再生中に Panel 画像が欠けることを避ける。時計は、必要画像がすべて揃ってから開始する。
+
+1. Play を押す
+2. 全 Cut の完成状態を検証する。未完成があれば再生しない
+3. 再生用スナップショットを構築する
+4. スナップショット内のユニークな Panel 画像を、Rush 用キャッシュへ 1 件ずつ生成する
+5. 必要画像がすべて利用可能になったことを確認する
+6. その時点から `performance.now()` を基準に 24fps 再生を開始する
+
+準備中は Rush 領域に「再生準備中」「画像を準備しています」などの状態を出す。
+
+同一 Panel は 1 回だけ生成する。キャッシュ済みで有効な画像は再利用してよい。ウィンドウリサイズでは再生成しない。
+
+### 6. 画像生成失敗
+
+- 1 件でも失敗したら、時計を進めず再生開始を拒否する
+- どの Panel / CUT の画像準備に失敗したかが分かるエラーを出す
+
+### 7. Rush 画像キャッシュ
+
+- M2 の ThumbnailCache とは分離する
+- 新規は `js/rush-image-cache.js` とする
+- `cropPanelImage()` を Rush 用 scale（`RUSH_SCALE = 2`）で呼ぶ。`PREVIEW_SCALE` とは共有しない
+- PDF 表示 canvas と `currentPage` は使わない
+- Panel 削除時はその画像を破棄する
+- 新しい PDF の読み込み成功時は全破棄する
+- 読み込み失敗で直前の PDF を維持する場合は残す
+- M6 の MP4 素材とは定義しない
+
+### 8. 再生クロック
+
+- fps は `duration.js` の `FRAMES_PER_SECOND`（24）のみ使う。Rush 側に 24 を再定義しない
+- `setInterval(1000 / 24)` は使わない
+- `requestAnimationFrame` と `performance.now()` で、経過実時間から currentFrame を求める
+- `originMs = now - currentFrame * 1000 / FRAMES_PER_SECOND`
+- `frame = floor((now - originMs) * FRAMES_PER_SECOND / 1000)`
+- 総時間は `totalFrames / 24` 秒とする
+- 自動ループはしない
+
+### 9. Play / Pause / 先頭へ戻る
+
+- Play: 検証 → スナップショット → 画像準備 → 時計開始
+- Pause: 時計を止め、`currentFrame` を保持する
+- 編集なしの Pause → Play: 画像を再生成せず、同じスナップショットと Rush 画像キャッシュでその位置から再開する
+- 先頭へ戻る: `currentFrame = 0`、停止、最初の Cut の 0f Panel を表示する
+- 最終フレームで停止中の Play は、先が無いので停止のままとする。先頭へ戻ってから Play する
+
+### 10. 最終フレーム
+
+- 最終表示フレームは `totalFrames - 1` とする
+- そのフレームを 1/24 秒相当表示したあと停止する（`frame >= totalFrames` になったら `totalFrames - 1` を維持して止める）
+- 最終画像を維持する
+
+### 11. 編集との整合（dirty）
+
+- M5 は M3/M4 データを読むだけとする。逆方向には書かない
+- 再生中の編集は今の再生に使わない。dirty にする
+- 停止中に Cut / Timeline / Panel が変わったら dirty とする
+- dirty な次回 Play: スナップショットを再構築し、必要な Panel 画像を確認する。キャッシュ済みで有効なものは再利用し、新たに必要なものだけ生成する。`currentFrame` は 0 に戻す。準備完了後に再生開始する
+- 先頭へ戻るは今のスナップショットの 0f とする。dirty の反映は次回 Play とする
+
+### 12. 表示 UI
+
+- PDF 表示 canvas とは別の Rush 専用プレビューを置く
+- 最低限: 現在 Panel 画像、CUT 番号、Cut 内フレーム / Cut 総尺、全体フレーム / 全体総尺、先頭へ戻る / Play / Pause
+- フルスクリーン、スクラブバー、再生ヘッドのドラッグは置かない
+
+### 13. 削除と PDF 再選択
+
+- Panel 削除時は Rush 画像キャッシュからも破棄する
+- 新しい PDF の読み込み成功時は、再生を止め、スナップショットと Rush 画像キャッシュを破棄する
+- 読み込み失敗で直前の PDF を維持する場合は、Rush 画像キャッシュも残す。再生は止める
+
+### 14. モジュール境界
+
+- 新規は `js/rush-player.js` と `js/rush-image-cache.js` とする
+- `rush-player.js` は再生状態、Play / Pause / Reset、時刻 → globalFrame、globalFrame → Cut / Panel
+- Panel / Cut / Timeline の保存構造は変えない
+- MP4 / 音声用の空ファイルは作らない
+
 ## UI 要件
 
 ### M0（実装済み）
@@ -396,9 +523,17 @@ M4 実装開始時点では、M3 までに作った Cut が残っていること
 - 配置完了 / 未配置の区別
 - 導出した表示区間の確認
 
+### M5（実装済み）
+
+- PDF とは別の Rush プレビュー
+- 現在 Panel 画像、CUT 番号、local / global フレーム
+- 先頭へ戻る / Play / Pause
+- 未完成 Cut の拒否理由
+- 画像準備中・画像準備失敗の表示
+
 ## 非対象
 
-次は M4 でも実装しない。UI もデータも作らない。
+次は M5 でも実装しない。UI もデータも作らない。
 
 - ファイルをウィンドウへドロップして開くこと
 - ズーム、回転、フィット表示の切替
@@ -418,12 +553,19 @@ M4 実装開始時点では、M3 までに作った Cut が残っていること
 - PAN / TU / TB 等の時間変化
 - ドラッグによる時間配置
 - 横長のフレーム定規
-- 再生ヘッド
-- play / pause
-- 実時間タイマー
-- Rush
+- 再生ヘッドをドラッグすること
+- スクラブバー
+- ループ再生
+- 再生速度変更
+- fps 変更 UI
+- 23.976 / 30fps
+- フルスクリーン
+- Cut の並べ替え UI
+- 未完成 Cut を飛ばして再生すること
 - 動画生成
 - MP4 出力
+- WebM
+- 音声 / BGM / SE
 - `panelIds` の並べ替え UI
 - Undo / Redo
 - 一覧のソート UI / フィルタ UI
@@ -448,4 +590,6 @@ M2 の切り出し関数は、後に OCR などへ同じ矩形画像を渡す入
 
 M3 の Cut は Cut Data の人手入力部分である。開始フレームは持たない。
 
-M4 の Timeline は開始フレームだけである。Rush の再生データはまだ定義しない。
+M4 の Timeline は開始フレームだけである。Rush の再生データは Cut に埋め込まない。
+
+M5 の Rush は再生時の一時構造である。MP4 や音声はまだ定義しない。

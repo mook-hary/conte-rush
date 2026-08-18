@@ -37,10 +37,10 @@
 ## D5. 実行時データと将来データ境界を分ける
 
 - 状態: 採用
-- 判断: M0 は `PdfSession`、M1 は `Panel`、M2 のプレビューはキャッシュ、M3 は `Cut` を現行データとする。Storyboard Data → Cut Data → Timeline → Rush のうち、Timeline と Rush の中身はまだ定義しない
-- 理由: 配置や再生まで先に決めると、未検証の前提が仕様に混ざる
-- 採用しなかった案: 最初から Timeline の `placements` まで定義する。画像や尺を Panel に埋め込む
-- 結果: Storyboard Data の完全定義はしない。必要になったマイルストーンで SPEC と DATA_MODEL を更新する
+- 判断: M0 は `PdfSession`、M1 は `Panel`、M2 のプレビューはキャッシュ、M3 は `Cut` を現行データとする。M4 で Timeline（開始フレーム）を定義する。Rush の中身はまだ定義しない
+- 理由: 再生まで先に決めると、未検証の前提が仕様に混ざる。配置は所属と分けて定義する
+- 採用しなかった案: Cut に `placements` を埋め込む。画像や尺を Panel に埋め込む。最初から Rush まで定義する
+- 結果: Storyboard Data の完全定義はしない。Rush は必要になったマイルストーンで SPEC と DATA_MODEL を更新する
 
 ## D6. UI 言語は日本語にする
 
@@ -87,7 +87,7 @@
 - 判断: メモリ上のみ。新しい PDF の読み込み成功時に破棄する
 - 理由: 目的は操作を成立させることであり、プロジェクト保存ではない
 - 採用しなかった案: localStorage、IndexedDB、JSON エクスポート
-- 結果: 読み込み失敗で直前 PDF を維持する場合は、Panel も残す。M2 のキャッシュと M3 の Cut も同じ寿命にする
+- 結果: 読み込み失敗で直前 PDF を維持する場合は、Panel も残す。M2 のキャッシュ、M3 の Cut、M4 の Timeline も同じ寿命にする
 
 ## D12. 切り出しは表示用 canvas を使わない
 
@@ -115,11 +115,11 @@
 
 ## D15. Cut は所属まで持ち、時間配置は Timeline に残す
 
-- 状態: 採用（M3）
+- 状態: 採用（M3。M4 で再確認）
 - 判断: Cut は `cutNumber`、`durationFrames`、`panelIds` までとする。各 Panel の開始フレームは持たない
-- 理由: 「どのコマがこの CUT か」と「いつ出すか」を混ぜると、Timeline と二重管理になる
+- 理由: 「どのコマがこの CUT か」と「いつ出すか」を混ぜると、所属と配置が二重管理になる
 - 採用しなかった案: Cut に `placements` や `startFrame` を入れる。Panel に `cutId` を持たせる
-- 結果: 所属は Cut 側の `panelIds` のみ。並べ替え UI は置かない。再生順とは定義しない。Timeline / Rush のモジュールは作らない
+- 結果: 所属は Cut 側の `panelIds` のみ。並べ替え UI は置かない。再生順とは定義しない。Timeline は `js/timeline-store.js` で持ち、Cut には `placements` を足さない。Rush モジュールは M4 では作らない
 
 ## D16. 尺の正規値は `durationFrames`、換算は 24fps
 
@@ -143,10 +143,57 @@
 - 判断: 同じ Panel id を複数 Cut に入れない
 - 理由: 所属の参照を単純にし、削除時に切れない id を残しにくくする
 - 採用しなかった案: 1 Panel を複数 Cut で使い回す
-- 結果: 追加時に既所属なら拒否する。Panel 削除時は全 Cut の `panelIds` から外す。Cut 削除では Panel を消さない
+- 結果: 追加時に既所属なら拒否する。Panel 削除時は全 Cut の `panelIds` から外す。Cut 削除では Panel を消さない。M4 では同じ Panel の placement も外す
+
+## D19. Timeline は `{ cutId, placements }` だけとする
+
+- 状態: 採用（M4）
+- 判断: Cut 1 件につき Timeline 0 または 1 件。保存するのは `cutId` と `placements[].panelId` / `startFrame` だけとする
+- 理由: 開始フレーム以外を先に持つと、再生・切替・カメラと混ざる
+- 採用しなかった案: Cut に埋め込む。`endFrame` を保存する。Timeline 独自 id を足す
+- 結果: 扱い順は `startFrame` 昇順。画像は持たない。検証と区間導出は `timeline-store.js` にまとめる想定とする
+
+## D20. 表示終了は導出し、`endFrame` は保存しない
+
+- 状態: 採用（M4）
+- 判断: i 番目の終了（排他）は次の `startFrame`。最後は `durationFrames`。表示は開始から終了-1
+- 理由: 終了を保存すると、総尺変更と次 Panel の開始の両方と矛盾し得る
+- 採用しなかった案: `endFrame` を永続化する。隙間を別データとして持つ
+- 結果: 確認表示だけ導出する。M4 では再生ヘッドもタイマーも置かない
+
+## D21. 所属 Panel はすべて配置必須とする
+
+- 状態: 採用（M4）
+- 判断: 未配置は編集中の一時状態とする。配置完了は、所属全員にちょうど 1 placement、いずれかが `0f`、開始が総尺内で重複なし、のときだけとする
+- 理由: 未完成を Rush に渡すと穴が開く。M5 は配置完了だけを対象にできる
+- 採用しなかった案: 未配置を完成扱いする。`panelIds` 順で均等割りする
+- 結果: Timeline から placement を消しても `panelIds` は残す。Cut にいない Panel は配置できない
+
+## D22. 1 Panel Cut だけ `0f` を自動配置する
+
+- 状態: 採用（M4）
+- 判断: 新規作成時に所属が 1 件なら `0f`。既存 Cut を Timeline 編集対象として初めて扱うとき、Timeline 未作成かつ所属 1 件なら同様に `0f`
+- 理由: 1 Panel は置く場所が `0f` しか完成形がない。M3 作成済み Cut を新規作成時だけに限ると取り残す
+- 採用しなかった案: 新規作成時だけ自動配置する。複数 Panel も均等自動割りする。既存 Timeline を補完して書き換える
+- 結果: 複数 Panel には自動配置しない。既存 Timeline（空を含む）は勝手に書き換えない。`panelIds` の先頭を再生順とはしない
+
+## D23. 尺短縮ではみ出す placement がある変更は拒否する
+
+- 状態: 採用（M4）
+- 判断: `startFrame >= 新しい durationFrames` となる placement がある総尺短縮は拒否する。placement は消さない
+- 理由: 自動削除すると、置いた開始フレームが消える
+- 採用しなかった案: はみ出した placement を自動削除する。総尺に合わせて `startFrame` をクランプする
+- 結果: 先に `startFrame` を直してから尺を短くする。総尺を長くするのは許可する
+
+## D24. 0f の Panel を外しても自動で詰めない
+
+- 状態: 採用（M4）
+- 判断: Cut から Panel を外したらその placement だけ消す。残った Panel を自動で `0f` にはしない
+- 理由: 再生開始が意図せず変わる
+- 採用しなかった案: 次の Panel を `0f` にずらす。残りの開始を詰める
+- 結果: いずれかが `0f` になるまで未完成とする。ユーザーが直す
 
 ## 未決
 
 - ライセンス
 - GitHub Pages の公開 URL / リポジトリ公開範囲
-- M4 以降の具体的な手段（人手配置か、自動配置か、など）

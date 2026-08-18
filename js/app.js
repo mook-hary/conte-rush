@@ -10,6 +10,10 @@ import { createPdfViewer } from "./pdf-viewer.js";
 import { createPanelOverlay } from "./panel-overlay.js";
 import { createPanelStore } from "./panel-store.js";
 import { createThumbnailCache } from "./thumbnail-cache.js";
+import {
+  createTimelineStore,
+  parseStartFrameInput,
+} from "./timeline-store.js";
 
 const pdfInput = document.querySelector("#pdf-input");
 const fileNameEl = document.querySelector("#file-name");
@@ -29,6 +33,13 @@ const cutSubmitButton = document.querySelector("#cut-submit");
 const cutCancelEditButton = document.querySelector("#cut-cancel-edit");
 const cutMessageEl = document.querySelector("#cut-message");
 const cutListEl = document.querySelector("#cut-list");
+const timelineEditorEl = document.querySelector("#timeline-editor");
+const timelineCloseButton = document.querySelector("#timeline-close");
+const timelineMetaEl = document.querySelector("#timeline-meta");
+const timelineStatusEl = document.querySelector("#timeline-status");
+const timelineRowsEl = document.querySelector("#timeline-rows");
+const timelineRangesEl = document.querySelector("#timeline-ranges");
+const timelineMessageEl = document.querySelector("#timeline-message");
 
 let session = null;
 let loadToken = 0;
@@ -36,16 +47,19 @@ let resizeTimer = 0;
 let thumbnailToken = 0;
 let drainingThumbnails = false;
 let editingCutId = null;
+let timelineCutId = null;
 
 const queuedThumbnails = [];
 const queuedThumbnailIds = new Set();
 const inFlightThumbnailIds = new Set();
 const failedThumbnailIds = new Set();
 const selectedPanelIds = new Set();
+const timelineDrafts = new Map();
 
 const viewer = createPdfViewer(canvas, viewerEl);
 const panelStore = createPanelStore();
 const cutStore = createCutStore();
+const timelineStore = createTimelineStore();
 const thumbnailCache = createThumbnailCache();
 const overlay = createPanelOverlay(overlayEl, {
   isEnabled: () => document.body.dataset.state === "viewing" && Boolean(session),
@@ -86,6 +100,212 @@ function normalizeCutNumber(raw) {
 
 function setCutMessage(message) {
   cutMessageEl.textContent = message ?? "";
+}
+
+function setTimelineMessage(message) {
+  timelineMessageEl.textContent = message ?? "";
+}
+
+function panelLabel(panelId) {
+  const panel = panelStore.getById(panelId);
+  return panel ? `p.${panel.pageNumber}` : panelId;
+}
+
+function formatRange(range) {
+  return `${range.startFrame}–${range.lastFrame}f`;
+}
+
+function maybeInitSinglePanelTimeline(cut) {
+  if (!cut || cut.panelIds.length !== 1) {
+    return;
+  }
+  if (timelineStore.getByCutId(cut.id)) {
+    return;
+  }
+  timelineStore.create(cut.id, [
+    { panelId: cut.panelIds[0], startFrame: 0 },
+  ]);
+}
+
+function closeTimelineEditor() {
+  timelineCutId = null;
+  timelineDrafts.clear();
+  setTimelineMessage("");
+  timelineEditorEl.hidden = true;
+  renderCutList();
+}
+
+function openTimelineEditor(cutId) {
+  const cut = cutStore.getById(cutId);
+  if (!cut) {
+    return;
+  }
+  timelineCutId = cutId;
+  timelineDrafts.clear();
+  maybeInitSinglePanelTimeline(cut);
+  setTimelineMessage("");
+  renderCutList();
+  renderTimelineEditor();
+}
+
+function createTimelineThumbEl(panelId) {
+  const wrap = document.createElement("div");
+  wrap.className = "timeline-row-thumb";
+  const cached = thumbnailCache.get(panelId);
+  if (cached?.url) {
+    const image = document.createElement("img");
+    image.alt = "所属 Panel のプレビュー";
+    image.src = cached.url;
+    wrap.append(image);
+  }
+  return wrap;
+}
+
+function renderTimelineEditor() {
+  if (!timelineCutId) {
+    timelineEditorEl.hidden = true;
+    timelineMetaEl.replaceChildren();
+    timelineStatusEl.textContent = "";
+    timelineRowsEl.replaceChildren();
+    timelineRangesEl.replaceChildren();
+    return;
+  }
+
+  const cut = cutStore.getById(timelineCutId);
+  if (!cut) {
+    closeTimelineEditor();
+    return;
+  }
+
+  const timeline = timelineStore.getByCutId(cut.id);
+  const ranges = timelineStore.rangesFor(cut);
+  const rangeByPanelId = new Map(ranges.map((range) => [range.panelId, range]));
+  const placedIds = new Set((timeline?.placements ?? []).map((item) => item.panelId));
+  const complete = timelineStore.isComplete(cut);
+
+  timelineEditorEl.hidden = false;
+  timelineMetaEl.replaceChildren();
+
+  const numberEl = document.createElement("p");
+  numberEl.textContent = `CUT ${cut.cutNumber}`;
+  const durationEl = document.createElement("p");
+  durationEl.textContent = formatDurationLabel(cut.durationFrames);
+  timelineMetaEl.append(numberEl, durationEl);
+
+  timelineStatusEl.textContent = complete ? "配置完了" : "未完成";
+  timelineStatusEl.classList.toggle("is-complete", complete);
+  timelineStatusEl.classList.toggle("is-incomplete", !complete);
+
+  timelineRowsEl.replaceChildren();
+  for (const panelId of cut.panelIds) {
+    timelineRowsEl.append(createTimelineRowEl(cut, panelId, {
+      placed: placedIds.has(panelId),
+      range: rangeByPanelId.get(panelId) ?? null,
+      startFrame: timeline?.placements.find((item) => item.panelId === panelId)
+        ?.startFrame,
+    }));
+  }
+
+  timelineRangesEl.replaceChildren();
+  if (ranges.length === 0) {
+    const empty = document.createElement("li");
+    empty.className = "timeline-range-item";
+    empty.textContent = "配置はまだありません";
+    timelineRangesEl.append(empty);
+  } else {
+    for (const range of ranges) {
+      const item = document.createElement("li");
+      item.className = "timeline-range-item";
+      item.textContent = `${range.startFrame}f  ${panelLabel(range.panelId)}  ${formatRange(range)}`;
+      timelineRangesEl.append(item);
+    }
+  }
+}
+
+function createTimelineRowEl(cut, panelId, { placed, range, startFrame }) {
+  const item = document.createElement("li");
+  item.className = "timeline-row";
+
+  const label = document.createElement("p");
+  label.className = "timeline-row-label";
+  label.textContent = placed ? panelLabel(panelId) : `${panelLabel(panelId)}（未配置）`;
+  label.title = panelId;
+
+  const rangeEl = document.createElement("p");
+  rangeEl.className = "timeline-row-range";
+  rangeEl.textContent = range ? formatRange(range) : "—";
+
+  const edit = document.createElement("div");
+  edit.className = "timeline-row-edit";
+
+  const field = document.createElement("label");
+  field.textContent = "start";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.inputMode = "numeric";
+  input.autocomplete = "off";
+  const fallback = placed && startFrame !== undefined ? String(startFrame) : "";
+  input.value = timelineDrafts.has(panelId)
+    ? timelineDrafts.get(panelId)
+    : fallback;
+  input.addEventListener("input", () => {
+    timelineDrafts.set(panelId, input.value);
+  });
+  const unit = document.createElement("span");
+  unit.textContent = "f";
+  field.append(input, unit);
+
+  const saveButton = document.createElement("button");
+  saveButton.type = "button";
+  saveButton.textContent = placed ? "更新" : "配置";
+  saveButton.addEventListener("click", () => {
+    saveTimelinePlacement(cut.id, panelId, input.value, placed);
+  });
+  edit.append(field, saveButton);
+
+  if (placed) {
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.textContent = "削除";
+    deleteButton.addEventListener("click", () => {
+      timelineStore.removePlacement(cut.id, panelId);
+      timelineDrafts.delete(panelId);
+      setTimelineMessage("");
+      renderTimelineEditor();
+      renderCutList();
+    });
+    edit.append(deleteButton);
+  }
+
+  item.append(createTimelineThumbEl(panelId), label, rangeEl, edit);
+  return item;
+}
+
+function saveTimelinePlacement(cutId, panelId, rawValue, placed) {
+  const cut = cutStore.getById(cutId);
+  if (!cut) {
+    setTimelineMessage("Cutが見つかりません。");
+    return;
+  }
+  const parsed = parseStartFrameInput(rawValue);
+  if (!parsed.ok) {
+    setTimelineMessage(parsed.message);
+    return;
+  }
+  const result = placed
+    ? timelineStore.updatePlacement(cutId, panelId, parsed.startFrame, cut)
+    : timelineStore.addPlacement(cutId, {
+        panelId,
+        startFrame: parsed.startFrame,
+      }, cut);
+  if (!result.ok) {
+    setTimelineMessage(result.message);
+    return;
+  }
+  timelineDrafts.set(panelId, String(parsed.startFrame));
+  setTimelineMessage("");
+  renderTimelineEditor();
+  renderCutList();
 }
 
 function resetCutForm() {
@@ -218,8 +438,10 @@ function createCutMemberEl(cutId, panelId) {
   removeButton.textContent = "外す";
   removeButton.addEventListener("click", () => {
     cutStore.removePanel(cutId, panelId);
+    timelineStore.removePlacement(cutId, panelId);
     setCutMessage("");
     renderCutList();
+    renderTimelineEditor();
   });
   item.append(removeButton);
 
@@ -233,6 +455,9 @@ function renderCutList() {
   for (const cut of cuts) {
     const item = document.createElement("li");
     item.className = "cut-item";
+    if (cut.id === timelineCutId) {
+      item.classList.add("is-timeline-target");
+    }
 
     const numberEl = document.createElement("p");
     numberEl.className = "cut-number";
@@ -262,6 +487,13 @@ function renderCutList() {
       addSelectedPanelsToCut(cut.id);
     });
 
+    const timelineButton = document.createElement("button");
+    timelineButton.type = "button";
+    timelineButton.textContent = "Timeline";
+    timelineButton.addEventListener("click", () => {
+      openTimelineEditor(cut.id);
+    });
+
     const editButton = document.createElement("button");
     editButton.type = "button";
     editButton.textContent = "編集";
@@ -274,14 +506,18 @@ function renderCutList() {
     deleteButton.textContent = "削除";
     deleteButton.addEventListener("click", () => {
       cutStore.remove(cut.id);
+      timelineStore.removeByCutId(cut.id);
       if (editingCutId === cut.id) {
         resetCutForm();
+      }
+      if (timelineCutId === cut.id) {
+        closeTimelineEditor();
       }
       setCutMessage("");
       renderCutList();
     });
 
-    actions.append(addButton, editButton, deleteButton);
+    actions.append(addButton, timelineButton, editButton, deleteButton);
     item.append(numberEl, durationEl, countEl, members, actions);
     cutListEl.append(item);
   }
@@ -350,6 +586,7 @@ function addSelectedPanelsToCut(cutId) {
   setCutMessage("");
   renderPanelList();
   renderCutList();
+  renderTimelineEditor();
 }
 
 function handleCutFormSubmit(event) {
@@ -371,6 +608,17 @@ function handleCutFormSubmit(event) {
       setCutMessage("同じCUT番号がすでにあります。");
       return;
     }
+    const blocking = timelineStore.placementsBlockingDuration(
+      editingCutId,
+      duration.durationFrames,
+    );
+    if (blocking.length > 0) {
+      const frames = blocking.map((item) => `${item.startFrame}f`).join("、");
+      setCutMessage(
+        `${frames} の配置があるため ${duration.durationFrames}f にできません。`,
+      );
+      return;
+    }
     cutStore.update(editingCutId, {
       cutNumber,
       durationFrames: duration.durationFrames,
@@ -378,6 +626,7 @@ function handleCutFormSubmit(event) {
     resetCutForm();
     setCutMessage("");
     renderCutList();
+    renderTimelineEditor();
     return;
   }
 
@@ -407,16 +656,18 @@ function handleCutFormSubmit(event) {
     return;
   }
 
-  cutStore.add({
+  const created = cutStore.add({
     cutNumber,
     durationFrames: duration.durationFrames,
     panelIds,
   });
+  maybeInitSinglePanelTimeline(created);
   selectedPanelIds.clear();
   resetCutForm();
   setCutMessage("");
   renderPanelList();
   renderCutList();
+  renderTimelineEditor();
 }
 
 function cancelQueuedThumbnail(panelId) {
@@ -490,6 +741,7 @@ async function drainThumbnailQueue() {
       if (job.generation === thumbnailToken) {
         renderPanelList();
         renderCutList();
+        renderTimelineEditor();
       }
     }
   }
@@ -499,11 +751,13 @@ async function drainThumbnailQueue() {
 
 function deletePanel(panelId) {
   cutStore.removePanelFromAll(panelId);
+  timelineStore.removePanelFromAll(panelId);
   selectedPanelIds.delete(panelId);
   panelStore.remove(panelId);
   cancelQueuedThumbnail(panelId);
   thumbnailCache.delete(panelId);
   failedThumbnailIds.delete(panelId);
+  timelineDrafts.delete(panelId);
   syncPanels();
 }
 
@@ -520,9 +774,14 @@ function clearSessionData() {
   resetThumbnails();
   panelStore.clear();
   cutStore.clear();
+  timelineStore.clear();
   selectedPanelIds.clear();
+  timelineDrafts.clear();
+  timelineCutId = null;
+  timelineEditorEl.hidden = true;
   resetCutForm();
   setCutMessage("");
+  setTimelineMessage("");
   overlay.clear();
 }
 
@@ -533,6 +792,7 @@ function syncPanels() {
   overlay.renderPanels(pagePanels);
   renderPanelList();
   renderCutList();
+  renderTimelineEditor();
 }
 
 function showIdle() {
@@ -543,6 +803,7 @@ function showIdle() {
   updatePager();
   renderPanelList();
   renderCutList();
+  renderTimelineEditor();
   setState("idle", "PDFファイルを選択してください");
 }
 
@@ -593,6 +854,7 @@ async function handleFileChange(event) {
     });
     renderPanelList();
     renderCutList();
+    renderTimelineEditor();
 
     try {
       await showPage();
@@ -636,6 +898,7 @@ async function handleFileChange(event) {
     updatePager();
     renderPanelList();
     renderCutList();
+    renderTimelineEditor();
     setState(
       "error",
       "PDFを読み込めませんでした。ファイルが壊れているか、PDFではない可能性があります。",
@@ -686,6 +949,9 @@ cutForm.addEventListener("submit", handleCutFormSubmit);
 cutCancelEditButton.addEventListener("click", () => {
   resetCutForm();
   setCutMessage("");
+});
+timelineCloseButton.addEventListener("click", () => {
+  closeTimelineEditor();
 });
 pdfInput.addEventListener("change", handleFileChange);
 prevButton.addEventListener("click", () => {

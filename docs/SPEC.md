@@ -8,6 +8,7 @@
 - **M1**: 実装済み
 - **M2**: 実装済み
 - **M3**: 実装済み
+- **M4**: 実装済み
 
 ## 目的
 
@@ -15,19 +16,22 @@
 - M1: 表示中ページ上でユーザーが矩形を指定し、コマ候補（Panel）として手動登録する
 - M2: Panel の相対座標から PDF ページ画像を切り出し、一覧で確認用プレビューを表示する
 - M3: 人手で Cut を持ち、CUT 番号・総尺・所属 Panel を関連付ける
+- M4: Cut 内の各 Panel に開始フレームを人手で置く
 
 責務の境界:
 
 - Panel = PDF 上のコンテ画像領域
 - Cut = CUT 番号、総尺、所属 Panel
-- Timeline = Cut 内で各 Panel をいつ表示するか（M3 では扱わない）
-- Rush = Timeline を時間軸に沿って再生したもの（M3 では扱わない）
+- Timeline = Cut 内で各 Panel をいつ表示するか（開始フレーム）
+- Rush = Timeline を時間軸に沿って再生したもの（M4 では扱わない）
 
 M1 の Panel は絵コンテ上の 1 つのコマ候補である。CUT 番号でも尺でもない。
 
 M2 の切り出し画像は確認用プレビューである。OCR や画像解析用の入力そのものではない。
 
 M3 の Cut は所属の関連付けまでである。各 Panel の開始フレームや切替タイミングではない。
+
+M4 の Timeline は開始フレームだけである。再生や `endFrame` の保存ではない。
 
 ## 制約
 
@@ -38,12 +42,13 @@ M3 の Cut は所属の関連付けまでである。各 Panel の開始フレ�
 - PDF データをサーバーや外部サービスへ送信しない
 - PDF の処理はブラウザ内で完結させる
 - 表示には PDF.js を使う
-- Panel および Cut はブラウザのメモリ上のみとする。保存しない
+- Panel、Cut、Timeline はブラウザのメモリ上のみとする。保存しない
 - M0 の PDF 読み込み・描画の責務を、Panel 操作と混ぜない
 - 表示用 canvas と切り出し用 canvas を分けて使う
 - Panel 本体に画像データ、CUT 番号、尺を持たせない
 - 切り出し処理とサムネイルキャッシュを分ける
 - Cut に各 Panel の時間配置を持たせない
+- Timeline に `endFrame` を保存しない
 
 ## M0 で実装する機能（実装済み）
 
@@ -250,6 +255,107 @@ M1 の Panel 座標を使い、PDF から矩形範囲の画像を得る。確認
 - 新しい PDF の読み込み成功時は、Panel・サムネイルキャッシュ・Cut をすべて破棄する
 - 読み込み失敗で直前の PDF を維持する場合は、Cut も残す
 
+## M4 で実装する機能（実装済み）
+
+Cut 内の開始フレームを人手で置く。再生はしない。`endFrame` は保存しない。
+
+### 1. Timeline Data
+
+- Cut 1 件につき Timeline は 0 または 1 件とする。キーは `cutId` とする。Timeline 独自の id は持たない
+- Cut 本体へ `startFrame` や `placements` を埋め込まない
+- 保存するのは `cutId` と `placements`（`panelId` と `startFrame`）だけとする
+- `endFrame`、トランジション、カメラワークは持たない
+- `placements` の扱い順は `startFrame` 昇順とする。追加順でも `panelIds` 順でもない
+- 同一 `panelId` の placement は、1 つの Timeline 内で高々 1 件とする
+- Cut に対して Timeline がまだ無い状態を許す（M3 までに作った Cut など）
+- 不均等な開始（例: 0 / 18 / 49）は、検証を満たせば許可する。均等自動割りはしない
+
+例:
+
+```json
+{
+  "cutId": "cut-001",
+  "placements": [
+    { "panelId": "panel-a", "startFrame": 0 },
+    { "panelId": "panel-b", "startFrame": 36 },
+    { "panelId": "panel-c", "startFrame": 60 }
+  ]
+}
+```
+
+### 2. startFrame
+
+- 0 始まりの整数（フレーム）
+- `0 ≤ startFrame < cut.durationFrames`
+- 同一 Cut 内で同じ `startFrame` を複数 Panel が持ってはならない
+- 同一 Cut 内で同じ Panel の placement は高々 1 件とする
+- 空、小数、負、総尺以上、他 Panel と同じ開始、所属外の Panel は拒否し、画面に理由を出す
+- 入力はフレーム数値とする。秒+コマにはしない（総尺だけ M3 の `3+12`）
+
+### 3. 表示区間の導出
+
+- `endFrame` は保存しない
+- `placements` を `startFrame` 昇順に並べる
+- i 番目の表示終了（排他）は、次の `startFrame`。最後は `durationFrames`
+- 表示は `startFrame` から終了-1 までとする
+- 例: 84f で 0 / 36 / 60 なら `0–35f`、`36–59f`、`60–83f`
+
+### 4. 所属との関係
+
+- 配置できるのは、その Cut の `panelIds` に含まれる Panel だけとする
+- 所属 Panel はすべて配置必須とする。未配置は編集中の一時状態とし、その Timeline は未完成とする
+- 配置完了の条件:
+  - `panelIds` のすべてに、ちょうど 1 件の placement がある
+  - いずれかが `startFrame === 0`
+  - `startFrame` が整数で総尺内にあり、同一 Cut 内で重ならない
+- Timeline から placement を消しても、`panelIds` からは外さない
+
+### 5. 1 Panel Cut の初期化
+
+M4 実装開始時点では、M3 までに作った Cut が残っていることがある。そのため `0f` 自動配置は新規作成時だけに限らない。
+
+次のときに限り、所属 Panel が 1 件なら `{ panelId, startFrame: 0 }` を自動配置する。
+
+- Cut を新規作成したとき、所属 Panel が 1 件
+- 既存 Cut を Timeline 編集対象として初めて扱うとき、Timeline が未作成で、所属 Panel が 1 件だけ
+
+複数 Panel の Cut には自動配置しない。均等割りもしない。誰を `0f` にするかはユーザーが決める。`panelIds` の先頭を再生順とはしない。
+
+既存 Timeline がある場合は、空でも配置済みでも、勝手に書き換えない。
+
+### 6. 編集 UI
+
+- 豪華な定規・再生ヘッド・ドラッグ配置は置かない
+- Cut を選び、所属 Panel ごとに開始フレームを数値入力する
+- 設定後、`0f Panel A` のような確認と、導出した表示区間を出す
+- サムネイルは M2 のキャッシュを参照する。Timeline は画像を持たない
+
+### 7. Cut 総尺の変更
+
+- `durationFrames` の正は M3 の Cut のままとする
+- 総尺を長くするのは許可する
+- 総尺を短くした結果、`startFrame >= 新しい durationFrames` となる placement がある場合は、尺の変更を拒否する。placement は消さない
+
+### 8. 所属変更との整合
+
+- Cut から Panel を外したら、その Panel の placement も消す
+- Cut に Panel を足したら、Timeline では未配置とする。既存 placement は触らない
+- 0f の Panel を外しても、他を自動で 0f にはしない
+
+### 9. 削除と PDF 再選択
+
+- Cut 削除時は、その `cutId` の Timeline も削除する。Panel は残す
+- Panel 削除時は、全 Cut の `panelIds` から外し、全 Timeline の placement からも外す
+- 新しい PDF の読み込み成功時は、Panel・サムネイル・Cut・Timeline をすべて破棄する
+- 読み込み失敗で直前の PDF を維持する場合は、Timeline も残す
+
+### 10. モジュール境界
+
+- 新規は `js/timeline-store.js` のみとする想定である
+- Cut に `startFrame` や `placements` を足さない
+- Rush / 再生用の空ファイルは作らない
+- `duration.js` の 24fps 換算は Cut 総尺専用のままとする。`startFrame` の入力には使わない
+
 ## UI 要件
 
 ### M0（実装済み）
@@ -283,9 +389,16 @@ M1 の Panel 座標を使い、PDF から矩形範囲の画像を得る。確認
 - Cut 一覧
 - Cut の編集・削除、所属 Panel の付け外し
 
+### M4（実装済み）
+
+- Cut を選んで Timeline を編集する欄
+- 所属 Panel ごとの startFrame 数値入力
+- 配置完了 / 未配置の区別
+- 導出した表示区間の確認
+
 ## 非対象
 
-次は M3 でも実装しない。UI もデータも作らない。
+次は M4 でも実装しない。UI もデータも作らない。
 
 - ファイルをウィンドウへドロップして開くこと
 - ズーム、回転、フィット表示の切替
@@ -297,11 +410,20 @@ M1 の Panel 座標を使い、PDF から矩形範囲の画像を得る。確認
 - CUT 番号の自動認識
 - Panel のリサイズ編集
 - Panel の移動編集
-- Panel の `startFrame` / `endFrame`
-- 表示区間
-- Panel 同士の切替タイミング
+- Panel の `startFrame` / `endFrame`（Panel 本体および Cut 本体への保存）
+- `endFrame` の保存
+- 表示区間の永続化
+- Panel 同士の切替タイミングの保存
 - ディゾルブ等のトランジション
 - PAN / TU / TB 等の時間変化
+- ドラッグによる時間配置
+- 横長のフレーム定規
+- 再生ヘッド
+- play / pause
+- 実時間タイマー
+- Rush
+- 動画生成
+- MP4 出力
 - `panelIds` の並べ替え UI
 - Undo / Redo
 - 一覧のソート UI / フィルタ UI
@@ -311,10 +433,6 @@ M1 の Panel 座標を使い、PDF から矩形範囲の画像を得る。確認
 - JSON エクスポート
 - 切り出し画像のファイル書き出し
 - Storyboard Data の完全定義
-- Timeline
-- Rush
-- 動画生成
-- MP4 出力
 - AI 解析
 - カメラワーク解析
 
@@ -328,4 +446,6 @@ M1 の Panel は、後に Storyboard Data へ入り得るコマ候補である�
 
 M2 の切り出し関数は、後に OCR などへ同じ矩形画像を渡す入口になり得る。M2 のプレビュー画像そのものを解析入力とはしない。
 
-M3 の Cut は Cut Data の人手入力部分である。Timeline の配置データはまだ定義しない。
+M3 の Cut は Cut Data の人手入力部分である。開始フレームは持たない。
+
+M4 の Timeline は開始フレームだけである。Rush の再生データはまだ定義しない。

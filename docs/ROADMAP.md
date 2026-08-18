@@ -55,28 +55,45 @@ OCR 用画像の定義、画像ファイルの書き出しは M2 の範囲では
 
 各 Panel の開始フレーム、表示区間、切替、トランジション、OCR、Timeline、Rush は M3 の範囲ではない。仕様は [SPEC.md](SPEC.md) の M3 節を正とする。
 
+## M4（実装済み）
+
+Cut 内の各 Panel に開始フレームを人手で置ける状態にする。再生はしない。
+
+- Cut 1 件につき Timeline は 0 または 1 件（`cutId` + `placements`）
+- Cut 本体へ `startFrame` / `placements` を埋め込まない
+- `startFrame` は 0 始まり整数、`0 ≤ n < durationFrames`、同一 Cut 内で重複禁止
+- 表示区間は次の `startFrame` または `durationFrames` から導出する（`endFrame` は保存しない）
+- 所属 Panel はすべて配置必須。未配置は未完成
+- 1 Panel Cut は、新規作成時、または既存 Cut を Timeline 編集対象として初めて扱う際に Timeline 未作成なら `0f` 自動配置
+- 複数 Panel には自動配置しない。既存 Timeline は書き換えない
+- 尺短縮で `startFrame` が総尺外になる変更は拒否する
+- Cut / Panel 削除と PDF 再選択成功時に Timeline の参照を残さない
+- 新規モジュールは `js/timeline-store.js` のみを想定する。Rush モジュールは作らない
+
+Rush、play / pause、再生ヘッド、実時間タイマー、MP4、トランジション、PAN / TU / TB、`endFrame` の保存は M4 の範囲ではない。仕様は [SPEC.md](SPEC.md) の M4 節を正とする。
+
 ## 以降（構想）
 
-順序の目安であり、確定した計画ではない。詳細モデルも作らない。
+順序の目安であり、確定した計画ではない。M5 以降の詳細モデルはまだ作らない。
 
 データ境界との対応は [DATA_MODEL.md](DATA_MODEL.md) の将来節を参照する。
 
 | 候補 | 想定する前進 |
 |---|---|
-| M4 | Timeline。Cut 内で各 Panel をいつ表示するかを持つ |
-| M5 | Rush。Timeline を時間軸に沿って再生する |
+| M5 | Rush。配置完了した Timeline を時間軸に沿って再生する |
 
-M4 以降でやり得ることの例（未着手、M3 には入れない）:
+M5 以降でやり得ることの例（未着手、M4 には入れない）:
 
-- 各 Panel の `startFrame` / 表示区間
-- Panel 同士の切替タイミング
-- ディゾルブ等のトランジション
-- Panel の自動検出（`source: "auto"`）
-- CUT 番号の OCR / 自動認識
+- Rush 再生
+- play / pause、再生ヘッド、実時間タイマー
 - 動画再生
 - MP4 出力
-- AI 解析
+- Panel 同士の切替タイミングの保存
+- ディゾルブ等のトランジション
 - カメラワーク解析（PAN / TU / TB 等）
+- Panel の自動検出（`source: "auto"`）
+- CUT 番号の OCR / 自動認識
+- AI 解析
 
 ## 進め方
 

@@ -10,7 +10,7 @@
 
 - Panel = PDF 上のコンテ画像領域
 - Cut = CUT 番号、総尺、所属 Panel
-- Timeline = Cut 内で各 Panel をいつ表示するか（未定義）
+- Timeline = Cut 内で各 Panel をいつ表示するか（開始フレーム）
 - Rush = Timeline を時間軸に沿って再生したもの（未定義）
 
 ### PdfSession（M0）
@@ -169,6 +169,7 @@ M3 のアプリ実装は、この定義に従う。
 
 持たないもの:
 
+- `placements`
 - 各 Panel の `startFrame` / `endFrame`
 - 表示区間
 - 切替タイミング
@@ -183,19 +184,109 @@ M3 のアプリ実装は、この定義に従う。
 - 読み込み失敗で直前の PDF を維持する場合は破棄しない
 - Panel を削除したら、すべての `panelIds` からその id を除く
 - Cut を削除しても Panel は残す
+- Cut の総尺を短くするとき、Timeline に `startFrame >= 新しい durationFrames` の placement があれば、尺の変更を拒否する（M4。placement は消さない）
 
 一覧の並び（表示専用。ソート UI は持たない）:
 
 - Cut の登録順
 
+### Timeline（M4）
+
+Cut 内で各 Panel をいつ表示し始めるかを表す。再生データではない。Cut 本体の一部でもない。
+
+M4 のアプリ実装は、この定義に従う。
+
+| 項目 | 意味 |
+|---|---|
+| `cutId` | 対象 Cut の `id`。Timeline のキー |
+| `placements` | 配置の配列。各要素は `panelId` と `startFrame` のみ |
+
+例:
+
+```json
+{
+  "cutId": "cut-001",
+  "placements": [
+    { "panelId": "panel-a", "startFrame": 0 },
+    { "panelId": "panel-b", "startFrame": 36 },
+    { "panelId": "panel-c", "startFrame": 60 }
+  ]
+}
+```
+
+`cutId`:
+
+- Cut 1 件につき Timeline は 0 または 1 件とする
+- Timeline 独自の id は持たない
+
+`placements`:
+
+- 扱い順は `startFrame` 昇順とする。追加順でも `panelIds` 順でもない
+- 各要素は `panelId` と `startFrame` だけとする
+- `panelId` はその Cut の `panelIds` に含まれるものに限る
+- 同一 Timeline 内で同じ `panelId` を重ねない
+- 同一 Timeline 内で同じ `startFrame` を重ねない
+- 所属全員が配置されるまで、一部だけでもよい（未完成）
+
+`startFrame`:
+
+- 0 始まりの整数（フレーム）
+- `0 ≤ startFrame < cut.durationFrames`
+- 秒+コマでは持たない
+
+表示区間（導出のみ。保存しない）:
+
+- `endFrame` は項目にしない
+- `placements` を `startFrame` 昇順に並べる
+- i 番目の表示終了（排他）は、次の `startFrame`。最後はその Cut の `durationFrames`
+- 表示は `startFrame` から終了-1 までとする
+- 例: 84f で 0 / 36 / 60 なら `0–35f`、`36–59f`、`60–83f`
+
+配置完了（Rush に渡せる条件。M4 では再生しない）:
+
+1. `panelIds` のすべてに、ちょうど 1 件の placement がある
+2. いずれかが `startFrame === 0`
+3. 各 `startFrame` が整数で `0 ≤ startFrame < durationFrames`
+4. 同一 Timeline 内で `startFrame` が重ならない
+5. 各 `panelId` がその Cut の `panelIds` に含まれる
+
+1 Panel Cut の初期化:
+
+- Cut 新規作成時に所属が 1 件なら、`startFrame: 0` を自動配置する
+- 既存 Cut を Timeline 編集対象として初めて扱うとき、Timeline が未作成で所属が 1 件だけなら、同様に `0f` を自動配置する
+- 複数 Panel の Cut には自動配置しない
+- 既存 Timeline がある場合は書き換えない
+
+持たないもの:
+
+- `endFrame`
+- 表示区間の保存
+- 切替タイミング
+- トランジション
+- PAN / TU / TB
+- 再生ヘッド、play / pause、実時間タイマー
+- 画像
+
+保持と寿命:
+
+- メモリ上のみ。ファイルへ保存しない
+- Cut を削除したら、その `cutId` の Timeline も破棄する
+- Panel を削除したら、すべての Timeline の placement からその id を除く
+- Cut から Panel を外したら、その Panel の placement を除く。`panelIds` からの除外は Cut 側の操作とする
+- Cut に Panel を足しても、既存 placement は触らない。足した Panel は未配置とする
+- Timeline から placement を消しても、`panelIds` からは外さない
+- 新しい PDF の読み込み成功時にすべて破棄する
+- 読み込み失敗で直前の PDF を維持する場合は破棄しない
+
 ### 持たないもの（現行）
 
-- Timeline（配置データ）
 - Rush
 - 自動検出結果
 - `source: "auto"`
 - `confidence`
 - Panel に埋め込んだ画像、CUT 番号、尺、`cutId`、`startFrame`
+- Cut に埋め込んだ `placements` / `startFrame`
+- Timeline に埋め込んだ `endFrame`
 - ユーザー設定の永続化
 - Storyboard Data の完全なスキーマ
 
@@ -218,9 +309,9 @@ Storyboard Data
 |---|---|
 | Storyboard Data | 読み込んだ絵コンテ PDF と、そのページ単位の情報 |
 | Cut Data | CUT 番号、総尺、所属 Panel（M3 の Cut がその人手入力部分） |
-| Timeline | Cut 内で各 Panel をいつ表示するか |
+| Timeline | Cut 内で各 Panel をいつ表示するか（M4 で開始フレームまで定義） |
 | Rush | Timeline を時間軸に沿って再生したもの |
 
-流れは一方向を想定する。逆方向の編集や、各境界の中身はまだ定義しない。
+流れは一方向を想定する。逆方向の編集はまだ定義しない。Storyboard Data と Rush の中身はまだ定義しない。
 
-M3 では Timeline の配置（各 Panel の `startFrame` など）を定義しない。
+M4 では Timeline の開始フレームまでを定義する。Rush の再生データはまだ定義しない。

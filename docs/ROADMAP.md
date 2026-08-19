@@ -224,6 +224,21 @@ MP4 / WebM / 音声 / ease / 複数 Motion 連結 / 部分区間 Motion / 回転
 
 新規: `js/mp4-exporter.js`、`js/export-image-cache.js`、`js/frame-pose.js`。仕様は [SPEC.md](SPEC.md) の M7 節を正とする。
 
+## M8（実装済み）
+
+同一 Panel を Cut 内で複数 placement し、所属順 Repeat を編集コマンドとして Timeline へ書き込む。再生モードは増やさない。
+
+- placement は `{ id, panelId, startFrame }`。一意性は `startFrame`
+- Cut.panelIds は使用可能な素材。同じ id を複数入れない
+- 完成条件から「所属全員ちょうど 1 件」を外す。0f と妥当な placements があれば完成
+- Repeat は確認のうえ全置換。Undo 1 回で元 Timeline。設定は保存しない
+- 連続同一 Panel の collapse は Repeat 生成時のみ
+- Motion は panelId のまま。pose は **現在の表示区間** で sample する
+- Rush 時計と MP4 経路に Repeat を足さない
+- Panel / Cut / Motion のフィールドは増やさない
+
+仕様は [SPEC.md](SPEC.md) の M8 節を正とする。アプリ実装済み。
+
 ## 以降（構想）
 
 順序の目安であり、確定した計画ではない。
@@ -232,21 +247,23 @@ MP4 / WebM / 音声 / ease / 複数 Motion 連結 / 部分区間 Motion / 回転
 
 | 候補 | 想定する前進 |
 |---|---|
-| M8 | 音声トラック、または長尺向けのストリーミング保存 |
+| M9 | 最終 placements からタイムシートを出す |
 
-M8 以降でやり得ることの例（未着手、M7 には入れない）:
+M9 以降でやり得ることの例（未着手、M8 には入れない）:
 
+- タイムシート出力
 - 音声 / BGM / SE / AAC
 - 1080p 選択、bitrate / fps UI
 - WebM / MOV
-- File System Access API への直接書き（最終 Blob をメモリに持たない）
+- File System Access API への直接書き
+- Repeat 回数入力、Panel ごと hold、任意列エディタ
+- placement 単位 Motion
 - ループ再生
 - スクラブバー、再生ヘッドのドラッグ
 - 再生速度変更
 - Panel 表示の途中だけにかける Motion
 - 1 Panel 内の複数 Motion 連結
 - ディゾルブ等のトランジション
-- タイムシート出力
 - カメラワークの自動解析
 - Panel の自動検出（`source: "auto"`）
 - CUT 番号の OCR / 自動認識

@@ -590,6 +590,58 @@ body[data-state="viewing"] .page-stage {
   color: var(--danger);
 }
 
+.timeline-repeat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  margin: 0.35rem 0 0;
+  padding: 0.25rem 0.9rem 0.15rem;
+}
+
+.timeline-repeat-label,
+.timeline-repeat-sequence,
+.timeline-unused {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.timeline-repeat-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.5rem;
+  align-items: center;
+}
+
+.timeline-repeat-row label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.2rem 0.3rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.timeline-repeat-row input {
+  width: 4.2rem;
+  padding: 0.15rem 0.3rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #161616;
+  color: var(--text);
+  font: inherit;
+}
+
+.timeline-repeat-row button {
+  padding: 0.12rem 0.4rem;
+  font-size: 0.72rem;
+}
+
+.timeline-unused {
+  padding: 0 0.9rem;
+  min-height: 1em;
+}
+
 .timeline-confirm-label {
   margin: 0.35rem 0 0;
   padding: 0 0.9rem;
@@ -631,7 +683,8 @@ body[data-state="viewing"] .page-stage {
   background: var(--current);
 }
 
-.timeline-row[data-panel-id] {
+.timeline-row[data-panel-id],
+.timeline-row[data-placement-id] {
   cursor: pointer;
 }
 

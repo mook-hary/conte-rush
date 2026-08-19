@@ -229,9 +229,9 @@ M4 のアプリ実装は、この定義に従う。
 `placements`:
 
 - 扱い順は `startFrame` 昇順とする。追加順でも `panelIds` 順でもない
-- 各要素は `panelId` と `startFrame` だけとする
+- 各要素は `panelId` と `startFrame` とする。M8 ではさらに `id` を持つ
 - `panelId` はその Cut の `panelIds` に含まれるものに限る
-- 同一 Timeline 内で同じ `panelId` を重ねない
+- 同一 Timeline 内で同じ `panelId` を重ねない（M8 で廃止。同一 `panelId` の複数 placement を許す）
 - 同一 Timeline 内で同じ `startFrame` を重ねない
 - 所属全員が配置されるまで、一部だけでもよい（未完成）
 
@@ -252,9 +252,9 @@ M4 のアプリ実装は、この定義に従う。
 - M5.4 の画面表示例: `0+00–1+11（0–35f）`、`1+12–2+11（36–59f）`、`2+12–3+11（60–83f）`
 - 横バー右端の総尺表示は排他終端（84f なら `3+12（84f）`）。区間の終了とは別である
 
-配置完了（Rush に渡せる条件。M4 では再生しない）:
+配置完了（Rush に渡せる条件。M4 では再生しない。M8 で条件を更新）:
 
-1. `panelIds` のすべてに、ちょうど 1 件の placement がある
+1. `panelIds` のすべてに、ちょうど 1 件の placement がある（M8 で廃止）
 2. いずれかが `startFrame === 0`
 3. 各 `startFrame` が整数で `0 ≤ startFrame < durationFrames`
 4. 同一 Timeline 内で `startFrame` が重ならない
@@ -290,6 +290,43 @@ M4 のアプリ実装は、この定義に従う。
 - Timeline から placement を消しても、`panelIds` からは外さない
 - 新しい PDF の読み込み成功時にすべて破棄する
 - 読み込み失敗で直前の PDF を維持する場合は破棄しない
+
+### Timeline（M8・実装済み）
+
+M4 の `{ cutId, placements }` は維持する。各 placement に `id` を足し、同一 `panelId` の複数件を許す。
+
+| 項目 | 意味 |
+|---|---|
+| `id` | placement の識別子。編集・Undo・マーカーのキー |
+| `panelId` | 表示する Panel |
+| `startFrame` | 表示開始（整数 frame） |
+
+一意性:
+
+- `startFrame` は Timeline 内で重複しない
+- `panelId` は重複してよい
+- `id` はセッション内で一意
+
+配置完了（M8）:
+
+1. placement が 1 件以上
+2. いずれかが `0f`
+3. 各 `startFrame` が範囲内の整数
+4. `startFrame` 重複なし
+5. 各 `panelId` が Cut 所属
+6. 各 placement に `id`
+
+所属全員が 1 回以上置かれていることは完成条件にしない。未使用の所属はヒントのみ。
+
+持たないもの:
+
+- Repeat の列 / hold / 回数
+- 表示区間の保存
+- placement 単位の Motion
+
+Repeat は実行時に placements を生成して Store へ書くだけである。UI 状態に確認ダイアログと hold 入力だけを持つ。
+
+Panel 削除 / Cut から外すときは、その `panelId` の placement をすべて除く。0f へ自動詰めしない。
 
 ### Motion（M6）
 
@@ -391,7 +428,7 @@ segment:
 | `durationFrames` | その Cut の総尺 |
 | `globalStart` | 全体時間軸での開始（含む）。導出のみ |
 | `globalEndExclusive` | 全体時間軸での終了（排他）。導出のみ |
-| `placements` | `{ panelId, startFrame }`。`startFrame` 昇順 |
+| `placements` | `{ id, panelId, startFrame }`（M7 までは `id` なし）。`startFrame` 昇順 |
 
 例:
 
@@ -532,14 +569,14 @@ Undo / Redo のメモリ上スタック。Store ではない。ファイルへ�
 | `canUndo` / `canRedo` | ボタンの有効状態 |
 | `clear` | 両方空にする |
 
-必須対象: Panel 登録、Panel 削除、Timeline の `startFrame` 確定、M6 の Motion 作成 / 削除 / from-to 確定。
+必須対象: Panel 登録、Panel 削除、Timeline の `startFrame` 確定、M6 の Motion 作成 / 削除 / from-to 確定。M8 では加えて placement 追加 / 削除、Repeat による Timeline 全置換。
 
 Panel 削除の 1 Action が保持するもの:
 
 - Panel Data 全体
 - Panel Store 上の元の挿入位置
 - 所属していた Cut と、その `panelIds` 内位置
-- Timeline placement があった場合の `startFrame`
+- Timeline にその Panel の placement があった場合、その全件（`id` と `startFrame`。M8）
 - その Panel に付いていた Motion（M6）
 
 新しい PDF の読み込み成功時に `clear` する。失敗維持時は残す。
@@ -559,7 +596,8 @@ Cut 詳細ペインの対象。Cut Data の項目ではない。
 
 | 項目 | 意味 |
 |---|---|
-| `panelId` | 動かしている Panel |
+| `placementId` | 動かしている placement |
+| `panelId` | その placement の Panel（表示用） |
 | `startFrame` | スナップ済みの候補フレーム（整数） |
 
 - データの正は、ドラッグ開始前の Timeline Store の `startFrame` とする
@@ -574,17 +612,18 @@ Cut 詳細ペインの対象。Cut Data の項目ではない。
 | 項目 | 意味 |
 |---|---|
 | `selectedTimelinePanelId` | 選択中の `panelId`。未選択はなし |
+| `selectedPlacementId`（M8） | 選択中の placement。複数配置後のキー |
 
-- 未配置を選んだ状態で横バーをクリック / ドラッグすると、その位置へ初回配置する
-- 配置済みを選んだ状態だけ、矢印キーで `startFrame` を 1f / 5f 動かす
+- M8 ではマーカー操作の正は `selectedPlacementId`
 - ファイルへ保存しない
 
-#### UnplacedPlacePreview（M5.3）
+#### MemberPlacePreview（M8）
 
-未配置を横バーへ置く操作のあいだだけ持つ UI 状態。Timeline Data ではない。
+所属 Panel を横バーへ追加する操作のあいだだけ持つ UI 状態。Timeline Data ではない。
 
 - バー上のスナップ済み候補 frame を示す
 - pointerup の検証成功時だけ Store へ書く。失敗・キャンセルでは破棄する
+- すでに同じ Panel の placement があっても追加できる
 
 #### FrameTimeDisplay（M5.4）
 
@@ -729,3 +768,5 @@ M5.4 でも保存構造は増やさない。秒+コマは描画時の表示だ�
 M6 では Motion を独立構造として足す。Panel / Cut / Timeline の項目は増やさない。1 フレーム描画の入口は Frame Renderer とする。
 
 M7 では MP4 書き出しを定義する。ExportSnapshot / ExportImageCache / ExportJob は実行時のみ。Panel / Cut / Timeline / Motion の項目は増やさない。音声トラックとタイムシートはまだ定義しない。
+
+M8 では Timeline placement に `id` を足し、同一 `panelId` の複数配置を許す。Repeat 設定は保存しない。Motion は panelId のまま。タイムシートはまだ定義しない。

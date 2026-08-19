@@ -16,6 +16,7 @@
 - **M5.4**: 実装済み
 - **M6**: 実装済み
 - **M7**: 実装済み
+- **M8**: 実装済み
 
 ## 目的
 
@@ -31,6 +32,7 @@
 - M5.4: 保存構造と再生ロジックを変えず、Timeline 編集 UI（および Rush メーター）の frame 表示を秒+コマと総フレームの併記にする
 - M6: Panel / Cut / Timeline の保存項目は変えず、独立した Motion Data で PAN / TU / TB をブラウザ Rush 上に再生する。MP4 は出さない
 - M7: M6 と同じ Frame Renderer の結果を、ブラウザ内で 16:9 / 24fps / 映像のみの H.264 MP4 として書き出す。音声は扱わない
+- M8: 同一 Panel を Cut 内で複数 placement できるようにし、所属順の Repeat 展開を編集コマンドとして Timeline へ書き込む。再生モードは増やさない
 
 責務の境界:
 
@@ -105,6 +107,8 @@ M7 の MP4 は実行時の書き出しである。Panel / Cut / Timeline / Motio
 - M7 は `FRAMES_PER_SECOND` を正とする。24 を再定義しない
 - M7 は WebCodecs で映像をエンコードし、Mediabunny で MP4 へ mux する。deprecated な `mp4-muxer` と ffmpeg.wasm は第一候補にしない
 - M7 では Panel / Cut / Timeline / Motion の保存フィールドを増やさない
+- M8 では Timeline placement に `id` を足す。Cut / Panel / Motion の保存フィールドは増やさない。同一 `panelId` の複数 placement を許す。一意性は `startFrame` とする
+- M8 の Repeat は placements を生成する編集コマンドである。Rush / MP4 に Repeat 状態を持たせない
 
 ## M0 で実装する機能（実装済み）
 
@@ -1874,7 +1878,271 @@ Panel / Cut / Timeline / Motion のフィールドは増やさない。MP4 Blob 
 - ffmpeg.wasm フォールバック
 - `mp4-muxer`
 
+## M8（実装済み）
+
+1 Panel = 1 placement をやめ、同じ絵を Cut 内で何度でも再使用できるようにする。加えて、所属 Panel 列を共通 hold で総尺まで展開する Repeat を、**placements を生成する編集コマンド**として足す。本節が正である。
+
+Rush の時計、Frame Renderer の crop 式、Motion の `{ cutId, panelId, from, to }`、MP4 のエンコード経路は変えない。Repeat を再生モードにしない。
+
+### 1. 現行との衝突（調査結果）
+
+現行（M4〜M7）の正は次である。
+
+| 箇所 | 現行 |
+|---|---|
+| Timeline Data | `{ cutId, placements: [{ panelId, startFrame }] }`。`id` なし |
+| 一意性 | 同一 Timeline で `panelId` 高々 1、`startFrame` も重複なし（D20 / `validatePlacement`） |
+| 完成 | 所属全員にちょうど 1 placement、かつ `0f` あり |
+| `validatePlacement` | `others.some(item => item.panelId === panelId)` で二重配置を拒否 |
+| `updatePlacement` / `removePlacement` | `panelId` で 1 件を特定 |
+| 横バー | `data-panel-id` / `findMarker(panelId)` |
+| 数値行 | `dataset.panelId`、`data-timeline-panel`、`timelineDrafts` が panelId キー |
+| 選択 | `selectedTimelinePanelId` |
+| 未配置 | `!placements.some(p => p.panelId === panelId)` の二値 |
+| Panel 削除 Undo | placement を `startFrame` 1 件だけ保持 |
+| `deriveRanges` | `startFrame` 順。戻りは `panelId` のみ（placement 識別なし） |
+| `resolveFrame` | `startFrame ≤ localFrame` の最後の placement。**panelId 一意は不要** |
+| `uniquePanelIds` | Set なので重複 panelId でも画像は 1 回 |
+| Motion | `cutId + panelId`。区間は `deriveRanges` |
+| `poseForResolvedFrame` | **同じ panelId の最初の range だけ**を取る。複数配置だと 2 回目以降の補間が壊れる |
+
+結論: Rush の「どの絵か」は `startFrame` 順だけで足りる。壊れるのは **編集対象の識別** と **Motion の区間選択** である。したがって placement に `id` を持たせる。
+
+### 2. 新 Timeline Data
+
+```json
+{
+  "cutId": "cut-001",
+  "placements": [
+    { "id": "pl-1", "panelId": "panel-a", "startFrame": 0 },
+    { "id": "pl-2", "panelId": "panel-b", "startFrame": 4 },
+    { "id": "pl-3", "panelId": "panel-a", "startFrame": 12 }
+  ]
+}
+```
+
+- `id`: セッション内で一意。`crypto.randomUUID()`。失敗時のみ `placement-` + 連番
+- `panelId`: その Cut の `panelIds` に含まれるもの
+- `startFrame`: 整数。`0 ≤ startFrame < durationFrames`
+- 扱い順は `startFrame` 昇順のまま
+- **同一 `startFrame` は禁止**（12f A と 12f B は不可）
+- **同一 `panelId` は許可**（0f A と 12f A は可）
+- Cut.panelIds に同じ id を複数入れない。所属は「使える素材」、placement は「いつ出すか」
+- Repeat 設定・回数・hold は保存しない
+
+`id` の生成は Store が行う。呼び出し側が未指定なら Store が付ける。
+
+### 3. Cut.panelIds
+
+第一候補どおり、Cut 所属は使用可能な Panel の集合（順序付き配列）とする。並べ替え UI は M8 でも置かない。Repeat の列は当面この順を使う。将来の任意列（A→B→C→B）は Repeat ダイアログの一時 UI に残し、Cut.panelIds へは書かない。
+
+### 4. 表示区間
+
+保存しない。`deriveRanges` が `startFrame` 順で導出する。
+
+- i の終了排他 = i+1 の `startFrame`。最後は `durationFrames`
+- 同じ Panel の複数出現はそれぞれ独立
+- 戻りに `id`（placement.id）を含める
+
+例: 0f A / 4f B / 8f A → A 0–3f、B 4–7f、A 8f–末尾。
+
+### 5. isComplete（変更する）
+
+所属全員ちょうど 1 placement（D20）は、複数配置および「素材として残す」使い方と衝突する。M8 の完成条件は次とする。
+
+1. placement が 1 件以上
+2. いずれかが `startFrame === 0`
+3. 各 `startFrame` が整数で範囲内
+4. `startFrame` の重複がない
+5. 各 `panelId` がその Cut の `panelIds` に含まれる
+6. 各 placement に `id` がある
+
+**入れないもの:**
+
+- 所属 Panel がすべて 1 回以上配置されていること
+- 所属と placement 件数が一致すること
+- 同一 `panelId` 禁止
+
+未使用の所属 Panel はヒント表示（「未使用: B, C」）に留め、Rush / MP4 の拒否理由にしない。Cut に所属 0 件は従来どおり未完成（配置できない）。
+
+Cut 新規作成時の均等配置（M5.4）は、所属全員を 1 回ずつ置く初期値として残す。それは完成を定義しない。短尺で均等できないときは従来どおり未配置のまま作る。
+
+### 6. Store API（案）
+
+`validatePlacement` は `panelId` 重複チェックを外す。除外キーは `exceptPanelId` ではなく `exceptPlacementId`。
+
+- `addPlacement(cutId, { panelId, startFrame }, cut)` → id を付けて追加。同一 startFrame は拒否。同一 panelId は許可
+- `updatePlacement(cutId, placementId, startFrame, cut)`
+- `removePlacement(cutId, placementId)`（その 1 件だけ）
+- `replacePlacements(cutId, placements, cut)`（Repeat 用。検証して全置換）
+- `removePanelFromAll(panelId)` は **その panelId の全 placement** を消す（現行と同じフィルタ、件数が増え得る）
+
+`evenPlacements` は各要素に id を付ける。
+
+### 7. Timeline Editor
+
+マーカー・数値行・選択・draft・ドラッグは **placementId** をキーにする。`panelId` だけで `querySelector` しない。
+
+表示は同じサムネイルを何度出してもよい。
+
+選択中 placement の `←/→`（1f）と `Shift+←/→`（5f）、ドラッグ確定は `updatePlacement(..., placementId, ...)`。
+
+配置の削除 UI を足す（選択中の 1 placement）。Cut 所属からは外さない。0f が無くなれば未完成。自動詰めしない（D24 維持）。
+
+### 8. 手動で同じ Panel を再配置
+
+「配置済み / 未配置」二値を正にしない。
+
+所属一覧は素材。各行に整数 `start` と **[追加]** を置き、既に何件あっても新しい placement を足せる。横バーへ所属 Panel を選んでクリック / ドラッグして追加する操作も、未配置専用にしない（選択中の所属 Panel に対する追加）。
+
+数値「更新」は placement 行側（既存の start 変更）とする。
+
+手動で 12f A の直後に 16f A を置いても、入力直後に collapse しない。
+
+### 9. Repeat UI
+
+Cut 詳細の Timeline 付近。最小:
+
+- 列: 現在の `panelIds` 順（表示のみ。M8 では編集しない）
+- holdFrames: 整数 frame。補助に秒+コマ（例: `4f = 0+04`）。入力の正は整数
+- **[Repeatで置き換え]**
+- 既存 placement が 1 件でもあれば確認する（「現在の Timeline を置き換えます。Undo で戻せます。」）
+
+回数入力、Panel ごとの hold、任意列エディタは M8 では置かない。任意列の余地は、実装時に `expandRepeat(sequence, holdFrames, durationFrames)` の第一引数を `panelIds` 以外にも渡せる関数形にしておくこと。
+
+### 10. Repeat 展開
+
+編集コマンド。生成物だけが正本。
+
+```
+t = 0
+i = 0
+sequence = cut.panelIds（空なら失敗）
+holdFrames は 1 以上の整数（失敗なら実行しない）
+while t < durationFrames:
+  placements += { id: 新規, panelId: sequence[i % length], startFrame: t }
+  t += holdFrames
+  i += 1
+連続同一 panelId を collapse（後者を削除）
+startFrame 検証のうえ Timeline を全置換
+```
+
+- 総尺を超える `startFrame` は作らない（`t < durationFrames`）
+- 割り切れなくてもよい。82f・A/B/C・4f なら最後は 80f C で C は 80–81f
+- holdFrames ≥ durationFrames なら 0f の 1 件だけ（その 1 Panel が全尺）
+- Repeat 回数は入力も保存もしない
+
+### 11. collapse
+
+**Repeat 生成直後だけ**自動。`startFrame` 順で直前と `panelId` が同じなら後者を捨てる。
+
+- A A B → A B（A が連続区間になる）
+- A B A は畳まない
+- 列が A のみなら全 collapse で 0f A の 1 件
+
+手動追加・ドラッグ・矢印では畳まない。Rush では同じ画像が続く。M9 タイムシートで連続同一 Panel を正規化できるよう、導出関数 `collapseConsecutive(placements)` を Timeline 保存の外に置ける形にする。M8 では Repeat 生成時だけ呼ぶ。
+
+### 12. Repeat 再実行
+
+**確認のうえ全置換（C + A）**とする。
+
+- 既存へ追記しない（周期がずれ、startFrame 衝突が起きやすい）
+- 空 Timeline なら確認なしで置換してよい
+- 正本は Repeat 設定ではなく置換後 placements
+- 誤操作は Undo 1 回で Repeat 前の placements 全体へ戻す
+
+### 13. Undo / Redo
+
+対象:
+
+- placement 追加（1 件）
+- placement 削除（1 件）
+- placement の `startFrame` 変更（数値・ドラッグ・矢印）
+- Repeat による全置換（1 Action）
+
+Repeat の Undo/Redo は前後の placements 配列全体（各 `id` / `panelId` / `startFrame`）を持つ。生成された数十件を履歴に積まない。
+
+Panel 削除 Undo は、消した **全 placement** を元の `id` と `startFrame` で戻す。現行の `startFrame` 1 件スナップでは不足する。
+
+Cut から Panel を外す操作が Undo 対象外のままなら（M5.3 は Cut 所属変更を対象外）、外すこと自体は従来どおり即時。M8 で所属変更を履歴に入れる必要はない。外した結果の placement 全削除は、その操作の一部として実行する。
+
+### 14. Panel 削除 / Cut から外す
+
+Panel A 削除: 全 Cut の `panelIds` から A、全 Timeline の A の **全** placement、A の Motion。残った配置を 0f へ詰めない。0f が A だけなら未完成。
+
+Cut から A を外す: その Cut の A の全 placement と、その Cut の A の Motion。他 Cut は触らない。詰めない。
+
+### 15. Motion
+
+保存は現行どおり `{ cutId, motions: [{ panelId, from, to }] }`。placement 単位にはしない。
+
+同じ panelId の全出現で同じ from/to を使う。各出現の **その表示区間** の先頭→末尾で `samplePose` する。
+
+そのため `poseForResolvedFrame` は「その panelId の最初の range」を使ってはいけない。`resolveFrame` が返す `placementId`、または `localFrame` を含む range で選ぶ。`samplePose` 自体は再利用できる。表示が 1 フレームの出現は現行どおり Motion 非適用。
+
+Timeline からその panelId の placement が 0 件になっても Motion は残してよい（現行）。再配置後に同じ画角を使える。
+
+### 16. Rush / MP4
+
+Rush Player に Repeat を足さない。時計は変えない。
+
+`buildSnapshot` は最終 placements をコピーする（`id` を含めてよい）。
+
+`resolveFrame` の選び方（startFrame 昇順で `≤ localFrame` の最後）は複数 A でも正しい。戻りに `placementId` を足す。Play 仕様（dirty、終端、rAF）は変えない。
+
+MP4 は Repeat を知らない。既存 `resolveFrame` → pose → `renderFrame`。exporter に MP4 専用分岐を足さない。`uniquePanelIds` は重複を 1 枚にまとめるので Export 画像も足りる。
+
+### 17. 秒+コマ
+
+M5.4 のまま。正規値は整数 frame。holdFrames の補助だけ秒+コマを出してよい。秒+コマ入力は hold にも start にも必須としない。
+
+### 18. M9 への受け渡し
+
+正本は最終 placements。M9 は `deriveRanges` →（任意で）`collapseConsecutive` → タイムシート行。M8 はタイムシート UI もファイルも作らない。
+
+### 19. migration
+
+永続保存も JSON ロードもない。リロードで消える。ファイル互換の migration は **不要**。
+
+実装切替後、メモリ上の旧 `{ panelId, startFrame }` が残ることはない（ページを開き直すか、Store が id なしを読んだら生成する防御を入れてよい）。テストや `evenPlacements` の組み立て漏れだけが対象。
+
+### 20. 完成条件
+
+- 同一 Panel を複数 startFrame に置ける
+- 同一 startFrame の二重配置は拒否
+- 表示区間が出現ごとに独立
+- Repeat が総尺まで placements を生成し、Store へ置換する
+- Repeat 後にドラッグ / 1f / 5f / 追加 / 削除ができる
+- Repeat 再実行は確認のうえ置換。Undo 1 回で元 Timeline
+- 手動の連続同一 Panel は残る
+- 所属未使用 Panel があっても、0f と妥当な placements があれば Rush / MP4 できる
+- Panel 削除でその Panel の全 placement が消える。自動詰めしない
+- 同じ panelId の各区間で同じ Motion が区間ローカルに補間される
+- Rush 時計と MP4 経路に Repeat を足していない
+- Cut / Panel / Motion の保存フィールドを増やしていない
+- Repeat 設定を永続化していない
+
+### 21. M8 では実装しないもの
+
+- タイムシート、更新コンテ PDF
+- 音声、transition、dissolve
+- Repeat 回数入力、Panel ごと hold
+- placement 単位 Motion
+- Repeat 設定を再生時の正本にすること
+- 任意列（A→B→C→B）の本編集 UI
+- 連続同一 Panel の手動入力直後の自動削除
+- 0f 欠落時の自動詰め
+
+### 22. 想定リスク
+
+- Timeline 行が Repeat で多くなり、UI が長い
+- hold=1 の Repeat で 1 フレーム区間が量産され、それらの Motion が静止扱いになる
+- pose の range 選択を直し忘れると 2 回目の A で Motion がずれる
+- マーカー重なり（近い startFrame）の操作しづらさ
+- 確認なし Repeat は破壊的（確認と Undo で緩和）
+
 ## UI 要件
+
 
 
 
@@ -1977,9 +2245,17 @@ Panel / Cut / Timeline / Motion のフィールドは増やさない。MP4 Blob 
 - 書き出し中の「キャンセル」
 - 準備中 / エンコード中（frame 進捗と %）/ 完了 / エラーの表示
 
+### M8（実装済み）
+
+- 同一 Panel の複数 Timeline マーカー（placementId で識別）
+- 所属 Panel からの再配置（[追加]）
+- 配置 1 件の削除
+- Repeat（共通 holdFrames、所属順、確認のうえ置換）
+- Repeat の Undo / Redo（Timeline 全体）
+
 ## 非対象
 
-次は M7 でも実装しない。UI もデータも作らない。MP4 書き出し（1280×720 / 24fps / 映像のみ）は M7 で実装済みである。
+次は M8 でも実装しない。UI もデータも作らない。
 
 - ファイルをウィンドウへドロップして開くこと
 - ズーム、回転、フィット表示の切替
@@ -1996,6 +2272,11 @@ Panel / Cut / Timeline / Motion のフィールドは増やさない。MP4 Blob 
 - Panel 表示区間の両端リサイズ
 - 同じ `startFrame` を自動で空き frame へずらすこと
 - `0f` が無くなったときに他 Panel を自動で `0f` へ詰めること
+- Repeat 回数入力
+- Panel ごとの個別 holdFrames
+- placement 単位 Motion
+- Repeat 設定の永続化 / 再生モード
+- 手動配置直後の連続同一 Panel 自動削除
 - Panel の `startFrame` / `endFrame`（Panel 本体および Cut 本体への保存）
 - `endFrame` の保存
 - 表示区間の永続化
@@ -2066,3 +2347,5 @@ M5.4 の秒+コマは表示専用である。保存構造は増やさない。�
 M6 の Motion は独立データである。ブラウザ Rush までとする。
 
 M7 の MP4 は Frame Renderer を共用する書き出しである。保存構造は増やさない。音声とタイムシートはまだ定義しない。
+
+M8 の複数 placement と Repeat は Timeline 編集である。Rush / MP4 は最終 placements だけを見る。タイムシートは M9 で定義する。

@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>conte-rush</title>
-    <link rel="stylesheet" href="css/style.css?v=m7-1" />
+    <link rel="stylesheet" href="css/style.css?v=m8-1" />
   </head>
   <body data-state="idle">
     <header class="toolbar">
@@ -197,6 +197,28 @@
                   </div>
                   <div id="timeline-meta" class="timeline-meta"></div>
                   <p id="timeline-status" class="timeline-status"></p>
+                  <div class="timeline-repeat">
+                    <p class="timeline-repeat-label">Repeat</p>
+                    <p id="timeline-repeat-sequence" class="timeline-repeat-sequence"></p>
+                    <div class="timeline-repeat-row">
+                      <label>
+                        hold
+                        <input
+                          id="timeline-repeat-hold"
+                          type="text"
+                          inputmode="numeric"
+                          autocomplete="off"
+                          value="4"
+                        />
+                        f
+                      </label>
+                      <span id="timeline-repeat-hint" class="timeline-row-hint">= 0+04</span>
+                      <button id="timeline-repeat-apply" type="button">
+                        Repeatで置き換え
+                      </button>
+                    </div>
+                  </div>
+                  <p id="timeline-unused" class="timeline-unused"></p>
                   <ul id="timeline-rows" class="timeline-rows"></ul>
                   <p class="timeline-confirm-label">確認</p>
                   <ul id="timeline-ranges" class="timeline-ranges"></ul>
@@ -275,6 +297,6 @@
         status.textContent = `起動エラー: ${event.message}`;
       });
     </script>
-    <script type="module" src="js/app.js?v=m7-1"></script>
+    <script type="module" src="js/app.js?v=m8-1"></script>
   </body>
 </html>

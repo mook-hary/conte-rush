@@ -649,6 +649,38 @@
 - 採用しなかった案: `frameRate: 24` でスナップさせる。固定 41667µs を毎回足す
 - 結果: エンコードは `QUALITY_HIGH`、keyframe 間隔 2 秒、0 フレームのみ `{ keyFrame: true }`。mux は `Mp4OutputFormat({ fastStart: 'in-memory' })` + `BufferTarget`。`add()` の Promise で backpressure を待つ。キャンセルは `Output.cancel()`
 
+## D82. Timeline placement に id を持たせ、一意性は startFrame とする
+
+- 状態: 採用（M8・実装）
+- 判断: `{ id, panelId, startFrame }`。同一 `panelId` を許す。同一 `startFrame` は禁止
+- 理由: 横バー・数値行・Undo が panelId で 1 件を特定している。Rush の resolveFrame は startFrame 順だけで足りるが、編集と Motion 区間選択には placement 識別が要る
+- 採用しなかった案: `{ panelId, startFrame }` のまま index で識別する。Cut.panelIds に同じ Panel を複数入れる
+- 結果: Cut.panelIds は素材。placement が増えても所属配列は一意のまま
+
+## D83. Timeline 完成から「所属全員ちょうど 1 件」を外す
+
+- 状態: 採用（M8・実装）
+- 判断: 完成は 1 件以上、0f あり、範囲内、startFrame 重複なし、所属内 panelId。未使用の所属 Panel はヒントのみ
+- 理由: Repeat と手動再利用では、所属を素材として残しつつ Timeline では使わないことがある。D20 のちょうど 1 件は複数配置と両立しない
+- 採用しなかった案: 所属全員が最低 1 回必須。既存へ Repeat 結果を追記する
+- 結果: describeIncomplete の「未配置のPanelがあります」は完成拒否に使わない
+
+## D84. Repeat は確認のうえ全置換する編集コマンドである
+
+- 状態: 採用（M8・実装）
+- 判断: 列は当面 `panelIds` 順。共通 holdFrames。総尺まで展開し、連続同一 panelId だけ生成時 collapse。既存 Timeline は確認してから置換。Undo は前後の placements 全体を 1 Action で持つ
+- 理由: Repeat 設定を正本にすると手修正と二重管理になる。追記は startFrame 衝突が起きやすい
+- 採用しなかった案: Repeat を再生モードとして保存する。回数入力。手動入力直後の collapse
+- 結果: Rush / MP4 は最終 placements だけを見る
+
+## D85. 同じ panelId の Motion は各出現の表示区間で sample する
+
+- 状態: 採用（M8・実装）
+- 判断: Motion 保存は `cutId + panelId` のまま。`poseForResolvedFrame` は最初の range ではなく、現在 localFrame が入っている range / placementId を使う
+- 理由: 0f A と 12f A で同じ PAN を、それぞれの区間の from→to として再生するため。samplePose は再利用できる
+- 採用しなかった案: placement 単位 Motion。resolveFrame の時計変更
+- 結果: M8 では Motion Data のフィールドを増やさない
+
 ## 未決
 
 - ライセンス

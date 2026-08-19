@@ -5,13 +5,13 @@ import {
   createExportImageCache,
   motionMaxScaleForPanel,
 } from "./export-image-cache.js";
-import { poseForResolvedFrame } from "./frame-pose.js";
+import { poseForResolvedFrame } from "./frame-pose.js?v=m8-1";
 import { renderFrame } from "./frame-renderer.js";
 import {
   cutNumberForPanel,
   resolveFrame,
   uniquePanelIds,
-} from "./rush-player.js";
+} from "./rush-player.js?v=m8-1";
 
 export const MEDIABUNNY_VERSION = "1.51.0";
 export const KEYFRAME_INTERVAL_SECONDS = 2;

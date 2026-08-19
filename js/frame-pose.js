@@ -1,4 +1,4 @@
-import { deriveRanges } from "./timeline-store.js";
+import { deriveRanges } from "./timeline-store.js?v=m8-1";
 import { canSampleMotion, samplePose } from "./motion-store.js";
 
 function rangesFromSegment(segment) {
@@ -19,6 +19,36 @@ function findMotion(motions, cutId, panelId) {
   return set?.motions.find((item) => item.panelId === panelId) ?? null;
 }
 
+function rangeContainsFrame(range, localFrame) {
+  return (
+    Number.isInteger(localFrame) &&
+    localFrame >= range.startFrame &&
+    localFrame <= range.lastFrame
+  );
+}
+
+function rangeForView(ranges, view) {
+  if (view.placementId) {
+    const byId = ranges.find((item) => item.id === view.placementId);
+    if (byId) {
+      return byId;
+    }
+  }
+  const containing = ranges.find((item) =>
+    rangeContainsFrame(item, view.localFrame),
+  );
+  if (containing) {
+    return containing;
+  }
+  return (
+    ranges.find(
+      (item) =>
+        item.panelId === view.panelId &&
+        rangeContainsFrame(item, view.localFrame),
+    ) ?? null
+  );
+}
+
 export function poseForResolvedFrame(snapshot, motions, view) {
   if (!view) {
     return null;
@@ -31,9 +61,7 @@ export function poseForResolvedFrame(snapshot, motions, view) {
   if (!segment) {
     return null;
   }
-  const range = rangesFromSegment(segment).find(
-    (item) => item.panelId === view.panelId,
-  );
+  const range = rangeForView(rangesFromSegment(segment), view);
   if (!range || !canSampleMotion(range.startFrame, range.lastFrame)) {
     return null;
   }

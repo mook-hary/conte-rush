@@ -1,8 +1,13 @@
 import { FRAMES_PER_SECOND } from "./duration.js";
-import { isTimelineComplete } from "./timeline-store.js";
+import { isTimelineComplete } from "./timeline-store.js?v=m8-1";
+
+function hasPlacementId(id) {
+  return typeof id === "string" && id.length > 0;
+}
 
 function clonePlacement(placement) {
   return {
+    id: placement.id,
     panelId: placement.panelId,
     startFrame: placement.startFrame,
   };
@@ -22,10 +27,11 @@ export function describeIncomplete(cut, timeline) {
   if (!timeline) {
     return "Timelineが未作成です。";
   }
-
-  const placedIds = new Set(timeline.placements.map((item) => item.panelId));
-  if (cut.panelIds.some((panelId) => !placedIds.has(panelId))) {
-    return "未配置のPanelがあります。";
+  if (timeline.placements.length < 1) {
+    return "配置がありません。";
+  }
+  if (timeline.placements.some((item) => !hasPlacementId(item.id))) {
+    return "placementにidがありません。";
   }
   if (timeline.placements.some((item) => !cut.panelIds.includes(item.panelId))) {
     return "所属外のPanelが配置されています。";
@@ -154,6 +160,7 @@ export function resolveFrame(snapshot, globalFrame) {
     cutId: segment.cutId,
     cutNumber: segment.cutNumber,
     durationFrames: segment.durationFrames,
+    placementId: chosen.id ?? null,
     panelId: chosen.panelId,
   };
 }

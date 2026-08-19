@@ -7,19 +7,23 @@ import {
   formatFrameTime,
   formatFrameTimeLabel,
   parseDurationInput,
-} from "./duration.js?v=m6-2";
+} from "./duration.js?v=m8-1";
 import { canvasToObjectUrl, cropPanelImage, PREVIEW_SCALE } from "./panel-image.js";
 import { createHistory } from "./history.js?v=m6-2";
 import { createPdfViewer } from "./pdf-viewer.js";
 import { createPanelOverlay } from "./panel-overlay.js?v=m6-2";
-import { createTimelineEditor } from "./timeline-editor.js?v=m6-2";
+import { createTimelineEditor } from "./timeline-editor.js?v=m8-1";
 import { createPanelStore } from "./panel-store.js?v=m6-2";
 import { createThumbnailCache } from "./thumbnail-cache.js";
 import {
   createTimelineStore,
   evenPlacements,
   parseStartFrameInput,
-} from "./timeline-store.js?v=m6-2";
+} from "./timeline-store.js?v=m8-1";
+import {
+  expandRepeat,
+  parseHoldFrames,
+} from "./timeline-repeat.js?v=m8-1";
 import {
   createRushImageCache,
   RUSH_SCALE,
@@ -32,12 +36,12 @@ import {
   motionLabel,
   posesEqual,
 } from "./motion-store.js";
-import { poseForResolvedFrame } from "./frame-pose.js";
+import { poseForResolvedFrame } from "./frame-pose.js?v=m8-1";
 import {
   ExportError,
   exportFileName,
   exportMp4,
-} from "./mp4-exporter.js";
+} from "./mp4-exporter.js?v=m8-1";
 import {
   buildSnapshot,
   createRushPlayer,
@@ -45,7 +49,7 @@ import {
   describeIncomplete,
   inspectCuts,
   uniquePanelIds,
-} from "./rush-player.js";
+} from "./rush-player.js?v=m8-1";
 
 const pdfInput = document.querySelector("#pdf-input");
 const fileNameEl = document.querySelector("#file-name");
@@ -80,6 +84,15 @@ const cutTimelineStripEl = document.querySelector("#cut-timeline-strip");
 const motionEditorEl = document.querySelector("#motion-editor");
 const timelineMetaEl = document.querySelector("#timeline-meta");
 const timelineStatusEl = document.querySelector("#timeline-status");
+const timelineRepeatSequenceEl = document.querySelector(
+  "#timeline-repeat-sequence",
+);
+const timelineRepeatHoldInput = document.querySelector("#timeline-repeat-hold");
+const timelineRepeatHintEl = document.querySelector("#timeline-repeat-hint");
+const timelineRepeatApplyButton = document.querySelector(
+  "#timeline-repeat-apply",
+);
+const timelineUnusedEl = document.querySelector("#timeline-unused");
 const timelineRowsEl = document.querySelector("#timeline-rows");
 const timelineRangesEl = document.querySelector("#timeline-ranges");
 const timelineMessageEl = document.querySelector("#timeline-message");
@@ -113,7 +126,9 @@ let selectedCutId = null;
 let timelineCutId = null;
 let panelPlaceMode = "frame";
 let selectedTimelinePanelId = null;
+let selectedPlacementId = null;
 let unplacedPlaceDrag = null;
+let repeatHoldRaw = "4";
 let rushPrepToken = 0;
 let rushPreparing = false;
 let rushError = "";
@@ -128,6 +143,7 @@ const inFlightThumbnailIds = new Set();
 const failedThumbnailIds = new Set();
 const selectedPanelIds = new Set();
 const timelineDrafts = new Map();
+const timelineAddDrafts = new Map();
 
 const viewer = createPdfViewer(canvas, viewerEl);
 const panelStore = createPanelStore();
@@ -145,23 +161,23 @@ const overlay = createPanelOverlay(overlayEl, {
   },
 });
 const cutTimelineEditor = createTimelineEditor(cutTimelineStripEl, {
-  onPreview({ panelId, candidateFrame }) {
-    previewStartFrameInput(panelId, candidateFrame);
+  onPreview({ placementId, candidateFrame }) {
+    previewStartFrameInput(placementId, candidateFrame);
   },
   onCommit(payload) {
     commitCutTimelineDrag(payload);
   },
-  onCancel({ panelId, savedFrame }) {
-    restoreStartFrameInput(panelId, savedFrame);
+  onCancel({ placementId, savedFrame }) {
+    restoreStartFrameInput(placementId, savedFrame);
   },
-  onSelect({ panelId }) {
-    selectTimelinePanel(panelId);
+  onSelect({ placementId, panelId }) {
+    selectTimelinePlacement({ placementId, panelId });
   },
   onTrackPreview({ frame }) {
-    previewUnplacedPlace(frame);
+    previewMemberPlace(frame);
   },
   onTrackPlace({ frame }) {
-    placeSelectedUnplacedAtFrame(frame);
+    placeSelectedMemberAtFrame(frame);
   },
 });
 const motionEditor = createMotionEditor(motionEditorEl, {
@@ -254,6 +270,18 @@ function clonePanelData(panel) {
   };
 }
 
+function clonePlacementData(placement) {
+  return {
+    id: placement.id,
+    panelId: placement.panelId,
+    startFrame: placement.startFrame,
+  };
+}
+
+function clonePlacementList(placements) {
+  return (placements ?? []).map(clonePlacementData);
+}
+
 function capturePanelSnapshot(panelId) {
   const panel = panelStore.getById(panelId);
   if (!panel) {
@@ -262,13 +290,15 @@ function capturePanelSnapshot(panelId) {
   const cutId = cutStore.findCutIdByPanelId(panelId);
   const cut = cutId ? cutStore.getById(cutId) : null;
   const timeline = cutId ? timelineStore.getByCutId(cutId) : null;
-  const placement = timeline?.placements.find((item) => item.panelId === panelId);
+  const placements = (timeline?.placements ?? []).filter(
+    (item) => item.panelId === panelId,
+  );
   return {
     panel: clonePanelData(panel),
     index: panelStore.indexOf(panelId),
     cutId: cut?.id ?? null,
     panelIdsIndex: cut ? cut.panelIds.indexOf(panelId) : -1,
-    startFrame: placement ? placement.startFrame : null,
+    placements: clonePlacementList(placements),
     motion: cutId ? motionStore.get(cutId, panelId) : null,
   };
 }
@@ -293,26 +323,22 @@ function restorePanelSnapshot(snapshot) {
   if (snapshot.cutId) {
     insertPanelIdAt(snapshot.cutId, snapshot.panel.id, snapshot.panelIdsIndex);
     const cut = cutStore.getById(snapshot.cutId);
-    if (cut && snapshot.startFrame !== null && snapshot.startFrame !== undefined) {
-      timelineDrafts.set(snapshot.panel.id, String(snapshot.startFrame));
-      const timeline = timelineStore.getByCutId(cut.id);
-      const exists = timeline?.placements.some(
-        (item) => item.panelId === snapshot.panel.id,
-      );
-      const result = exists
-        ? timelineStore.updatePlacement(
-            cut.id,
-            snapshot.panel.id,
-            snapshot.startFrame,
-            cut,
-          )
-        : timelineStore.addPlacement(
-            cut.id,
-            { panelId: snapshot.panel.id, startFrame: snapshot.startFrame },
-            cut,
-          );
-      if (!result.ok) {
-        setTimelineMessage(result.message);
+    if (cut && Array.isArray(snapshot.placements)) {
+      for (const placement of snapshot.placements) {
+        timelineAddDrafts.set(snapshot.panel.id, String(placement.startFrame));
+        timelineDrafts.set(placement.id, String(placement.startFrame));
+        const result = timelineStore.addPlacement(
+          cut.id,
+          {
+            id: placement.id,
+            panelId: placement.panelId,
+            startFrame: placement.startFrame,
+          },
+          cut,
+        );
+        if (!result.ok) {
+          setTimelineMessage(result.message);
+        }
       }
     }
     if (snapshot.motion) {
@@ -333,12 +359,21 @@ function removePanelInternal(panelId) {
   if (selectedTimelinePanelId === panelId) {
     selectedTimelinePanelId = null;
   }
+  if (selectedPlacementId) {
+    const remainingCuts = cutStore.listAll();
+    const stillThere = remainingCuts.some((cut) =>
+      timelineStore.getPlacementById(cut.id, selectedPlacementId),
+    );
+    if (!stillThere) {
+      selectedPlacementId = null;
+    }
+  }
   panelStore.remove(panelId);
   cancelQueuedThumbnail(panelId);
   thumbnailCache.delete(panelId);
   rushImageCache.delete(panelId);
   failedThumbnailIds.delete(panelId);
-  timelineDrafts.delete(panelId);
+  timelineAddDrafts.delete(panelId);
   markRushDirty();
   syncPanels();
 }
@@ -942,9 +977,9 @@ function frameHintText(raw) {
   return `= ${formatFrameTime(parsed.startFrame)}`;
 }
 
-function syncStartFrameDisplay(panelId, raw) {
+function syncStartFrameDisplay(placementId, raw) {
   const input = timelineRowsEl.querySelector(
-    `[data-timeline-panel="${CSS.escape(panelId)}"]`,
+    `[data-timeline-placement="${CSS.escape(placementId)}"]`,
   );
   if (!input) {
     return;
@@ -965,100 +1000,166 @@ function syncStartFrameDisplay(panelId, raw) {
   }
 }
 
-function previewStartFrameInput(panelId, frame) {
-  syncStartFrameDisplay(panelId, String(frame));
+function previewStartFrameInput(placementId, frame) {
+  syncStartFrameDisplay(placementId, String(frame));
 }
 
-function restoreStartFrameInput(panelId, frame) {
-  timelineDrafts.set(panelId, String(frame));
-  previewStartFrameInput(panelId, frame);
+function restoreStartFrameInput(placementId, frame) {
+  timelineDrafts.set(placementId, String(frame));
+  previewStartFrameInput(placementId, frame);
 }
 
-function isUnplacedInSelectedCut(panelId) {
+function isMemberInSelectedCut(panelId) {
   const cut = selectedCutId ? cutStore.getById(selectedCutId) : null;
-  if (!cut || !panelId || !cut.panelIds.includes(panelId)) {
-    return false;
-  }
-  const timeline = timelineStore.getByCutId(cut.id);
-  return !(timeline?.placements.some((item) => item.panelId === panelId));
+  return Boolean(cut && panelId && cut.panelIds.includes(panelId));
 }
 
-function syncTimelineSelectionUi() {
-  timelineRowsEl.querySelectorAll(".timeline-row").forEach((row) => {
-    row.classList.toggle("is-selected", row.dataset.panelId === selectedTimelinePanelId);
-  });
-  cutTimelineStripEl.querySelectorAll(".cut-timeline-marker").forEach((element) => {
-    element.classList.toggle(
-      "is-selected",
-      element.dataset.panelId === selectedTimelinePanelId,
-    );
-  });
-  cutTimelineStripEl.querySelector("[data-role='track']")?.classList.toggle(
-    "is-placing",
-    isUnplacedInSelectedCut(selectedTimelinePanelId),
-  );
-}
-
-function selectTimelinePanel(panelId) {
-  selectedTimelinePanelId = panelId ?? null;
-  syncTimelineSelectionUi();
-  renderMotionEditor();
-}
-
-function previewUnplacedPlace(frame) {
-  if (!isUnplacedInSelectedCut(selectedTimelinePanelId)) {
-    return;
-  }
-  cutTimelineEditor.setPlacePreview(frame);
-}
-
-function placeUnplacedPanelAtFrame(panelId, frame) {
-  const cut = selectedCutId ? cutStore.getById(selectedCutId) : null;
-  if (!cut || !cut.panelIds.includes(panelId)) {
-    return;
-  }
-  if (!isUnplacedInSelectedCut(panelId)) {
-    return;
-  }
-  const result = timelineStore.addPlacement(
-    cut.id,
-    { panelId, startFrame: frame },
-    cut,
-  );
-  if (!result.ok) {
-    setTimelineMessage(result.message);
-    return;
-  }
-  timelineDrafts.set(panelId, String(frame));
-  selectedTimelinePanelId = panelId;
+function refreshTimelineUi() {
   markRushDirty();
-  setTimelineMessage("");
   renderTimelineViews();
   renderCutList();
   renderCutDetail();
 }
 
-function placeSelectedUnplacedAtFrame(frame) {
+function syncTimelineSelectionUi() {
+  timelineRowsEl.querySelectorAll(".timeline-row").forEach((row) => {
+    if (row.dataset.role === "placement") {
+      row.classList.toggle(
+        "is-selected",
+        Boolean(selectedPlacementId) &&
+          row.dataset.placementId === selectedPlacementId,
+      );
+      return;
+    }
+    row.classList.toggle(
+      "is-selected",
+      Boolean(selectedTimelinePanelId) &&
+        row.dataset.panelId === selectedTimelinePanelId,
+    );
+  });
+  cutTimelineStripEl.querySelectorAll(".cut-timeline-marker").forEach((element) => {
+    element.classList.toggle(
+      "is-selected",
+      Boolean(selectedPlacementId) &&
+        element.dataset.placementId === selectedPlacementId,
+    );
+  });
+  cutTimelineStripEl.querySelector("[data-role='track']")?.classList.toggle(
+    "is-placing",
+    isMemberInSelectedCut(selectedTimelinePanelId),
+  );
+}
+
+function selectTimelinePanel(panelId) {
+  selectedTimelinePanelId = panelId ?? null;
+  selectedPlacementId = null;
+  syncTimelineSelectionUi();
+  renderMotionEditor();
+}
+
+function selectTimelinePlacement({ placementId = null, panelId = null } = {}) {
+  selectedPlacementId = placementId ?? null;
+  if (panelId) {
+    selectedTimelinePanelId = panelId;
+  } else if (placementId && selectedCutId) {
+    const found = timelineStore.getPlacementById(selectedCutId, placementId);
+    selectedTimelinePanelId = found?.panelId ?? selectedTimelinePanelId;
+  }
+  syncTimelineSelectionUi();
+  renderMotionEditor();
+}
+
+function previewMemberPlace(frame) {
+  if (!isMemberInSelectedCut(selectedTimelinePanelId)) {
+    return;
+  }
+  cutTimelineEditor.setPlacePreview(frame);
+}
+
+function addPlacementWithHistory(cut, { id, panelId, startFrame }, label = "placementを追加") {
+  const result = timelineStore.addPlacement(
+    cut.id,
+    { id, panelId, startFrame },
+    cut,
+  );
+  if (!result.ok) {
+    setTimelineMessage(result.message);
+    return null;
+  }
+  const placement = result.placement;
+  timelineDrafts.set(placement.id, String(placement.startFrame));
+  timelineAddDrafts.set(panelId, String(placement.startFrame));
+  selectTimelinePlacement({
+    placementId: placement.id,
+    panelId: placement.panelId,
+  });
+  setTimelineMessage("");
+  refreshTimelineUi();
+  history.push({
+    label,
+    undo() {
+      timelineStore.removePlacement(cut.id, placement.id);
+      timelineDrafts.delete(placement.id);
+      if (selectedPlacementId === placement.id) {
+        selectedPlacementId = null;
+      }
+      refreshTimelineUi();
+    },
+    redo() {
+      const restored = timelineStore.addPlacement(
+        cut.id,
+        {
+          id: placement.id,
+          panelId: placement.panelId,
+          startFrame: placement.startFrame,
+        },
+        cut,
+      );
+      if (!restored.ok) {
+        setTimelineMessage(restored.message);
+        return;
+      }
+      timelineDrafts.set(placement.id, String(placement.startFrame));
+      selectTimelinePlacement({
+        placementId: placement.id,
+        panelId: placement.panelId,
+      });
+      setTimelineMessage("");
+      refreshTimelineUi();
+    },
+  });
+  updateHistoryButtons();
+  return placement;
+}
+
+function placeMemberPanelAtFrame(panelId, frame) {
+  const cut = selectedCutId ? cutStore.getById(selectedCutId) : null;
+  if (!cut || !cut.panelIds.includes(panelId)) {
+    return;
+  }
+  addPlacementWithHistory(cut, { panelId, startFrame: frame });
+}
+
+function placeSelectedMemberAtFrame(frame) {
   if (!Number.isInteger(frame)) {
     return;
   }
-  if (!isUnplacedInSelectedCut(selectedTimelinePanelId)) {
+  if (!isMemberInSelectedCut(selectedTimelinePanelId)) {
     if (!selectedTimelinePanelId) {
-      setTimelineMessage("未配置のPanelを選んでから Timeline 上へ置いてください。");
+      setTimelineMessage("所属Panelを選んでから Timeline 上へ置いてください。");
     }
     return;
   }
-  placeUnplacedPanelAtFrame(selectedTimelinePanelId, frame);
+  placeMemberPanelAtFrame(selectedTimelinePanelId, frame);
 }
 
 function nudgeSelectedTimelinePanel(delta) {
   const cut = selectedCutId ? cutStore.getById(selectedCutId) : null;
-  if (!cut || !selectedTimelinePanelId) {
+  if (!cut || !selectedPlacementId) {
     return false;
   }
-  const panelId = selectedTimelinePanelId;
-  const timeline = timelineStore.getByCutId(cut.id);
-  const placement = timeline?.placements.find((item) => item.panelId === panelId);
+  const placementId = selectedPlacementId;
+  const placement = timelineStore.getPlacementById(cut.id, placementId);
   if (!placement) {
     return false;
   }
@@ -1067,94 +1168,85 @@ function nudgeSelectedTimelinePanel(delta) {
   if (nextFrame === fromFrame) {
     return true;
   }
-  const result = timelineStore.updatePlacement(cut.id, panelId, nextFrame, cut);
+  const result = timelineStore.updatePlacement(cut.id, placementId, nextFrame, cut);
   if (!result.ok) {
     setTimelineMessage(result.message);
-    restoreStartFrameInput(panelId, fromFrame);
+    restoreStartFrameInput(placementId, fromFrame);
     renderTimelineViews();
     return true;
   }
-  timelineDrafts.set(panelId, String(nextFrame));
-  markRushDirty();
+  timelineDrafts.set(placementId, String(nextFrame));
   setTimelineMessage("");
-  renderTimelineViews();
-  renderCutList();
-  renderCutDetail();
+  refreshTimelineUi();
   history.push({
     label: "Timelineを変更",
     undo() {
-      revertTimelineStartFrame(cut.id, panelId, fromFrame);
+      revertTimelineStartFrame(cut.id, placementId, fromFrame);
     },
     redo() {
-      revertTimelineStartFrame(cut.id, panelId, nextFrame);
+      revertTimelineStartFrame(cut.id, placementId, nextFrame);
     },
   });
   updateHistoryButtons();
   return true;
 }
 
-function commitCutTimelineDrag({ cutId, panelId, candidateFrame, savedFrame }) {
+function commitCutTimelineDrag({ cutId, placementId, candidateFrame, savedFrame }) {
   if (candidateFrame === savedFrame) {
-    restoreStartFrameInput(panelId, savedFrame);
+    restoreStartFrameInput(placementId, savedFrame);
     renderTimelineViews();
     return;
   }
   const cut = cutStore.getById(cutId);
   if (!cut) {
     setTimelineMessage("Cutが見つかりません。");
-    restoreStartFrameInput(panelId, savedFrame);
+    restoreStartFrameInput(placementId, savedFrame);
     renderTimelineViews();
     return;
   }
   const result = timelineStore.updatePlacement(
     cutId,
-    panelId,
+    placementId,
     candidateFrame,
     cut,
   );
   if (!result.ok) {
     setTimelineMessage(result.message);
-    restoreStartFrameInput(panelId, savedFrame);
+    restoreStartFrameInput(placementId, savedFrame);
     renderTimelineViews();
     return;
   }
-  timelineDrafts.set(panelId, String(candidateFrame));
-  markRushDirty();
+  timelineDrafts.set(placementId, String(candidateFrame));
   setTimelineMessage("");
-  renderTimelineViews();
-  renderCutList();
-  renderCutDetail();
+  refreshTimelineUi();
   history.push({
     label: "Timelineを変更",
     undo() {
-      revertTimelineStartFrame(cutId, panelId, savedFrame);
+      revertTimelineStartFrame(cutId, placementId, savedFrame);
     },
     redo() {
-      revertTimelineStartFrame(cutId, panelId, candidateFrame);
+      revertTimelineStartFrame(cutId, placementId, candidateFrame);
     },
   });
   updateHistoryButtons();
 }
 
-function revertTimelineStartFrame(cutId, panelId, startFrame) {
+function revertTimelineStartFrame(cutId, placementId, startFrame) {
   const cut = cutStore.getById(cutId);
   if (!cut) {
     setTimelineMessage("Cutが見つかりません。");
     return;
   }
-  const result = timelineStore.updatePlacement(cutId, panelId, startFrame, cut);
+  const result = timelineStore.updatePlacement(cutId, placementId, startFrame, cut);
   if (!result.ok) {
     setTimelineMessage(result.message);
-    restoreStartFrameInput(panelId, startFrame);
+    restoreStartFrameInput(placementId, startFrame);
     renderTimelineViews();
     return;
   }
-  timelineDrafts.set(panelId, String(startFrame));
-  markRushDirty();
+  timelineDrafts.set(placementId, String(startFrame));
   setTimelineMessage("");
-  renderTimelineViews();
-  renderCutList();
-  renderCutDetail();
+  refreshTimelineUi();
 }
 
 function renderCutTimelineStrip() {
@@ -1179,6 +1271,7 @@ function renderCutTimelineStrip() {
     markers: (timeline?.placements ?? []).map((placement) => {
       const cached = thumbnailCache.get(placement.panelId);
       return {
+        placementId: placement.id,
         panelId: placement.panelId,
         startFrame: placement.startFrame,
         label: panelLabel(placement.panelId),
@@ -1188,24 +1281,40 @@ function renderCutTimelineStrip() {
     ranges: ranges.map((range) => ({
       text: `${panelLabel(range.panelId)} ${formatRange(range)}`,
     })),
-    selectedPanelId: selectedTimelinePanelId,
-    placing: isUnplacedInSelectedCut(selectedTimelinePanelId),
+    selectedPlacementId,
+    placing: isMemberInSelectedCut(selectedTimelinePanelId),
   });
 }
 
-function motionRangeFor(cut, panelId) {
+function motionRangesFor(cut, panelId) {
   if (!cut || !panelId) {
-    return null;
+    return [];
+  }
+  return timelineStore.rangesFor(cut).filter((item) => item.panelId === panelId);
+}
+
+function motionRangeFor(cut, panelId) {
+  const ranges = motionRangesFor(cut, panelId);
+  if (selectedPlacementId) {
+    const selected = ranges.find((item) => item.id === selectedPlacementId);
+    if (selected) {
+      return selected;
+    }
   }
   return (
-    timelineStore.rangesFor(cut).find((item) => item.panelId === panelId) ?? null
+    ranges.find((item) => canSampleMotion(item.startFrame, item.lastFrame)) ??
+    ranges[0] ??
+    null
   );
 }
 
 function commitMotionChange({ cutId, panelId, from, to }) {
   const cut = cutStore.getById(cutId);
-  const range = motionRangeFor(cut, panelId);
-  if (range && !canSampleMotion(range.startFrame, range.lastFrame)) {
+  const ranges = motionRangesFor(cut, panelId);
+  if (
+    ranges.length > 0 &&
+    ranges.every((item) => !canSampleMotion(item.startFrame, item.lastFrame))
+  ) {
     return;
   }
   const previous = motionStore.get(cutId, panelId);
@@ -1276,19 +1385,20 @@ function renderMotionEditor() {
     selectedTimelinePanelId && cut.panelIds.includes(selectedTimelinePanelId)
       ? selectedTimelinePanelId
       : (cut.panelIds[0] ?? null);
+  const ranges = motionRangesFor(cut, panelId);
   const range = motionRangeFor(cut, panelId);
   const motion = panelId ? motionStore.get(cut.id, panelId) : null;
-  const oneFrame = Boolean(
-    range && !canSampleMotion(range.startFrame, range.lastFrame),
-  );
+  const allOneFrame =
+    ranges.length > 0 &&
+    ranges.every((item) => !canSampleMotion(item.startFrame, item.lastFrame));
   const rows = cut.panelIds.map((id) => {
     const item = motionStore.get(cut.id, id);
-    const itemRange = motionRangeFor(cut, id);
-    const itemOneFrame = Boolean(
-      itemRange && !canSampleMotion(itemRange.startFrame, itemRange.lastFrame),
-    );
+    const itemRanges = motionRangesFor(cut, id);
+    const itemAllOneFrame =
+      itemRanges.length > 0 &&
+      itemRanges.every((entry) => !canSampleMotion(entry.startFrame, entry.lastFrame));
     let kind = "Motionなし";
-    if (item && itemOneFrame) {
+    if (item && itemAllOneFrame) {
       kind = "適用不能";
     } else if (item) {
       kind = motionLabel(item.from, item.to);
@@ -1307,14 +1417,14 @@ function renderMotionEditor() {
   if (!panelId) {
     statusText = "所属Panelがありません";
     editable = false;
-  } else if (oneFrame) {
+  } else if (allOneFrame) {
     blocked = true;
     editable = false;
     statusText = motion
       ? "表示区間が1フレームのためMotionを適用できません"
       : "表示区間が1フレームのためMotionを設定できません";
   } else if (!range) {
-    hintText = "未配置です。配置後の表示区間全体にMotionがかかります";
+    hintText = "未使用です。配置後の各表示区間にMotionがかかります";
   } else if (motion) {
     hintText = `${motionLabel(motion.from, motion.to)} / ${formatRange(range)}`;
   } else {
@@ -1364,7 +1474,9 @@ function maybeInitSinglePanelTimeline(cut) {
 function closeTimelineEditor() {
   timelineCutId = null;
   selectedTimelinePanelId = null;
+  selectedPlacementId = null;
   timelineDrafts.clear();
+  timelineAddDrafts.clear();
   setTimelineMessage("");
   motionEditor.render(null);
 }
@@ -1377,7 +1489,9 @@ function selectCut(cutId, { fillForm = true } = {}) {
   }
   selectedCutId = cut.id;
   timelineCutId = cut.id;
+  selectedPlacementId = null;
   timelineDrafts.clear();
+  timelineAddDrafts.clear();
   maybeInitSinglePanelTimeline(cut);
   setTimelineMessage("");
   if (fillForm) {
@@ -1423,6 +1537,12 @@ function renderTimelineEditor() {
   if (!timelineCutId) {
     timelineMetaEl.replaceChildren();
     timelineStatusEl.textContent = "";
+    if (timelineRepeatSequenceEl) {
+      timelineRepeatSequenceEl.textContent = "";
+    }
+    if (timelineUnusedEl) {
+      timelineUnusedEl.textContent = "";
+    }
     timelineRowsEl.replaceChildren();
     timelineRangesEl.replaceChildren();
     return;
@@ -1436,9 +1556,12 @@ function renderTimelineEditor() {
 
   const timeline = timelineStore.getByCutId(cut.id);
   const ranges = timelineStore.rangesFor(cut);
-  const rangeByPanelId = new Map(ranges.map((range) => [range.panelId, range]));
-  const placedIds = new Set((timeline?.placements ?? []).map((item) => item.panelId));
+  const rangeById = new Map(ranges.map((range) => [range.id, range]));
   const complete = timelineStore.isComplete(cut);
+  const placedIds = new Set((timeline?.placements ?? []).map((item) => item.panelId));
+  const unused = cut.panelIds
+    .filter((panelId) => !placedIds.has(panelId))
+    .map((panelId) => panelLabel(panelId));
 
   timelineMetaEl.replaceChildren();
 
@@ -1452,18 +1575,41 @@ function renderTimelineEditor() {
   timelineStatusEl.classList.toggle("is-complete", complete);
   timelineStatusEl.classList.toggle("is-incomplete", !complete);
 
+  if (timelineRepeatSequenceEl) {
+    timelineRepeatSequenceEl.textContent =
+      cut.panelIds.length > 0
+        ? `列: ${cut.panelIds.map((panelId) => panelLabel(panelId)).join(" ")}`
+        : "列: （所属Panelなし）";
+  }
+  if (timelineRepeatHoldInput) {
+    timelineRepeatHoldInput.value = repeatHoldRaw;
+  }
+  syncRepeatHoldHint();
+  if (timelineUnusedEl) {
+    timelineUnusedEl.textContent =
+      unused.length > 0 ? `未使用: ${unused.join(", ")}` : "";
+  }
+
   timelineRowsEl.replaceChildren();
-  const placedPanelIds = cut.panelIds.filter((panelId) => placedIds.has(panelId));
-  const unplacedPanelIds = cut.panelIds.filter((panelId) => !placedIds.has(panelId));
-  appendTimelineSection("配置済み", cut, placedPanelIds, {
-    placedIds,
-    rangeByPanelId,
-    timeline,
+  appendTimelineSection("所属 Panel（素材）", () => {
+    for (const panelId of cut.panelIds) {
+      timelineRowsEl.append(createMaterialRowEl(cut, panelId));
+    }
   });
-  appendTimelineSection("未配置", cut, unplacedPanelIds, {
-    placedIds,
-    rangeByPanelId,
-    timeline,
+  appendTimelineSection("配置", () => {
+    const placements = timeline?.placements ?? [];
+    if (placements.length === 0) {
+      const empty = document.createElement("li");
+      empty.className = "timeline-range-item";
+      empty.textContent = "配置はまだありません";
+      timelineRowsEl.append(empty);
+      return;
+    }
+    for (const placement of placements) {
+      timelineRowsEl.append(
+        createPlacementRowEl(cut, placement, rangeById.get(placement.id) ?? null),
+      );
+    }
   });
 
   timelineRangesEl.replaceChildren();
@@ -1482,29 +1628,18 @@ function renderTimelineEditor() {
   }
 }
 
-function appendTimelineSection(title, cut, panelIds, { placedIds, rangeByPanelId, timeline }) {
-  if (panelIds.length === 0) {
-    return;
-  }
+function appendTimelineSection(title, fill) {
   const heading = document.createElement("li");
   heading.className = "timeline-section-label";
   heading.textContent = title;
   timelineRowsEl.append(heading);
-  for (const panelId of panelIds) {
-    timelineRowsEl.append(
-      createTimelineRowEl(cut, panelId, {
-        placed: placedIds.has(panelId),
-        range: rangeByPanelId.get(panelId) ?? null,
-        startFrame: timeline?.placements.find((item) => item.panelId === panelId)
-          ?.startFrame,
-      }),
-    );
-  }
+  fill();
 }
 
-function createTimelineRowEl(cut, panelId, { placed, range, startFrame }) {
+function createMaterialRowEl(cut, panelId) {
   const item = document.createElement("li");
   item.className = "timeline-row";
+  item.dataset.role = "material";
   item.dataset.panelId = panelId;
   if (selectedTimelinePanelId === panelId) {
     item.classList.add("is-selected");
@@ -1512,14 +1647,78 @@ function createTimelineRowEl(cut, panelId, { placed, range, startFrame }) {
 
   const label = document.createElement("p");
   label.className = "timeline-row-label";
-  label.textContent = placed ? panelLabel(panelId) : `${panelLabel(panelId)}（未配置）`;
+  label.textContent = panelLabel(panelId);
   label.title = panelId;
+
+  const edit = document.createElement("div");
+  edit.className = "timeline-row-edit";
+
+  const field = document.createElement("label");
+  field.textContent = "start";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.inputMode = "numeric";
+  input.autocomplete = "off";
+  input.dataset.timelineAddPanel = panelId;
+  input.value = timelineAddDrafts.has(panelId)
+    ? timelineAddDrafts.get(panelId)
+    : "";
+  const unit = document.createElement("span");
+  unit.textContent = "f";
+  const hint = document.createElement("span");
+  hint.className = "timeline-row-hint";
+  hint.dataset.role = "frame-hint";
+  hint.textContent = frameHintText(input.value);
+  input.addEventListener("input", () => {
+    timelineAddDrafts.set(panelId, input.value);
+    hint.textContent = frameHintText(input.value);
+  });
+  field.append(input, unit, hint);
+
+  const addButton = document.createElement("button");
+  addButton.type = "button";
+  addButton.textContent = "追加";
+  addButton.addEventListener("click", () => {
+    addTimelinePlacement(cut.id, panelId, input.value);
+  });
+  edit.append(field, addButton);
+
+  item.append(createTimelineThumbEl(panelId), label, edit);
+  item.addEventListener("click", (event) => {
+    if (event.target.closest("button, input")) {
+      return;
+    }
+    selectTimelinePanel(panelId);
+  });
+  item.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || event.target.closest("button, input, label")) {
+      return;
+    }
+    event.preventDefault();
+    startMemberPlaceDrag(panelId, event);
+  });
+  return item;
+}
+
+function createPlacementRowEl(cut, placement, range) {
+  const item = document.createElement("li");
+  item.className = "timeline-row";
+  item.dataset.role = "placement";
+  item.dataset.placementId = placement.id;
+  item.dataset.panelId = placement.panelId;
+  if (selectedPlacementId === placement.id) {
+    item.classList.add("is-selected");
+  }
+
+  const label = document.createElement("p");
+  label.className = "timeline-row-label";
+  label.textContent = panelLabel(placement.panelId);
+  label.title = placement.panelId;
 
   const startLabel = document.createElement("p");
   startLabel.className = "timeline-row-start";
   startLabel.dataset.role = "start-label";
-  startLabel.textContent =
-    placed && Number.isInteger(startFrame) ? formatFrameTimeLabel(startFrame) : "";
+  startLabel.textContent = formatFrameTimeLabel(placement.startFrame);
 
   const rangeEl = document.createElement("p");
   rangeEl.className = "timeline-row-range";
@@ -1534,11 +1733,10 @@ function createTimelineRowEl(cut, panelId, { placed, range, startFrame }) {
   input.type = "text";
   input.inputMode = "numeric";
   input.autocomplete = "off";
-  input.dataset.timelinePanel = panelId;
-  const fallback = placed && startFrame !== undefined ? String(startFrame) : "";
-  input.value = timelineDrafts.has(panelId)
-    ? timelineDrafts.get(panelId)
-    : fallback;
+  input.dataset.timelinePlacement = placement.id;
+  input.value = timelineDrafts.has(placement.id)
+    ? timelineDrafts.get(placement.id)
+    : String(placement.startFrame);
   const unit = document.createElement("span");
   unit.textContent = "f";
   const hint = document.createElement("span");
@@ -1546,65 +1744,51 @@ function createTimelineRowEl(cut, panelId, { placed, range, startFrame }) {
   hint.dataset.role = "frame-hint";
   hint.textContent = frameHintText(input.value);
   input.addEventListener("input", () => {
-    timelineDrafts.set(panelId, input.value);
+    timelineDrafts.set(placement.id, input.value);
     hint.textContent = frameHintText(input.value);
-    if (placed) {
-      const parsed = parseStartFrameInput(input.value);
-      startLabel.textContent =
-        parsed.ok && parsed.startFrame >= 0
-          ? formatFrameTimeLabel(parsed.startFrame)
-          : "";
-    }
+    const parsed = parseStartFrameInput(input.value);
+    startLabel.textContent =
+      parsed.ok && parsed.startFrame >= 0
+        ? formatFrameTimeLabel(parsed.startFrame)
+        : "";
   });
   field.append(input, unit, hint);
 
   const saveButton = document.createElement("button");
   saveButton.type = "button";
-  saveButton.textContent = placed ? "更新" : "配置";
+  saveButton.textContent = "更新";
   saveButton.addEventListener("click", () => {
-    saveTimelinePlacement(cut.id, panelId, input.value, placed);
+    updateTimelinePlacement(cut.id, placement.id, input.value);
   });
-  edit.append(field, saveButton);
 
-  if (placed) {
-    const deleteButton = document.createElement("button");
-    deleteButton.type = "button";
-    deleteButton.textContent = "削除";
-    deleteButton.addEventListener("click", () => {
-      timelineStore.removePlacement(cut.id, panelId);
-      timelineDrafts.delete(panelId);
-      if (selectedTimelinePanelId === panelId) {
-        selectedTimelinePanelId = panelId;
-      }
-      markRushDirty();
-      setTimelineMessage("");
-      renderTimelineViews();
-      renderCutList();
-      renderCutDetail();
-    });
-    edit.append(deleteButton);
-  }
+  const deleteButton = document.createElement("button");
+  deleteButton.type = "button";
+  deleteButton.textContent = "削除";
+  deleteButton.addEventListener("click", () => {
+    deleteTimelinePlacement(cut.id, placement.id);
+  });
+  edit.append(field, saveButton, deleteButton);
 
-  item.append(createTimelineThumbEl(panelId), label, startLabel, rangeEl, edit);
+  item.append(
+    createTimelineThumbEl(placement.panelId),
+    label,
+    startLabel,
+    rangeEl,
+    edit,
+  );
   item.addEventListener("click", (event) => {
     if (event.target.closest("button, input")) {
       return;
     }
-    selectTimelinePanel(panelId);
-  });
-  if (!placed) {
-    item.addEventListener("pointerdown", (event) => {
-      if (event.button !== 0 || event.target.closest("button, input, label")) {
-        return;
-      }
-      event.preventDefault();
-      startUnplacedPlaceDrag(panelId, event);
+    selectTimelinePlacement({
+      placementId: placement.id,
+      panelId: placement.panelId,
     });
-  }
+  });
   return item;
 }
 
-function startUnplacedPlaceDrag(panelId, event) {
+function startMemberPlaceDrag(panelId, event) {
   selectTimelinePanel(panelId);
   unplacedPlaceDrag = {
     panelId,
@@ -1641,11 +1825,11 @@ function handleUnplacedPlaceDragUp(event) {
   const frame = cutTimelineEditor.frameAtClientX(event.clientX);
   cutTimelineEditor.setPlacePreview(null);
   if (event.type !== "pointercancel" && onTrack) {
-    placeUnplacedPanelAtFrame(panelId, frame);
+    placeMemberPanelAtFrame(panelId, frame);
   }
 }
 
-function saveTimelinePlacement(cutId, panelId, rawValue, placed) {
+function addTimelinePlacement(cutId, panelId, rawValue) {
   const cut = cutStore.getById(cutId);
   if (!cut) {
     setTimelineMessage("Cutが見つかりません。");
@@ -1656,40 +1840,202 @@ function saveTimelinePlacement(cutId, panelId, rawValue, placed) {
     setTimelineMessage(parsed.message);
     return;
   }
-  const previous = placed
-    ? timelineStore
-        .getByCutId(cutId)
-        ?.placements.find((item) => item.panelId === panelId)?.startFrame
-    : null;
-  const result = placed
-    ? timelineStore.updatePlacement(cutId, panelId, parsed.startFrame, cut)
-    : timelineStore.addPlacement(cutId, {
-        panelId,
-        startFrame: parsed.startFrame,
-      }, cut);
+  addPlacementWithHistory(cut, {
+    panelId,
+    startFrame: parsed.startFrame,
+  });
+}
+
+function updateTimelinePlacement(cutId, placementId, rawValue) {
+  const cut = cutStore.getById(cutId);
+  if (!cut) {
+    setTimelineMessage("Cutが見つかりません。");
+    return;
+  }
+  const parsed = parseStartFrameInput(rawValue);
+  if (!parsed.ok) {
+    setTimelineMessage(parsed.message);
+    return;
+  }
+  const previous = timelineStore.getPlacementById(cutId, placementId);
+  if (!previous) {
+    setTimelineMessage("この配置がありません。");
+    return;
+  }
+  if (previous.startFrame === parsed.startFrame) {
+    timelineDrafts.set(placementId, String(parsed.startFrame));
+    setTimelineMessage("");
+    return;
+  }
+  const result = timelineStore.updatePlacement(
+    cutId,
+    placementId,
+    parsed.startFrame,
+    cut,
+  );
   if (!result.ok) {
     setTimelineMessage(result.message);
     return;
   }
-  timelineDrafts.set(panelId, String(parsed.startFrame));
-  selectedTimelinePanelId = panelId;
-  markRushDirty();
+  timelineDrafts.set(placementId, String(parsed.startFrame));
+  selectTimelinePlacement({
+    placementId,
+    panelId: previous.panelId,
+  });
   setTimelineMessage("");
-  renderTimelineViews();
-  renderCutList();
-  renderCutDetail();
-  if (placed && Number.isInteger(previous) && previous !== parsed.startFrame) {
-    history.push({
-      label: "Timelineを変更",
-      undo() {
-        revertTimelineStartFrame(cutId, panelId, previous);
-      },
-      redo() {
-        revertTimelineStartFrame(cutId, panelId, parsed.startFrame);
-      },
-    });
-    updateHistoryButtons();
+  refreshTimelineUi();
+  history.push({
+    label: "Timelineを変更",
+    undo() {
+      revertTimelineStartFrame(cutId, placementId, previous.startFrame);
+    },
+    redo() {
+      revertTimelineStartFrame(cutId, placementId, parsed.startFrame);
+    },
+  });
+  updateHistoryButtons();
+}
+
+function deleteTimelinePlacement(cutId, placementId) {
+  const cut = cutStore.getById(cutId);
+  if (!cut) {
+    setTimelineMessage("Cutが見つかりません。");
+    return;
   }
+  const previous = timelineStore.getPlacementById(cutId, placementId);
+  if (!previous) {
+    return;
+  }
+  const result = timelineStore.removePlacement(cutId, placementId);
+  if (!result.ok) {
+    setTimelineMessage(result.message);
+    return;
+  }
+  timelineDrafts.delete(placementId);
+  if (selectedPlacementId === placementId) {
+    selectedPlacementId = null;
+  }
+  setTimelineMessage("");
+  refreshTimelineUi();
+  history.push({
+    label: "placementを削除",
+    undo() {
+      const restored = timelineStore.addPlacement(
+        cutId,
+        {
+          id: previous.id,
+          panelId: previous.panelId,
+          startFrame: previous.startFrame,
+        },
+        cut,
+      );
+      if (!restored.ok) {
+        setTimelineMessage(restored.message);
+        return;
+      }
+      timelineDrafts.set(previous.id, String(previous.startFrame));
+      selectTimelinePlacement({
+        placementId: previous.id,
+        panelId: previous.panelId,
+      });
+      setTimelineMessage("");
+      refreshTimelineUi();
+    },
+    redo() {
+      timelineStore.removePlacement(cutId, previous.id);
+      timelineDrafts.delete(previous.id);
+      if (selectedPlacementId === previous.id) {
+        selectedPlacementId = null;
+      }
+      refreshTimelineUi();
+    },
+  });
+  updateHistoryButtons();
+}
+
+function holdHintText(raw) {
+  const parsed = parseHoldFrames(raw);
+  if (!parsed.ok) {
+    return "";
+  }
+  return `= ${formatFrameTime(parsed.holdFrames)}`;
+}
+
+function syncRepeatHoldHint() {
+  if (!timelineRepeatHintEl) {
+    return;
+  }
+  timelineRepeatHintEl.textContent = holdHintText(repeatHoldRaw);
+}
+
+function applyRepeat() {
+  const cut = selectedCutId ? cutStore.getById(selectedCutId) : null;
+  if (!cut) {
+    setTimelineMessage("Cutが見つかりません。");
+    return;
+  }
+  const parsed = parseHoldFrames(repeatHoldRaw);
+  if (!parsed.ok) {
+    setTimelineMessage(parsed.message);
+    return;
+  }
+  const expanded = expandRepeat(
+    cut.panelIds,
+    parsed.holdFrames,
+    cut.durationFrames,
+  );
+  if (!expanded.ok) {
+    setTimelineMessage(expanded.message);
+    return;
+  }
+  const before = clonePlacementList(
+    timelineStore.getByCutId(cut.id)?.placements ?? [],
+  );
+  if (before.length > 0) {
+    const confirmed = window.confirm(
+      "現在の Timeline を置き換えます。Undo で戻せます。",
+    );
+    if (!confirmed) {
+      return;
+    }
+  }
+  const result = timelineStore.replacePlacements(cut.id, expanded.placements, cut);
+  if (!result.ok) {
+    setTimelineMessage(result.message);
+    return;
+  }
+  const after = clonePlacementList(result.timeline.placements);
+  timelineDrafts.clear();
+  selectedPlacementId = after[0]?.id ?? null;
+  if (after[0]) {
+    selectedTimelinePanelId = after[0].panelId;
+  }
+  setTimelineMessage("");
+  refreshTimelineUi();
+  history.push({
+    label: "Repeat",
+    undo() {
+      const restored = timelineStore.restorePlacements(cut.id, before, cut);
+      if (!restored.ok) {
+        setTimelineMessage(restored.message);
+        return;
+      }
+      timelineDrafts.clear();
+      selectedPlacementId = before[0]?.id ?? null;
+      refreshTimelineUi();
+    },
+    redo() {
+      const restored = timelineStore.restorePlacements(cut.id, after, cut);
+      if (!restored.ok) {
+        setTimelineMessage(restored.message);
+        return;
+      }
+      timelineDrafts.clear();
+      selectedPlacementId = after[0]?.id ?? null;
+      refreshTimelineUi();
+    },
+  });
+  updateHistoryButtons();
 }
 
 function resetCutForm() {
@@ -1819,8 +2165,17 @@ function createCutMemberEl(cutId, panelId) {
   removeButton.textContent = "外す";
   removeButton.addEventListener("click", () => {
     cutStore.removePanel(cutId, panelId);
-    timelineStore.removePlacement(cutId, panelId);
+    timelineStore.removePlacementsByPanelId(cutId, panelId);
     motionStore.remove(cutId, panelId);
+    if (selectedTimelinePanelId === panelId) {
+      selectedTimelinePanelId = null;
+    }
+    if (
+      selectedPlacementId &&
+      !timelineStore.getPlacementById(cutId, selectedPlacementId)
+    ) {
+      selectedPlacementId = null;
+    }
     markRushDirty();
     setCutMessage("");
     renderCutList();
@@ -2196,7 +2551,9 @@ function clearSessionData() {
   motionStore.clear();
   selectedPanelIds.clear();
   selectedTimelinePanelId = null;
+  selectedPlacementId = null;
   timelineDrafts.clear();
+  timelineAddDrafts.clear();
   selectedCutId = null;
   timelineCutId = null;
   resetCutForm();
@@ -2416,6 +2773,13 @@ cutAddSelectedButton.addEventListener("click", () => {
 });
 cutDeleteButton.addEventListener("click", () => {
   deleteSelectedCut();
+});
+timelineRepeatHoldInput?.addEventListener("input", () => {
+  repeatHoldRaw = timelineRepeatHoldInput.value;
+  syncRepeatHoldHint();
+});
+timelineRepeatApplyButton?.addEventListener("click", () => {
+  applyRepeat();
 });
 placeModeFrameButton.addEventListener("click", () => {
   setPanelPlaceMode("frame");

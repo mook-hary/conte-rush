@@ -1,4 +1,4 @@
-import { formatFrameTime, formatFrameTimeLabel } from "./duration.js?v=m6-2";
+import { formatFrameTime, formatFrameTimeLabel } from "./duration.js?v=m8-1";
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -100,15 +100,17 @@ export function createTimelineEditor(rootEl, options) {
     fillMarkerTime(element, startFrame);
   }
 
-  function findMarker(panelId) {
-    return trackEl.querySelector(`[data-panel-id="${CSS.escape(panelId)}"]`);
+  function findMarker(placementId) {
+    return trackEl.querySelector(
+      `[data-placement-id="${CSS.escape(placementId)}"]`,
+    );
   }
 
   function restoreSavedMarker() {
     if (!drag || !view) {
       return;
     }
-    const marker = findMarker(drag.panelId);
+    const marker = findMarker(drag.placementId);
     if (marker) {
       updateMarkerEl(marker, drag.savedFrame);
     }
@@ -138,12 +140,12 @@ export function createTimelineEditor(rootEl, options) {
     if (!drag) {
       return false;
     }
-    const { panelId, savedFrame, moved } = drag;
+    const { placementId, panelId, savedFrame, moved } = drag;
     restoreSavedMarker();
     drag.element.classList.remove("is-dragging");
     endDragSession();
     if (moved) {
-      options.onCancel?.({ panelId, savedFrame });
+      options.onCancel?.({ placementId, panelId, savedFrame });
     }
     return true;
   }
@@ -170,11 +172,11 @@ export function createTimelineEditor(rootEl, options) {
   }
 
   function applySelectedClass() {
-    const selectedId = view?.selectedPanelId ?? null;
+    const selectedId = view?.selectedPlacementId ?? null;
     trackEl.querySelectorAll(".cut-timeline-marker").forEach((element) => {
       element.classList.toggle(
         "is-selected",
-        Boolean(selectedId) && element.dataset.panelId === selectedId,
+        Boolean(selectedId) && element.dataset.placementId === selectedId,
       );
     });
   }
@@ -183,6 +185,7 @@ export function createTimelineEditor(rootEl, options) {
     const element = document.createElement("button");
     element.type = "button";
     element.className = "cut-timeline-marker";
+    element.dataset.placementId = marker.placementId;
     element.dataset.panelId = marker.panelId;
     element.style.left = markerLeft(marker.startFrame, view.durationFrames);
 
@@ -226,6 +229,7 @@ export function createTimelineEditor(rootEl, options) {
       }
       trackGesture = null;
       drag = {
+        placementId: marker.placementId,
         panelId: marker.panelId,
         savedFrame: marker.startFrame,
         pointerId: event.pointerId,
@@ -235,7 +239,10 @@ export function createTimelineEditor(rootEl, options) {
         moved: false,
       };
       capturePointer(element, event.pointerId);
-      options.onSelect?.({ panelId: marker.panelId });
+      options.onSelect?.({
+        placementId: marker.placementId,
+        panelId: marker.panelId,
+      });
     });
 
     element.addEventListener("pointermove", (event) => {
@@ -251,6 +258,7 @@ export function createTimelineEditor(rootEl, options) {
       const candidateFrame = clientXToFrame(event.clientX);
       updateMarkerEl(element, candidateFrame);
       options.onPreview?.({
+        placementId: drag.placementId,
         panelId: drag.panelId,
         candidateFrame,
       });
@@ -260,7 +268,7 @@ export function createTimelineEditor(rootEl, options) {
       if (!drag || event.pointerId !== drag.pointerId || drag.element !== element || !view) {
         return;
       }
-      const { panelId, savedFrame, moved } = drag;
+      const { placementId, panelId, savedFrame, moved } = drag;
       element.classList.remove("is-dragging");
       endDragSession();
       if (!moved) {
@@ -269,6 +277,7 @@ export function createTimelineEditor(rootEl, options) {
       const candidateFrame = clientXToFrame(event.clientX);
       options.onCommit?.({
         cutId: view.cutId,
+        placementId,
         panelId,
         candidateFrame,
         savedFrame,

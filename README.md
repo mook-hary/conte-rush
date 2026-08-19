@@ -26,7 +26,9 @@
 
 **実装済み（M7）** は、同じ Frame Renderer からブラウザ内で 1280×720 / 24fps / 映像のみの H.264 MP4 を書き出すことです。
 
-## 現状できること（M0〜M7・実装済み）
+**実装済み（M8）** は、同一 Panel の複数 Timeline 配置と、所属順 Repeat による placements 生成です。
+
+## 現状できること（M0〜M8・実装済み）
 
 - ユーザーの端末上にある PDF を選んで開く
 - 1ページ目をブラウザに描画する
@@ -49,10 +51,12 @@
 - Cut 一覧の高密度 1 行表示と、別ペインでの詳細編集
 - CUT番号と尺の個別クリア
 - 新規 Cut と既存 Cut 編集を別フォームで区別する
-- 横 Timeline で配置済み Panel の `startFrame` をドラッグ編集する
-- 未配置 Panel を選んで横 Timeline 上へクリック / ドラッグし、整数 frame へ初回配置する
+- 横 Timeline で各 placement の `startFrame` をドラッグ編集する
+- 所属 Panel（素材）を選んで横 Timeline 上へクリック / ドラッグし、同じ Panel でも新しい placement を追加する
 - 選択中マーカーを `← / →`（1f）または `Shift + ← / →`（5f）で微調整する
 - Timeline の開始・区間・マーカーを秒+コマと総フレームで併記する
+- Repeat（共通 holdFrames、所属順）で Timeline を全置換する。既存があれば確認する
+- 同一 Panel の複数マーカーを個別に選択・移動・削除する
 - Rush の Local（Cut内）と Global（全体）を秒+コマと frame で確認する
 - 画面高さ不足時はページを縦スクロールする。Cut 一覧は一覧内スクロールのまま
 - PDF 上の常設選択フレームから「画像取得」する
@@ -96,7 +100,7 @@ M7 では Mediabunny 1.51.0 も CDN（jsDelivr）から取得します。PDF と
 - PDF.js 4.10.38（CDN）
 - MP4 書き出し: WebCodecs が使えるブラウザ。Mediabunny 1.51.0（CDN）
 
-## 使い方（M0〜M7）
+## 使い方（M0〜M8）
 
 1. このフォルダを HTTP で配信する。例:
 
@@ -110,11 +114,12 @@ M7 では Mediabunny 1.51.0 も CDN（jsDelivr）から取得します。PDF と
 5. 常設の選択フレームを動かして「画像取得」する。別サイズは「ドラッグ」
 6. 右側の一覧で切り出し画像を確認し、誤登録を削除する
 7. Panel を選び、CUT 番号と尺（例: `3+12`）を入れて Cut を作成する
-8. Cut の「Timeline」で数値配置するか、未配置 Panel を選んで横バーへ置く。配置後はドラッグと矢印キーで調整する。開始位置は `1+18（42f）` のように秒+コマと frame で確認する
-9. 配置完了後、「Play」で Rush を再生する
-10. Cut 詳細の Motion で PAN / TU / TB を付け、START / END 枠を調整する
-11. Undo / Redo で Panel 登録・削除と Timeline 変更、Motion 変更を戻す
-12. Timeline 完成後、「MP4を書き出す」で 1280×720 の映像のみ MP4 を保存する
+8. Cut の「Timeline」で所属 Panel から start を指定して追加する。同じ Panel を何度でも置ける。配置後はドラッグと矢印キーで個別に調整する。開始位置は `1+18（42f）` のように秒+コマと frame で確認する
+9. 必要なら hold を入れて「Repeatで置き換え」する。既存 Timeline があるときは確認が出る
+10. 配置完了後、「Play」で Rush を再生する
+11. Cut 詳細の Motion で PAN / TU / TB を付け、START / END 枠を調整する。同じ Panel の各出現区間で同じ Motion が再生される
+12. Undo / Redo で Panel 登録・削除、placement 追加 / 削除 / 移動、Repeat、Motion 変更を戻す
+13. Timeline 完成後、「MP4を書き出す」で 1280×720 の映像のみ MP4 を保存する
 
 `index.html` を `file://` で直接開くと、ES モジュールと PDF.js の worker が動かないことがあります。
 

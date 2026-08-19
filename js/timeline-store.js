@@ -1,5 +1,20 @@
+let placementSerial = 0;
+
+export function createPlacementId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  placementSerial += 1;
+  return `placement-${placementSerial}`;
+}
+
+function hasPlacementId(id) {
+  return typeof id === "string" && id.length > 0;
+}
+
 function clonePlacement(placement) {
   return {
+    id: hasPlacementId(placement?.id) ? placement.id : createPlacementId(),
     panelId: placement.panelId,
     startFrame: placement.startFrame,
   };
@@ -16,7 +31,7 @@ function comparePlacements(a, b) {
   if (a.startFrame !== b.startFrame) {
     return a.startFrame - b.startFrame;
   }
-  return 0;
+  return String(a.id ?? "").localeCompare(String(b.id ?? ""));
 }
 
 function sortPlacements(placements) {
@@ -50,6 +65,7 @@ export function evenPlacements(durationFrames, panelIds) {
   }
 
   const placements = panelIds.map((panelId, index) => ({
+    id: createPlacementId(),
     panelId,
     startFrame: Math.floor((durationFrames * index) / count),
   }));
@@ -73,7 +89,7 @@ export function validatePlacement({
   timeline,
   panelId,
   startFrame,
-  exceptPanelId = null,
+  exceptPlacementId = null,
 }) {
   if (!cut) {
     return { ok: false, message: "Cutが見つかりません。" };
@@ -95,19 +111,43 @@ export function validatePlacement({
   }
 
   const placements = timeline?.placements ?? [];
-  const others = placements.filter((item) => item.panelId !== exceptPanelId);
-  if (others.some((item) => item.panelId === panelId)) {
-    return { ok: false, message: "このPanelはすでに配置されています。" };
-  }
+  const others = placements.filter((item) => item.id !== exceptPlacementId);
   const duplicate = others.find((item) => item.startFrame === startFrame);
   if (duplicate) {
     return {
       ok: false,
-      message: `開始フレーム ${startFrame}f は他のPanelと同じです。`,
+      message: `開始フレーム ${startFrame}f は他の配置と同じです。`,
     };
   }
 
   return { ok: true };
+}
+
+export function validatePlacements(cut, placements) {
+  const normalized = [];
+  const seenIds = new Set();
+  for (const raw of placements ?? []) {
+    const item = clonePlacement(raw);
+    if (!hasPlacementId(item.id)) {
+      return { ok: false, message: "placementにidがありません。" };
+    }
+    if (seenIds.has(item.id)) {
+      return { ok: false, message: "placement idが重複しています。" };
+    }
+    seenIds.add(item.id);
+    const result = validatePlacement({
+      cut,
+      timeline: { placements: normalized },
+      panelId: item.panelId,
+      startFrame: item.startFrame,
+      exceptPlacementId: item.id,
+    });
+    if (!result.ok) {
+      return result;
+    }
+    normalized.push(item);
+  }
+  return { ok: true, placements: sortPlacements(normalized) };
 }
 
 export function deriveRanges(cut, timeline) {
@@ -121,6 +161,7 @@ export function deriveRanges(cut, timeline) {
         ? sorted[index + 1].startFrame
         : cut.durationFrames;
     return {
+      id: placement.id,
       panelId: placement.panelId,
       startFrame: placement.startFrame,
       endExclusive,
@@ -137,23 +178,20 @@ export function isTimelineComplete(cut, timeline) {
   const { panelIds, durationFrames } = cut;
   const { placements } = timeline;
 
-  if (placements.some((item) => !panelIds.includes(item.panelId))) {
-    return false;
-  }
-  if (placements.length !== panelIds.length) {
+  if (placements.length < 1) {
     return false;
   }
 
-  const placedIds = new Set();
   const startFrames = new Set();
   let hasZero = false;
 
   for (const placement of placements) {
-    if (placedIds.has(placement.panelId)) {
+    if (!hasPlacementId(placement.id)) {
       return false;
     }
-    placedIds.add(placement.panelId);
-
+    if (!panelIds.includes(placement.panelId)) {
+      return false;
+    }
     if (!Number.isInteger(placement.startFrame)) {
       return false;
     }
@@ -169,9 +207,6 @@ export function isTimelineComplete(cut, timeline) {
     }
   }
 
-  if (panelIds.some((panelId) => !placedIds.has(panelId))) {
-    return false;
-  }
   return hasZero;
 }
 
@@ -181,6 +216,16 @@ export function createTimelineStore() {
   function getByCutId(cutId) {
     const timeline = timelines.get(cutId);
     return timeline ? cloneTimeline(timeline) : null;
+  }
+
+  function ensureTimeline(cutId) {
+    const current = timelines.get(cutId);
+    if (current) {
+      return current;
+    }
+    const created = { cutId, placements: [] };
+    timelines.set(cutId, created);
+    return created;
   }
 
   function create(cutId, placements = []) {
@@ -203,39 +248,53 @@ export function createTimelineStore() {
     return timelines.delete(cutId);
   }
 
-  function addPlacement(cutId, { panelId, startFrame }, cut) {
-    const current = timelines.get(cutId) ?? { cutId, placements: [] };
+  function getPlacementById(cutId, placementId) {
+    const current = timelines.get(cutId);
+    const found = current?.placements.find((item) => item.id === placementId);
+    return found ? clonePlacement(found) : null;
+  }
+
+  function addPlacement(cutId, { id, panelId, startFrame }, cut) {
+    const current = ensureTimeline(cutId);
+    const placement = clonePlacement({ id, panelId, startFrame });
+    if (current.placements.some((item) => item.id === placement.id)) {
+      return { ok: false, message: "placement idが重複しています。" };
+    }
     const result = validatePlacement({
       cut,
       timeline: current,
-      panelId,
-      startFrame,
-      exceptPanelId: null,
+      panelId: placement.panelId,
+      startFrame: placement.startFrame,
+      exceptPlacementId: placement.id,
     });
     if (!result.ok) {
       return result;
     }
-    current.placements.push({ panelId, startFrame });
+    current.placements.push(placement);
     current.placements = sortPlacements(current.placements);
     timelines.set(cutId, current);
-    return { ok: true, timeline: cloneTimeline(current) };
+    return {
+      ok: true,
+      placement: clonePlacement(placement),
+      timeline: cloneTimeline(current),
+    };
   }
 
-  function updatePlacement(cutId, panelId, startFrame, cut) {
+  function updatePlacement(cutId, placementId, startFrame, cut) {
     const current = timelines.get(cutId);
     if (!current) {
       return { ok: false, message: "Timelineがありません。" };
     }
-    const existing = current.placements.find((item) => item.panelId === panelId);
+    const existing = current.placements.find((item) => item.id === placementId);
     if (!existing) {
-      return { ok: false, message: "このPanelの配置がありません。" };
+      return { ok: false, message: "この配置がありません。" };
     }
     const result = validatePlacement({
       cut,
       timeline: current,
-      panelId,
+      panelId: existing.panelId,
       startFrame,
-      exceptPanelId: panelId,
+      exceptPlacementId: placementId,
     });
     if (!result.ok) {
       return result;
@@ -245,17 +304,44 @@ export function createTimelineStore() {
     return { ok: true, timeline: cloneTimeline(current) };
   }
 
-  function removePlacement(cutId, panelId) {
+  function removePlacement(cutId, placementId) {
     const current = timelines.get(cutId);
     if (!current) {
-      return false;
+      return { ok: false, message: "Timelineがありません。" };
     }
-    const next = current.placements.filter((item) => item.panelId !== panelId);
-    if (next.length === current.placements.length) {
-      return false;
+    const index = current.placements.findIndex((item) => item.id === placementId);
+    if (index === -1) {
+      return { ok: false, message: "この配置がありません。" };
     }
-    current.placements = next;
-    return true;
+    const [removed] = current.placements.splice(index, 1);
+    return { ok: true, placement: clonePlacement(removed) };
+  }
+
+  function removePlacementsByPanelId(cutId, panelId) {
+    const current = timelines.get(cutId);
+    if (!current) {
+      return [];
+    }
+    const removed = current.placements.filter((item) => item.panelId === panelId);
+    current.placements = current.placements.filter(
+      (item) => item.panelId !== panelId,
+    );
+    return removed.map(clonePlacement);
+  }
+
+  function replacePlacements(cutId, placements, cut) {
+    const validated = validatePlacements(cut, placements);
+    if (!validated.ok) {
+      return validated;
+    }
+    const current = ensureTimeline(cutId);
+    current.placements = validated.placements;
+    timelines.set(cutId, current);
+    return { ok: true, timeline: cloneTimeline(current) };
+  }
+
+  function restorePlacements(cutId, placements, cut) {
+    return replacePlacements(cutId, placements, cut);
   }
 
   function removePanelFromAll(panelId) {
@@ -301,12 +387,16 @@ export function createTimelineStore() {
 
   return {
     getByCutId,
+    getPlacementById,
     create,
     clear,
     removeByCutId,
     addPlacement,
     updatePlacement,
     removePlacement,
+    removePlacementsByPanelId,
+    replacePlacements,
+    restorePlacements,
     removePanelFromAll,
     listPlacements,
     isComplete,

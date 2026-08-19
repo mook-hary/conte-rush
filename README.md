@@ -22,11 +22,11 @@
 
 **実装済み（M5.4）** は、Timeline 編集 UI と Rush メーターの frame 表示を、秒+コマと総フレームの併記にすることです。保存値は整数 frame のままです。
 
-**実装済み（M6）** は、独立した Motion Data で PAN / TU / TB をブラウザ Rush に乗せることです。MP4 出力は M7 以降です。
+**実装済み（M6）** は、独立した Motion Data で PAN / TU / TB をブラウザ Rush に乗せることです。
 
-MP4 出力は未実装です。
+**実装済み（M7）** は、同じ Frame Renderer からブラウザ内で 1280×720 / 24fps / 映像のみの H.264 MP4 を書き出すことです。
 
-## 現状できること（M0〜M6・実装済み）
+## 現状できること（M0〜M7・実装済み）
 
 - ユーザーの端末上にある PDF を選んで開く
 - 1ページ目をブラウザに描画する
@@ -63,6 +63,8 @@ MP4 出力は未実装です。
 - START / END の 16:9 枠で始点・終点画角を指定する
 - Rush の 16:9 canvas で Motion を再生する
 - Motion 作成・削除・画角変更を Undo / Redo する
+- Timeline 完成後に 1280×720 / 24fps / H.264 MP4（映像のみ）をブラウザ内で書き出す
+- 書き出し中の進捗表示とキャンセル
 
 ## 現状できないこと
 
@@ -72,7 +74,7 @@ MP4 出力は未実装です。
 - CUT 番号の OCR / 自動認識
 - 秒+コマ形式による開始フレームの直接入力
 - タイムシート出力
-- 動画再生 / MP4 出力
+- 音声 / BGM / SE
 - トランジション
 - AI 解析
 - カメラワークの自動解析
@@ -84,14 +86,17 @@ PDF はユーザーのローカルファイルから読み込み、ブラウザ�
 
 PDF.js のライブラリ本体は CDN から取得する想定です。PDF の中身はその通信に含めません。
 
+M7 では Mediabunny 1.51.0 も CDN（jsDelivr）から取得します。PDF と生成 MP4 の中身はその通信に含めません。
+
 ## 動作環境
 
 - GitHub Pages で配信できる静的 Web アプリ
 - HTML / CSS / JavaScript
 - ビルド手順は不要
 - PDF.js 4.10.38（CDN）
+- MP4 書き出し: WebCodecs が使えるブラウザ。Mediabunny 1.51.0（CDN）
 
-## 使い方（M0〜M6）
+## 使い方（M0〜M7）
 
 1. このフォルダを HTTP で配信する。例:
 
@@ -109,10 +114,11 @@ PDF.js のライブラリ本体は CDN から取得する想定です。PDF の�
 9. 配置完了後、「Play」で Rush を再生する
 10. Cut 詳細の Motion で PAN / TU / TB を付け、START / END 枠を調整する
 11. Undo / Redo で Panel 登録・削除と Timeline 変更、Motion 変更を戻す
+12. Timeline 完成後、「MP4を書き出す」で 1280×720 の映像のみ MP4 を保存する
 
 `index.html` を `file://` で直接開くと、ES モジュールと PDF.js の worker が動かないことがあります。
 
-GitHub Pages で公開する場合は、リポジトリのルートを配信元にしてください。PDF.js の取得に CDN（jsDelivr）へ接続できる必要があります。PDF 自体は Pages へ送られません。
+GitHub Pages で公開する場合は、リポジトリのルートを配信元にしてください。PDF.js と Mediabunny の取得に CDN（jsDelivr）へ接続できる必要があります。PDF 自体と生成 MP4 は Pages へ送られません。
 
 ## ドキュメント
 

@@ -12,7 +12,7 @@
 - Cut = CUT 番号、総尺、所属 Panel
 - Timeline = Cut 内で各 Panel をいつ表示するか（開始フレーム）
 - Motion = ある Panel 表示区間内で、16:9 出力へどこを crop するか（M6）
-- Rush = Timeline + Motion を時間軸に沿って再生したもの（M5 で再生時の一時構造、M6 で描画を Renderer へ）
+- Rush = Timeline + Motion を時間軸に沿って再生したもの（M5 で再生時の一時構造、M6 で描画を Renderer へ、M7 で同じ描画の MP4）
 
 ### PdfSession（M0）
 
@@ -463,7 +463,7 @@ Rush 表示用の Panel 画像だけを、メモリ上に持つ。M2 の Thumbna
 - 同一 `id` は 1 回だけ生成する
 - 1 件ずつ生成する
 - ウィンドウリサイズでは再生成しない
-- MP4 素材とは定義しない。M6 の Renderer はここの画像をソースにする
+- MP4 素材とは定義しない。M6 の Renderer はここの画像をソースにする。M7 の書き出しは `ExportImageCache` を使う
 
 寿命:
 
@@ -472,7 +472,7 @@ Rush 表示用の Panel 画像だけを、メモリ上に持つ。M2 の Thumbna
 - 読み込み失敗で直前の PDF を維持する場合は残す
 - ファイルへ保存しない
 
-### UI 状態（M5.1 / M5.2 / M5.3 / M5.4 / M6）
+### UI 状態（M5.1 / M5.2 / M5.3 / M5.4 / M6 / M7）
 
 Panel / Cut / Timeline / Rush の保存構造ではない。メモリ上の操作状態だけとする。ファイルへ保存しない。`localStorage` にも入れない。
 
@@ -615,10 +615,65 @@ Play 時だけ持つ Motion の複製。RushPlayback snapshot の項目ではな
 - dirty な次回 Play で作り直す
 - ファイルへ保存しない
 
+### ExportSnapshot（M7・実装済み）
+
+書き出し開始時に凍結する実行時構造。Store ではない。Panel / Cut / Timeline / Motion の保存フィールドでもない。
+
+含むもの:
+
+- `buildSnapshot` と同じ Cut 登録順セグメント（`totalFrames` を含む）
+- Motion 全件の複製（Play 時の freeze と同じ）
+- 参照 Panel の矩形（`id` / `pageNumber` / `x` / `y` / `width` / `height`）
+- その時点の `pdfDocument` 参照
+- PDF ファイル名（保存名の元）
+
+補足:
+
+- 書き出し中は live Store を読まない
+- 編集は freeze に入らない。次回書き出しで反映する
+- ファイルへ保存しない。完成 MP4 Blob も Store に入れない
+
+### ExportImageCache（M7・実装済み）
+
+720p 書き出し用の Panel 画像。`RushImageCache` ではない。`ThumbnailCache` でもない。
+
+| 項目 | 意味 |
+|---|---|
+| キー | Panel の `id` |
+| 値 | `cropPanelImage` で作った画像（必要 pdfScale） |
+
+補足:
+
+- pdfScale は Panel ごとの Motion 最大 `scale` と 1280 幅から決める。`RUSH_SCALE` は使わない
+- 同一書き出し内の同一 `id` は 1 回だけ生成する
+- 1 件ずつ生成する
+
+寿命:
+
+- 書き出し開始から完了 / キャンセル / 失敗まで
+- 終了時に破棄する。PDF セッションへ残さない
+- 新しい PDF の読み込み成功時にも残さない（書き出し中の PDF 差し替えは禁止）
+
+### ExportJob（M7・実装済み）
+
+書き出し UI の実行時状態。保存構造ではない。
+
+| 項目 | 意味 |
+|---|---|
+| `status` | idle / preparing / encoding / done / cancelled / error |
+| `currentFrame` / `totalFrames` | エンコード進捗 |
+| `preparedCount` / `prepareTotal` | 画像準備進捗 |
+| `cancelRequested` | 次 frame / 次 Panel の前で見る |
+| エラーメッセージ | 画面表示用 |
+
+- 同時に 1 件まで
+- Play と同時実行しない
+- ファイルへ保存しない
+
 ### 持たないもの（現行）
 
 - 永続化した Rush Data
-- MP4 / 音声
+- MP4 / 音声の永続保存
 - 自動検出結果
 - `source: "auto"`
 - `confidence`
@@ -657,11 +712,11 @@ Storyboard Data
 | Cut Data | CUT 番号、総尺、所属 Panel（M3 の Cut がその人手入力部分） |
 | Timeline | Cut 内で各 Panel をいつ表示するか（M4 で開始フレームまで定義） |
 | Motion | Panel 表示中の crop 窓（M6 で from/to まで定義） |
-| Rush | Timeline + Motion を時間軸に沿って再生したもの（M5 でブラウザ再生の一時構造。M6 で Renderer） |
+| Rush | Timeline + Motion を時間軸に沿って再生したもの（M5 でブラウザ再生の一時構造。M6 で Renderer。M7 で同じ描画の MP4） |
 
-流れは一方向を想定する。逆方向の編集はまだ定義しない。Storyboard Data と MP4 の中身はまだ定義しない。
+流れは一方向を想定する。逆方向の編集はまだ定義しない。Storyboard Data はまだ定義しない。
 
-M5 では Rush のブラウザ再生までを定義する。MP4 出力はまだ定義しない。
+M5 では Rush のブラウザ再生までを定義する。
 
 M5.1 では上記の保存構造を増やさない。テンプレートと Cut 選択は UI 状態に留める。
 
@@ -671,4 +726,6 @@ M5.3 でも保存構造は増やさない。常設選択フレームと履歴は
 
 M5.4 でも保存構造は増やさない。秒+コマは描画時の表示だけとする。正規値は整数 frame のままとする。タイムシート出力はまだ定義しない。
 
-M6 では Motion を独立構造として足す。Panel / Cut / Timeline の項目は増やさない。MP4 エンコードはまだ定義しない。1 フレーム描画の入口は Frame Renderer とする。
+M6 では Motion を独立構造として足す。Panel / Cut / Timeline の項目は増やさない。1 フレーム描画の入口は Frame Renderer とする。
+
+M7 では MP4 書き出しを定義する。ExportSnapshot / ExportImageCache / ExportJob は実行時のみ。Panel / Cut / Timeline / Motion の項目は増やさない。音声トラックとタイムシートはまだ定義しない。

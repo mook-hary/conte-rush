@@ -207,6 +207,23 @@ Panel / Cut / Timeline の保存項目は変えず、独立した Motion で PAN
 
 MP4 / WebM / 音声 / ease / 複数 Motion 連結 / 部分区間 Motion / 回転は M6 の範囲ではない。仕様は [SPEC.md](SPEC.md) の M6 節を正とする。
 
+## M7（実装済み）
+
+同じ Frame Renderer の 1 フレーム描画から、ブラウザ内で H.264 MP4 を出す。
+
+- 出力は 1280×720、24fps（`FRAMES_PER_SECOND`）、映像のみ。音声なし
+- エンコードは WebCodecs、mux は Mediabunny `1.51.0`。`mp4-muxer` と ffmpeg.wasm は第一候補にしない
+- Rush の rAF 時計は使わない。`buildSnapshot` / `resolveFrame` と `renderFrame` を再利用する
+- 開始時に Cut / Timeline / Motion / Panel 矩形を凍結する
+- 書き出し画像は `RushImageCache` と分離する。pdfScale は Panel ごとの Motion 最大 scale から決める
+- 事前に `VideoEncoder` と AVC 1280×720 の encodability を確認する
+- 未完成 Cut が 1 件でもあれば拒否する
+- 進捗とキャンセルを出す。部分 MP4 は保存しない
+- 完成 Blob を `<PDF名>-rush.mp4` としてローカル保存する。サーバーへ送らない
+- Panel / Cut / Timeline / Motion のフィールドは増やさない
+
+新規: `js/mp4-exporter.js`、`js/export-image-cache.js`、`js/frame-pose.js`。仕様は [SPEC.md](SPEC.md) の M7 節を正とする。
+
 ## 以降（構想）
 
 順序の目安であり、確定した計画ではない。
@@ -215,18 +232,21 @@ MP4 / WebM / 音声 / ease / 複数 Motion 連結 / 部分区間 Motion / 回転
 
 | 候補 | 想定する前進 |
 |---|---|
-| M7 | 同じ Frame Renderer の 1 フレーム描画から MP4 を出す |
+| M8 | 音声トラック、または長尺向けのストリーミング保存 |
 
-M7 以降でやり得ることの例（未着手、M6 には入れない）:
+M8 以降でやり得ることの例（未着手、M7 には入れない）:
 
-- MP4 / WebM 出力
-- 音声 / BGM / SE
+- 音声 / BGM / SE / AAC
+- 1080p 選択、bitrate / fps UI
+- WebM / MOV
+- File System Access API への直接書き（最終 Blob をメモリに持たない）
 - ループ再生
 - スクラブバー、再生ヘッドのドラッグ
-- 再生速度変更、fps 変更 UI
+- 再生速度変更
 - Panel 表示の途中だけにかける Motion
 - 1 Panel 内の複数 Motion 連結
 - ディゾルブ等のトランジション
+- タイムシート出力
 - カメラワークの自動解析
 - Panel の自動検出（`source: "auto"`）
 - CUT 番号の OCR / 自動認識

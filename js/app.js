@@ -17,7 +17,6 @@ import { createPanelStore } from "./panel-store.js?v=m6-2";
 import { createThumbnailCache } from "./thumbnail-cache.js";
 import {
   createTimelineStore,
-  deriveRanges,
   evenPlacements,
   parseStartFrameInput,
 } from "./timeline-store.js?v=m6-2";
@@ -32,13 +31,19 @@ import {
   createMotionStore,
   motionLabel,
   posesEqual,
-  samplePose,
 } from "./motion-store.js";
+import { poseForResolvedFrame } from "./frame-pose.js";
+import {
+  ExportError,
+  exportFileName,
+  exportMp4,
+} from "./mp4-exporter.js";
 import {
   buildSnapshot,
   createRushPlayer,
   cutNumberForPanel,
   describeIncomplete,
+  inspectCuts,
   uniquePanelIds,
 } from "./rush-player.js";
 
@@ -88,6 +93,9 @@ const rushCanvasEl = document.querySelector("#rush-canvas");
 const rushPlayButton = document.querySelector("#rush-play");
 const rushPauseButton = document.querySelector("#rush-pause");
 const rushResetButton = document.querySelector("#rush-reset");
+const exportButton = document.querySelector("#export-mp4");
+const exportCancelButton = document.querySelector("#export-cancel");
+const exportStatusEl = document.querySelector("#export-status");
 const placeModeFrameButton = document.querySelector("#place-mode-frame");
 const placeModeDragButton = document.querySelector("#place-mode-drag");
 const aspectLockInput = document.querySelector("#aspect-lock");
@@ -111,6 +119,8 @@ let rushPreparing = false;
 let rushError = "";
 let rushView = null;
 let rushMotionFreeze = null;
+let exportRunning = false;
+let exportCancelRequested = false;
 
 const queuedThumbnails = [];
 const queuedThumbnailIds = new Set();
@@ -495,46 +505,166 @@ function sizeRushCanvas() {
   }
 }
 
-function rangesFromSegment(segment) {
-  return deriveRanges(
-    {
-      durationFrames: segment.durationFrames,
-      panelIds: segment.placements.map((item) => item.panelId),
-    },
-    { placements: segment.placements },
-  );
+function freezeExportPanels(snapshot) {
+  const panels = new Map();
+  for (const panelId of uniquePanelIds(snapshot)) {
+    const panel = panelStore.getById(panelId);
+    if (panel) {
+      panels.set(panelId, clonePanelData(panel));
+    }
+  }
+  return panels;
 }
 
-function findFrozenMotion(cutId, panelId) {
-  const set = rushMotionFreeze?.find((item) => item.cutId === cutId);
-  return set?.motions.find((item) => item.panelId === panelId) ?? null;
+function setExportMessage(message, isError = false) {
+  if (!exportStatusEl) {
+    return;
+  }
+  exportStatusEl.textContent = message ?? "";
+  exportStatusEl.classList.toggle("is-error", Boolean(isError));
+}
+
+function setPdfInputLocked(locked) {
+  pdfInput.disabled = locked;
+  pdfInput.title = locked ? "書き出し中はPDFを差し替えできません" : "";
+}
+
+function updateExportUi() {
+  const canExport = Boolean(session) && !rushPreparing;
+  if (exportButton) {
+    exportButton.disabled = !canExport || exportRunning;
+  }
+  if (exportCancelButton) {
+    exportCancelButton.hidden = !exportRunning;
+    exportCancelButton.disabled = !exportRunning;
+  }
+}
+
+function formatExportProgress(progress) {
+  if (!progress) {
+    return "";
+  }
+  if (progress.phase === "preparing") {
+    return `準備中（画像 ${progress.preparedCount} / ${progress.prepareTotal}）`;
+  }
+  if (progress.phase === "encoding") {
+    const total = progress.totalFrames;
+    const current = progress.currentFrame;
+    const percent = total > 0 ? Math.floor((100 * current) / total) : 0;
+    return `エンコード中 ${current} / ${total}f（${percent}%）`;
+  }
+  return "";
+}
+
+function formatExportError(error) {
+  if (error instanceof ExportError) {
+    if (error.code === "image" && error.cutNumber) {
+      return `CUT ${error.cutNumber}: Panel ${error.panelId} の画像を準備できませんでした。`;
+    }
+    return error.message;
+  }
+  return `書き出しに失敗しました。${error?.message ?? ""}`.trim();
+}
+
+function downloadBlob(blob, fileName) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => {
+    URL.revokeObjectURL(url);
+  }, 0);
+}
+
+async function handleExportMp4() {
+  if (exportRunning || rushPreparing) {
+    return;
+  }
+  if (!session?.document) {
+    setExportMessage("PDFが読み込まれていません。", true);
+    return;
+  }
+  if (rushPlayer.isPlaying()) {
+    setExportMessage(
+      "再生中は書き出せません。Pauseしてから書き出してください。",
+      true,
+    );
+    return;
+  }
+
+  const cuts = cutStore.listAll();
+  const inspected = inspectCuts(cuts, (cutId) => timelineStore.getByCutId(cutId));
+  if (!inspected.ok) {
+    setExportMessage(formatRushIssues(inspected.issues), true);
+    return;
+  }
+
+  const snapshot = buildSnapshot(cuts, (cutId) => timelineStore.getByCutId(cutId));
+  if (!snapshot || snapshot.totalFrames < 1) {
+    setExportMessage("書き出せるCutがありません。", true);
+    return;
+  }
+
+  const motions = motionStore.listAll();
+  const panels = freezeExportPanels(snapshot);
+  const pdfDocument = session.document;
+  const fileName = exportFileName(session.fileName);
+
+  exportRunning = true;
+  exportCancelRequested = false;
+  setPdfInputLocked(true);
+  setExportMessage("準備中");
+  updateExportUi();
+  renderRush();
+
+  try {
+    const blob = await exportMp4({
+      snapshot,
+      motions,
+      panels,
+      pdfDocument,
+      shouldCancel: () => exportCancelRequested,
+      onProgress(progress) {
+        setExportMessage(formatExportProgress(progress));
+      },
+    });
+    if (exportCancelRequested) {
+      setExportMessage("書き出しをキャンセルしました");
+      return;
+    }
+    downloadBlob(blob, fileName);
+    setExportMessage("書き出し完了");
+  } catch (error) {
+    if (error instanceof ExportError && error.code === "cancelled") {
+      setExportMessage("書き出しをキャンセルしました");
+      return;
+    }
+    console.error(error);
+    setExportMessage(formatExportError(error), true);
+  } finally {
+    exportRunning = false;
+    exportCancelRequested = false;
+    setPdfInputLocked(false);
+    updateExportUi();
+    renderRush();
+  }
+}
+
+function handleExportCancel() {
+  if (!exportRunning) {
+    return;
+  }
+  exportCancelRequested = true;
 }
 
 function poseForRushView(view) {
-  if (!view) {
-    return null;
-  }
-  const motion = findFrozenMotion(view.cutId, view.panelId);
-  if (!motion) {
-    return null;
-  }
-  const snapshot = rushPlayer.getSnapshot();
-  const segment = snapshot?.segments.find((item) => item.cutId === view.cutId);
-  if (!segment) {
-    return null;
-  }
-  const range = rangesFromSegment(segment).find(
-    (item) => item.panelId === view.panelId,
-  );
-  if (!range || !canSampleMotion(range.startFrame, range.lastFrame)) {
-    return null;
-  }
-  return samplePose(
-    motion.from,
-    motion.to,
-    view.localFrame,
-    range.startFrame,
-    range.lastFrame,
+  return poseForResolvedFrame(
+    rushPlayer.getSnapshot(),
+    rushMotionFreeze,
+    view,
   );
 }
 
@@ -598,10 +728,11 @@ function renderRush() {
     showRushView(null);
   }
 
-  const canControl = Boolean(session);
+  const canControl = Boolean(session) && !exportRunning;
   rushPlayButton.disabled = !canControl || rushPreparing;
   rushPauseButton.disabled = !canControl || !rushPlayer.isPlaying();
   rushResetButton.disabled = !canControl;
+  updateExportUi();
 }
 
 const rushPlayer = createRushPlayer({
@@ -678,7 +809,7 @@ async function prepareRushImages(snapshot, token) {
 }
 
 async function handleRushPlay() {
-  if (!session || rushPreparing || rushPlayer.isPlaying()) {
+  if (!session || rushPreparing || rushPlayer.isPlaying() || exportRunning) {
     return;
   }
   if (
@@ -2129,6 +2260,11 @@ async function replaceSession(nextSession) {
 }
 
 async function handleFileChange(event) {
+  if (exportRunning) {
+    event.target.value = "";
+    setExportMessage("書き出し中はPDFを差し替えできません", true);
+    return;
+  }
   const file = event.target.files?.[0];
   event.target.value = "";
   if (!file) {
@@ -2341,6 +2477,12 @@ rushPauseButton.addEventListener("click", () => {
 });
 rushResetButton.addEventListener("click", () => {
   handleRushReset();
+});
+exportButton?.addEventListener("click", () => {
+  handleExportMp4();
+});
+exportCancelButton?.addEventListener("click", () => {
+  handleExportCancel();
 });
 pdfInput.addEventListener("change", handleFileChange);
 prevButton.addEventListener("click", () => {

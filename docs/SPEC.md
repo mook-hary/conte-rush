@@ -15,6 +15,7 @@
 - **M5.3**: 実装済み
 - **M5.4**: 実装済み
 - **M6**: 実装済み
+- **M7**: 実装済み
 
 ## 目的
 
@@ -29,6 +30,7 @@
 - M5.3: 保存構造を変えず、常設選択フレームによる Panel 連続取得と、限定した Undo / Redo を追加する。画面高さ不足時はページを縦スクロールし、複数 Panel の初回配置と 1f 微調整を足す
 - M5.4: 保存構造と再生ロジックを変えず、Timeline 編集 UI（および Rush メーター）の frame 表示を秒+コマと総フレームの併記にする
 - M6: Panel / Cut / Timeline の保存項目は変えず、独立した Motion Data で PAN / TU / TB をブラウザ Rush 上に再生する。MP4 は出さない
+- M7: M6 と同じ Frame Renderer の結果を、ブラウザ内で 16:9 / 24fps / 映像のみの H.264 MP4 として書き出す。音声は扱わない
 
 責務の境界:
 
@@ -36,7 +38,7 @@
 - Cut = CUT 番号、総尺、所属 Panel
 - Timeline = Cut 内で各 Panel がいつ始まるか
 - Motion = ある Panel 表示区間内で、出力フレームへどこを crop して出すか
-- Rush = Timeline + Motion を時間軸に沿って再生したもの（M6 でもブラウザ再生のみ。MP4 は M7）
+- Rush = Timeline + Motion を時間軸に沿って再生したもの（M6 はブラウザ再生。M7 は同じ描画結果の MP4）
 
 M1 の Panel は絵コンテ上の 1 つのコマ候補である。CUT 番号でも尺でもない。
 
@@ -58,6 +60,8 @@ M5.4 の秒+コマは表示専用である。保存の正は整数 frame のま�
 
 M6 の Motion は独立データである。Panel / Cut / Timeline へ埋め込まない。時間区間は Timeline の表示区間から導出し、M6 では保存しない。
 
+M7 の MP4 は実行時の書き出しである。Panel / Cut / Timeline / Motion へ埋め込まない。音声は持たない。
+
 ## 制約
 
 - GitHub Pages で動作する静的 Web アプリとする
@@ -65,6 +69,7 @@ M6 の Motion は独立データである。Panel / Cut / Timeline へ埋め込�
 - ビルドツールやサーバーサイド処理は使わない
 - PDF はユーザーが選んだローカルファイルのみを対象とする
 - PDF データをサーバーや外部サービスへ送信しない
+- 生成した MP4 もサーバーへ送信しない。ブラウザ内の Blob として保存する
 - PDF の処理はブラウザ内で完結させる
 - 表示には PDF.js を使う
 - Panel、Cut、Timeline、Rush の再生状態はブラウザのメモリ上のみとする。保存しない
@@ -93,9 +98,13 @@ M6 の Motion は独立データである。Panel / Cut / Timeline へ埋め込�
 - frame → 秒+コマの変換は `duration.js` に置き、Timeline / Rush 側へ変換式を重複して書かない
 - Motion を Panel / Cut / Timeline のフィールドへ足さない
 - `rush-player.js` の globalFrame → Cut → localFrame → panelId は維持する。画像描画と Motion 補間は入れない
-- Rush と将来 MP4 の 1 フレーム描画は共通の Frame Renderer に置く。M6 ではエンコードしない
+- Rush と MP4 の 1 フレーム描画は共通の Frame Renderer に置く。M6 ではエンコードしない。M7 で MP4 にする
 - Motion の x / y は Panel 画像内の正規化座標である。PDF 上の Panel.x / Panel.y と混ぜない
 - M6 の出力窓は 16:9 とする。PDF 選択フレームの「見た目 16:9」（CSS ピクセル）とは定義が違う
+- M7 の MP4 解像度は固定 1280×720 とする。Rush プレビュー canvas の CSS サイズや `devicePixelRatio` は使わない
+- M7 は `FRAMES_PER_SECOND` を正とする。24 を再定義しない
+- M7 は WebCodecs で映像をエンコードし、Mediabunny で MP4 へ mux する。deprecated な `mp4-muxer` と ffmpeg.wasm は第一候補にしない
+- M7 では Panel / Cut / Timeline / Motion の保存フィールドを増やさない
 
 ## M0 で実装する機能（実装済み）
 
@@ -1421,7 +1430,7 @@ renderFrame({ canvas, image, pose })
 - Motion Store の所有
 - MP4 / WebM エンコード
 
-M7 はフレームごとに `resolveFrame` → pose 解決 → `renderFrame` を呼び、canvas をエンコーダへ渡す。Renderer に MP4 も時刻も持たせない。
+M7 はフレームごとに `resolveFrame` → pose 解決 → `renderFrame` を呼び、1280×720 のオフスクリーン canvas をエンコーダへ渡す。Renderer に MP4 も時刻も持たせない。
 
 ### 15. モジュール
 
@@ -1434,7 +1443,7 @@ M7 はフレームごとに `resolveFrame` → pose 解決 → `renderFrame` を
 | `js/app.js` | Play 時の凍結、onFrame で pose 解決して `renderFrame`、削除時の Store 連携 |
 | `js/panel-store.js` / `cut-store.js` / `timeline-store.js` | 保存フィールドは変えない。削除 API の呼び出し元が Motion も消す |
 
-空の MP4 モジュールは作らない。
+M6 時点では空の MP4 モジュールは作らない。M7 実装時に `js/mp4-exporter.js` と `js/export-image-cache.js` を足す。
 
 ### 16. 完成条件
 
@@ -1447,8 +1456,8 @@ M7 はフレームごとに `resolveFrame` → pose 解決 → `renderFrame` を
 - Rush 再生で Motion が見える
 - Timeline の `startFrame` 変更後も Motion 期間が破綻しない
 - Panel / Cut 削除で Motion 参照が残らない
-- Frame Renderer が Rush と将来 MP4 で共用可能な入口を持つ
-- MP4 自体は未実装
+- Frame Renderer が Rush と MP4 で共用可能な入口を持つ
+- M6 では MP4 自体は未実装
 - Panel / Cut / Timeline の保存構造を変えていない
 
 ### 17. M6 では実装しないもの
@@ -1462,7 +1471,411 @@ M7 はフレームごとに `resolveFrame` → pose 解決 → `renderFrame` を
 - タイムシート、更新コンテ PDF、OCR、自動 Panel 検出
 - カメラワークの自動解析
 
+## M7（実装済み）
+
+M6 までで確定した
+
+PDF → Panel → Cut → Timeline → Motion → Frame Renderer → Rush
+
+と同じ映像結果を、ブラウザ内で MP4 ファイルとして書き出す。本節が実装時の正である。
+
+M7 では次に限定する。
+
+- 16:9
+- 24fps（既存 `FRAMES_PER_SECOND` のみ）
+- 映像のみ
+- MP4（H.264 / AVC）
+
+音声、1080p 選択、bitrate UI、fps 変更、WebM / MOV、タイムシート、更新コンテ PDF、ease、transition、dissolve は対象外とする。
+
+### 1. 技術選択
+
+採用する。
+
+| 層 | 担当 |
+|---|---|
+| 1 フレーム描画 | 既存 `js/frame-renderer.js` の `renderFrame` |
+| 映像エンコード | WebCodecs の `VideoEncoder`（Mediabunny が内部で呼ぶ） |
+| MP4 mux | Mediabunny の `Mp4OutputFormat` |
+
+論理境界はユーザー要求どおり、**生フレームのエンコードは WebCodecs、コンテナ組み立ては Mediabunny** とする。
+
+実装では Mediabunny の `CanvasSource`（または `VideoSampleSource`）を使う。これらは内部で `VideoEncoder` を持ち、SPS/PPS と MP4 の `avcC` を Mediabunny 側で扱う。M7 では自前の `VideoEncoder` + `EncodedVideoPacketSource` を第一候補にしない。理由は、codec description の組み立てを二重に持つことになるためである。capability 確認だけは開始前にアプリ側で行う。
+
+採用しないもの:
+
+- **`mp4-muxer`**: 作者が Mediabunny へ移行し、deprecated である
+- **ffmpeg.wasm（M7 第一候補にしない）**: WASM 本体が大きく起動が重い。GitHub Pages の静的構成と合わない。WebCodecs で足りる encode+mux を二重に持つ。音声や非対応 codec のフォールバックが必要になった時点で再検討する
+
+依存の読み方は PDF.js と同じく、**固定バージョンの jsDelivr CDN** とする。ビルド手順は増やさない。最新追従 URL（`@latest` 等）は使わない。
+
+ピン止め: **Mediabunny `1.51.0`**（2026-07-22 公開）。実装時に jsDelivr の ESM 入口を確認する。候補:
+
+```
+https://cdn.jsdelivr.net/npm/mediabunny@1.51.0/+esm
+```
+
+`dist/modules/src/index.js` の生ツリーは相対 import の都合で GitHub Pages 向きでない可能性がある。実装着手時に `+esm` が解決することを確認し、ダメなら同バージョンのブラウザ向けバンドルを `vendor/` へ固定配置する。version 文字列は [DECISIONS.md](DECISIONS.md) の D80 を正とする。
+
+### 2. 出力仕様
+
+| 項目 | M7 の値 |
+|---|---|
+| container | MP4 |
+| video | H.264 / AVC（Mediabunny codec `'avc'`） |
+| profile | 第一候補はブラウザが返す AVC。希望があれば `fullCodecString: 'avc1.4D401F'`（Main 3.1、1280×720 に足りる）。Baseline `avc1.42001F` は互換優先の控え |
+| fps | `FRAMES_PER_SECOND`（24）。M7 側に 24 を再定義しない |
+| resolution | **1280 × 720** 固定 |
+| aspect | 16:9 |
+| audio | なし |
+| bitrate | UI は置かない。固定。目安は 5 Mbps、または Mediabunny の `QUALITY_HIGH`。実装時に一方へ決める |
+| fastStart | `BufferTarget` 利用時は moov を先頭近くへ置ける設定を使う（ダウンロード後の再生のため） |
+
+720p / 1080p の選択 UI は後回しとする。
+
+書き出し canvas は Rush プレビューとは別の、**常に 1280×720 のオフスクリーン canvas** とする。次を MP4 解像度にしない。
+
+- `#rush-canvas` の CSS サイズ（640×360）
+- `devicePixelRatio`
+- `rushCanvasPixelSize()`（dpr 上限 2 で最大 1280×720 になるが、ウィンドウや Retina に依存する定義である）
+
+これにより、ウィンドウサイズ・Retina 倍率・Rush プレビュー表示サイズから出力品質を切り離す。
+
+### 3. 対応ブラウザと事前確認
+
+WebCodecs と利用可能 codec は環境に依存する。書き出しボタンを押したあと深い処理で失敗させない。
+
+開始前に次を確認し、非対応なら画面メッセージで止める。
+
+1. `'VideoEncoder' in window`（なければ「このブラウザでは MP4 書き出しに未対応です」）
+2. Mediabunny の `canEncodeVideo('avc', { width: 1280, height: 720 })`、または同等の `VideoEncoder.isConfigSupported`
+3. 希望 profile を指定する場合は、その `fullCodecString` でも再確認する
+
+`canEncodeVideo('avc')` のデフォルト確認解像度は Mediabunny 側で 1280×720 である。M7 の出力と同じなので、確認と実エンコードをずらさない。
+
+Chrome / Edge を第一の動作対象とする。Safari / Firefox は WebCodecs の AVC エンコード有無が異なる。非対応はエラー表示とし、M7 で VP9/WebM へ黙って落とさない。
+
+### 4. snapshot
+
+書き出し開始時点の次を凍結する。書き出し途中で live の Store を読まない。
+
+- Cut 一覧（登録順）と各 Cut の `durationFrames` / `panelIds`
+- 各 Timeline の `placements`（`buildSnapshot` と同じ）
+- Motion 全件（Play 時の `motionStore.listAll()` 凍結と同じ）
+- 参照する Panel の `id` / `pageNumber` / `x` / `y` / `width` / `height`（rasterize に必要）
+- 開いている `pdfDocument` への参照（セッション中の同一 document）
+- 出力ファイル名の元になる PDF 名
+
+編集 UI を全面 disable する必要はない。進行中 MP4 は開始時 snapshot のままとする。次回書き出しで変更を反映する。
+
+PDF 再選択成功は `pdfDocument` を破棄する。書き出し中は **PDF ファイル選択を禁止**する。差し替えたい場合は、先に書き出しをキャンセルしてから選ぶ。書き出しを自動キャンセルして差し替えるより、禁止の方が mux 途中の破棄漏れが少ない。
+
+### 5. frame 生成
+
+MP4 はリアルタイムではない。`globalFrame = 0` から `totalFrames - 1` まで順番に、決定論的に生成する。
+
+概念フロー:
+
+```
+capability 確認
+→ snapshot 凍結
+→ 未完成 Cut 検査（1 件でも拒否）
+→ Export 用 Panel 画像の準備
+→ オフスクリーン 1280×720 canvas / encoder / muxer 開始
+→ for globalFrame in 0 .. totalFrames-1:
+     cancel 確認
+     view = resolveFrame(snapshot, globalFrame)
+     pose = 既存と同じ pose 解決（Motionなし / 1フレーム区間は null）
+     image = export cache
+     renderFrame({ canvas: exportCanvas, image, pose })
+     timestamp を frame 番号から付与してエンコード
+     VideoFrame 相当は encode 後に close
+     進捗通知
+→ finalize → MP4 Blob → 保存
+→ cache / encoder / muxer を破棄
+```
+
+生の 1280×720 RGBA を全 frame 分保持しない。1 frame 描画 → encode → close → 次 frame とする。
+
+UI とキャンセルのため、数 frame ごと（目安 1〜8）にイベントループへ戻す。`performance.now()` は進捗表示の実時間には使ってよいが、映像 timestamp には使わない。
+
+### 6. rush-player.js との境界
+
+使わないもの:
+
+- Play / Pause
+- `requestAnimationFrame` 時計
+- `performance.now()` 起点の経過 frame
+
+再利用するもの（既存の純粋関数。再生仕様は変えない）:
+
+- `inspectCuts` / `describeIncomplete`
+- `buildSnapshot`
+- `resolveFrame`
+- `uniquePanelIds`
+- `deriveRanges`（Timeline）
+- `samplePose` / `canSampleMotion`（Motion）
+
+`createRushPlayer` の時計は MP4 に接続しない。
+
+pose 解決は M6 で `app.js` の `poseForRushView` にある。MP4 側へコピーしない。M7 実装時に、Rush 表示と exporter が同じ関数を呼ぶ小さな純粋ヘルパーへ切り出す（案: `js/frame-pose.js`、または `motion-store.js` へ `poseForResolvedFrame(snapshot, motions, view)` を足す）。切り出しは関数の移動だけとし、Rush の再生仕様（dirty、終端、rAF）は変えない。`resolveFrame` 自体は `rush-player.js` に残してよい。
+
+### 7. Frame Renderer の再利用
+
+PAN / TU / TB の描画式は `frame-renderer.js` にだけ置く。Rush と MP4 で二重実装しない。
+
+MP4 は:
+
+```
+renderFrame({
+  canvas: exportCanvas, // 1280×720、dpr 非依存
+  image,
+  pose
+})
+```
+
+`pose === null`（Motionなし、または 1 フレーム表示で適用不能）は M6 と同じ contain 静止。pose ありは 16:9 crop fill。Renderer は encoder も timestamp も持たない。
+
+### 8. VideoFrame timestamp
+
+24fps を frame 番号から決める。実時間は使わない。
+
+WebCodecs の timestamp は整数マイクロ秒である。1/24 秒は割り切れない。**累積がずれない整数化**を正とする。
+
+```
+timestampUs(globalFrame) =
+  Math.round(globalFrame * 1_000_000 / FRAMES_PER_SECOND)
+
+durationUs(globalFrame) =
+  timestampUs(globalFrame + 1) - timestampUs(globalFrame)
+```
+
+各 frame を独立に `Math.round(1_000_000 / 24)`（41667）すると、1 秒あたり 8µs 程度の累積誤差が出る。差を duration に使うと `timestampUs(totalFrames) / 1e6` が `totalFrames / 24` 秒に一致する。
+
+Mediabunny の `CanvasSource.add(timestampSec, durationSec)` を使う場合も、秒は上記 µs から換算するか、`globalFrame / FRAMES_PER_SECOND` を渡し、`addVideoTrack(..., { frameRate: FRAMES_PER_SECOND })` で 24fps グリッドへスナップさせる。スナップを使う場合も入力は frame 番号由来とし、`performance.now()` は渡さない。実装時に Mediabunny の `frameRate` スナップと整数 µs のどちらを実エンコーダへ渡すかを DECISIONS へ追記してよい。方針は「尺 = totalFrames / 24 秒」である。
+
+完成 MP4 のフレーム数と尺は、snapshot の `totalFrames` および `totalFrames / FRAMES_PER_SECOND` 秒と一致させる。
+
+### 9. keyframe
+
+GOP 設定 UI は置かない。
+
+- 最初の frame（globalFrame 0）は必ず keyframe
+- 以降は Mediabunny の `keyFrameInterval` デフォルトに合わせ、**2 秒 = 48 frame**（`2 * FRAMES_PER_SECOND`）
+
+`CanvasSource.add(..., { keyFrame: true })` は 0 フレーム目に使う。間隔は codec 設定の `keyFrameInterval: 2` に任せてよい。より短い GOP はファイルサイズ増のため M7 では変えない。
+
+### 10. Export 用 Panel 画像
+
+`RushImageCache`（`RUSH_SCALE = 2`）はプレビュー専用である。MP4 素材として定義しない。
+
+書き出しは `cropPanelImage(pdfDocument, panel, { scale })` で、**Panel ごとに必要な PDF.js scale** を決める。720p に対して無関係に最大 scale で全ページを焼かない。
+
+必要解像度:
+
+Motion の crop は、Panel 画像に内接する最大 16:9（`baseViewportSize`）を `scale` で割った矩形を 1280×720 へ引き伸ばす。TU で `scale > 1` のとき、ソース矩形は小さくなる。ソース幅が出力幅以上になるように rasterize する。
+
+Panel ごと:
+
+1. その Panel の凍結 Motion が無ければ `motionMaxScale = 1`
+2. あれば `motionMaxScale = max(from.scale, to.scale, 1)`
+3. PDF.js `scale: 1` での Panel 画素サイズから `baseViewportSize` の幅 `baseWidth1` を得る
+4. `pdfScale = (EXPORT_WIDTH * motionMaxScale) / baseWidth1`、下限 1
+5. 上限 **`EXPORT_PDF_SCALE_CAP = 8`**（過剰 rasterize とメモリの天井）
+
+contain のみの Panel も、内接 16:9 が 1280 幅相当になる同じ式（`motionMaxScale = 1`）で足りる。TU の最大 scale を見て、その Panel だけ pdfScale を上げる。全 Panel に作品内の最大 TU を一律適用しない。
+
+上限に当たった Panel は、最大ズーム付近が 720p よりやや粗い。画面エラーにはせず、想定リスクとする。
+
+### 11. Export image cache
+
+新規 `js/export-image-cache.js`。`RushImageCache` とは分離する。
+
+| | Rush | Export |
+|---|---|---|
+| 用途 | プレビュー | 720p 動画素材 |
+| scale | 固定 `RUSH_SCALE = 2` | Panel ごとの必要 pdfScale |
+| 寿命 | PDF セッション | **1 回の書き出し** |
+
+寿命は **書き出し開始〜完了 / キャンセル / 失敗** とする。完了後は破棄する。PDF セッション中の再利用は M7 ではしない。
+
+理由:
+
+- TU 付き Panel は数枚で数十 MB になり得る。セッション常駐は長尺で危険
+- 書き出しのたびに Motion の最大 scale が変わり得る
+- 準備失敗をエンコード前に確定できる（Rush と同じ「先に全ユニーク Panel」）
+
+準備は `uniquePanelIds(snapshot)` を 1 件ずつ。失敗した Panel で中断し、画面に出す。エンコード中に PDF を再 rasterize しない。
+
+### 12. モジュール
+
+| ファイル | 責務 |
+|---|---|
+| `js/mp4-exporter.js` | capability、snapshot 受け取り、frame ループ、encode/mux 駆動、progress、cancel、Blob。描画式・Store 所有・Rush 時計は持たない |
+| `js/export-image-cache.js` | 書き出し用 `cropPanelImage` と破棄 |
+| `js/frame-pose.js`（任意） | Rush と MP4 で共用する pose 解決。再生時計は持たない |
+| `js/frame-renderer.js` | 変更しないことが理想。canvas サイズは呼び出し側が 1280×720 にする |
+| `js/rush-player.js` | `buildSnapshot` / `resolveFrame` を export したまま。Play 仕様は変えない |
+| `js/duration.js` | `FRAMES_PER_SECOND` のみが fps の正 |
+| `js/app.js` | ボタン、進捗表示、PDF 選択ロック、保存トリガ。encoder 内部は持たない |
+
+`mp4-exporter.js` が持たないもの:
+
+- PAN/TU/TB の画素計算（`renderFrame` へ委譲）
+- Panel / Cut / Timeline / Motion Store の所有
+- Rush の Play / Pause
+
+### 13. encoder / muxer の責務
+
+| | 担当 |
+|---|---|
+| app | 未完成 Cut 検査、PDF ロック、UI、Blob 保存 |
+| export-image-cache | Panel 画像 |
+| frame-renderer | 1 枚の見た目 |
+| Mediabunny CanvasSource + WebCodecs | 1280×720 の AVC エンコード、keyframe 間隔 |
+| Mediabunny `Output` + `Mp4OutputFormat` + `BufferTarget` | MP4 コンテナ、最終 `ArrayBuffer` / Blob |
+
+muxer は音声トラックを足さない。M8 で同じ `Output` に audio track を足せる余地は残す（API を閉じない）が、M7 では呼ばない。
+
+### 14. UI
+
+Rush 付近に最低限:
+
+- `[ MP4を書き出す ]`
+- 書き出し中は `[ キャンセル ]`
+- 状態テキスト
+
+状態:
+
+| 状態 | 表示例 |
+|---|---|
+| 準備中 | `準備中（画像 3 / 12）` |
+| エンコード中 | `エンコード中 842 / 2400f（35%）` |
+| 完了 | `書き出し完了`（保存ダイアログ後） |
+| キャンセル | `書き出しをキャンセルしました` |
+| エラー | 理由を 1 メッセージ |
+
+% は `Math.floor(100 * current / total)`。total 0 は起きない（未完成または空は開始前に拒否）。
+
+書き出し中は書き出しボタンを無効化する。Play との同時実行は禁止する（Play 中なら書き出さない / 書き出し中は Play しない）。編集 UI は動かしてよい。
+
+### 15. キャンセル
+
+M7 に含める。UI はボタン 1 つに留める。
+
+- 次の frame 生成前に cancel flag を見る
+- 画像準備の 1 Panel ごとにも見る
+- encoder / muxer / export cache / VideoFrame を破棄する
+- 部分 MP4 は保存しない
+- `BufferTarget` のバッファも捨てる
+
+### 16. ファイル保存
+
+完成した MP4 はブラウザ内の Blob だけとする。サーバーへアップロードしない。PDF と同様、ローカルで完結する。
+
+保存は `<a download>` または `showSaveFilePicker`（あれば）。未対応ブラウザは download 属性で足りる。
+
+ファイル名:
+
+**第一候補: `<PDFのベース名>-rush.mp4`**
+
+絵コンテ PDF が作品の正本なので、書き出しもその名に紐づける方が自然である。拡張子を除き、パス区切りと Windows 禁則文字は `_` へ置換する。空や不明なときだけ **`conte-rush-YYYYMMDD-HHMM.mp4`** に落とす。
+
+両方をユーザー選択にする UI は M7 では置かない。
+
+### 17. 未完成 Cut
+
+Rush の Play と同じ。`inspectCuts` で 1 件でも未完成なら、全体を拒否する。未完成 Cut を飛ばして書き出さない。
+
+Motion 未設定は正常。1 フレーム Panel の Motion 適用不能は M6 どおり contain 静止（`canSampleMotion` が false なら pose なし）。
+
+Cut が 0 件、または `totalFrames < 1` も開始前に拒否する。
+
+### 18. エラー処理
+
+コンソールだけにしない。画面に出す境界:
+
+| 条件 | メッセージの趣旨 |
+|---|---|
+| `VideoEncoder` なし | このブラウザでは MP4 書き出しに未対応 |
+| AVC 1280×720 をエンコードできない | この環境では H.264 書き出しに未対応 |
+| 未完成 Cut | Rush と同様、件名と理由 |
+| PDF が無い / document 破棄 | 書き出せない |
+| Panel 画像生成失敗 | どの Panel / Cut か分かる範囲で |
+| encoder error | エンコードに失敗した |
+| muxer error | MP4 の組み立てに失敗した |
+| メモリ不足等の例外 | 書き出しに失敗した（原文を短く添えてよい） |
+| 書き出し中の PDF 選択 | 書き出し中は PDF を差し替えできません |
+
+### 19. メモリ
+
+保持してよいもの:
+
+- オフスクリーン canvas 1 枚（1280×720 ≈ 3.7 MB）
+- 進行中の VideoFrame / VideoSample 高々 1〜数枚。encode 後 `close()`
+- Export 用 Panel 画像（ユニーク Panel 数。書き出し終了で破棄）
+- mux 中の MP4 バッファ（`BufferTarget`）。**最終 Blob をメモリに持つことは M7 で許容**
+
+保持してはいけないもの:
+
+- 全 frame の RGBA
+- 全 frame の未 mux `EncodedVideoChunk` をアプリ配列へ溜めること（Mediabunny に渡したらアプリ側では持たない）
+
+Mediabunny は encoder と `StreamTarget` へ backpressure をかけられる。M7 は実装単純化のため `BufferTarget` とする。ドキュメント上の限界: 長尺では最終 MP4 が数百 MB〜になり、タブが落ちることがある。そのときは M8 以降で `StreamTarget` + ファイル直接書き（File System Access API）を検討する。Mediabunny 自身も BufferTarget は目安 100 MB 未満向きと案内している。
+
+### 20. M8 以降
+
+M7 の video track と frame timestamp（`n / 24` 秒）は、後から同じ `Output` へ音声トラックを足す入口になる。M7 で音声用フィールドや AAC UI は作らない。
+
+タイムシートは映像エンコードとは別のデータ出力である。MP4 mux モジュールに混ぜない。
+
+1080p は canvas サイズと capability 確認の定数を足せばよい。保存構造は今も変えない。
+
+### 21. 保存構造
+
+Panel / Cut / Timeline / Motion のフィールドは増やさない。MP4 Blob も Store に入れない。Export snapshot と cache は実行時のみ。
+
+### 22. 完成条件
+
+- Timeline 完成済みの全 Cut を登録順に書き出せる
+- Motionなし / PAN / TU / TB / PAN+TU が Rush と同じ見た目になる（解像度は 720p 固定なので画素はプレビューより細かい／粗い差はあり得るが、crop 式は同一）
+- 1280×720、24fps、H.264 MP4、映像のみ
+- frame 数と MP4 尺が `totalFrames` / 24 秒と一致する
+- 1 frame ずつ生成し、生フレームを全保持しない
+- 進捗が表示される
+- 失敗理由が画面に出る
+- MP4 を保存できる
+- サーバーへ PDF や映像を送らない
+- Rush と MP4 で `frame-renderer` を共用している
+- Panel / Cut / Timeline / Motion 保存構造を変更していない
+- 未完成 Cut が 1 件でもあれば書き出さない
+- 書き出し中の PDF 差し替えを受け付けない
+- キャンセルで部分ファイルを保存しない
+
+### 23. 想定リスク
+
+- Safari / Firefox で AVC エンコードが無い
+- ハードウェアエンコーダの色空間・クロップで Rush canvas と 1px 差が出る
+- `EXPORT_PDF_SCALE_CAP` により強い TU がやや解像不足
+- ユニーク Panel が多い／大きいと準備中メモリが膨らむ
+- 長尺の最終 Blob でタブが落ちる
+- Mediabunny の `frameRate` スナップと整数 µs の実装差
+- jsDelivr `+esm` のエントリがバージョンによって変わる（ピン止めと実装時確認）
+
+### 24. M7 では実装しないもの
+
+- 音声 / BGM / SE / WAV / AAC 設定 UI
+- 1080p 選択、bitrate UI、fps 変更、23.976 / 30fps
+- hardware / software encoder 選択 UI
+- WebM / MOV 出力
+- タイムシート出力、更新コンテ PDF
+- ease / transition / dissolve
+- 未完成 Cut のスキップ書き出し
+- ffmpeg.wasm フォールバック
+- `mp4-muxer`
+
 ## UI 要件
+
 
 
 ### M0（実装済み）
@@ -1558,9 +1971,15 @@ M7 はフレームごとに `resolveFrame` → pose 解決 → `renderFrame` を
 - Panel 画像上の START / END 16:9 枠
 - Rush の 16:9 canvas プレビュー（Motion 時は crop、なし時は contain）
 
+### M7（実装済み）
+
+- Rush 付近の「MP4を書き出す」
+- 書き出し中の「キャンセル」
+- 準備中 / エンコード中（frame 進捗と %）/ 完了 / エラーの表示
+
 ## 非対象
 
-次は M6 でも実装しない。UI もデータも作らない。
+次は M7 でも実装しない。UI もデータも作らない。MP4 書き出し（1280×720 / 24fps / 映像のみ）は M7 で実装済みである。
 
 - ファイルをウィンドウへドロップして開くこと
 - ズーム、回転、フィット表示の切替
@@ -1591,10 +2010,11 @@ M7 はフレームごとに `resolveFrame` → pose 解決 → `renderFrame` を
 - フルスクリーン
 - Cut の並べ替え UI
 - 未完成 Cut を飛ばして再生すること
-- 動画生成
-- MP4 出力
-- WebM
+- 未完成 Cut を飛ばして MP4 書き出しすること
+- WebM / MOV
 - 音声 / BGM / SE
+- 1080p 選択、bitrate UI、fps 変更 UI
+- hardware / software encoder 選択 UI
 - `panelIds` の並べ替え UI
 - Cut の作成・削除・番号/尺変更・所属変更の Undo / Redo
 - 選択フレームの移動・リサイズ・aspect lock の Undo / Redo
@@ -1616,7 +2036,8 @@ M7 はフレームごとに `resolveFrame` → pose 解決 → `renderFrame` を
 - Motion の `startFrame` / `endFrameExclusive` 保存
 - ease-in / ease-out
 - 回転を含むカメラ
-- Frame Renderer を使った MP4 エンコード
+- ffmpeg.wasm による書き出し
+- `mp4-muxer`
 
 ## 将来
 
@@ -1632,7 +2053,7 @@ M3 の Cut は Cut Data の人手入力部分である。開始フレームは�
 
 M4 の Timeline は開始フレームだけである。Rush の再生データは Cut に埋め込まない。
 
-M5 の Rush は再生時の一時構造である。MP4 や音声はまだ定義しない。
+M5 の Rush は再生時の一時構造である。ブラウザ再生までとする。
 
 M5.1 のテンプレートと Cut 選択は UI 状態である。保存しない。
 
@@ -1642,4 +2063,6 @@ M5.3 の常設選択フレームと Undo / Redo は UI 状態である。保存�
 
 M5.4 の秒+コマは表示専用である。保存構造は増やさない。正規値は整数 frame のままとする。
 
-M6 の Motion は独立データである。ブラウザ Rush までとする。MP4 は Frame Renderer を共用する次マイルストーンで定義する。
+M6 の Motion は独立データである。ブラウザ Rush までとする。
+
+M7 の MP4 は Frame Renderer を共用する書き出しである。保存構造は増やさない。音声とタイムシートはまだ定義しない。

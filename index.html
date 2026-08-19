@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>conte-rush</title>
-    <link rel="stylesheet" href="css/style.css?v=m6-2" />
+    <link rel="stylesheet" href="css/style.css?v=m7-1" />
   </head>
   <body data-state="idle">
     <header class="toolbar">
@@ -87,10 +87,13 @@
               <p id="rush-local" class="rush-meter"></p>
               <p id="rush-global" class="rush-meter"></p>
               <p id="rush-message" class="rush-message" role="status"></p>
+              <p id="export-status" class="export-status" role="status"></p>
               <div class="rush-actions">
                 <button id="rush-reset" type="button">先頭へ戻る</button>
                 <button id="rush-play" type="button">Play</button>
                 <button id="rush-pause" type="button">Pause</button>
+                <button id="export-mp4" type="button">MP4を書き出す</button>
+                <button id="export-cancel" type="button" hidden>キャンセル</button>
               </div>
             </div>
           </section>
@@ -272,6 +275,6 @@
         status.textContent = `起動エラー: ${event.message}`;
       });
     </script>
-    <script type="module" src="js/app.js?v=m6-2"></script>
+    <script type="module" src="js/app.js?v=m7-1"></script>
   </body>
 </html>

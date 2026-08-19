@@ -160,6 +160,10 @@ MP4、音声、トランジション、PAN / TU / TB、ループ、スクラブ�
 - 入力欄フォーカス中はアプリの Undo / Redo を発火しない
 - 確定成功とその Undo / Redo のあと既存 `markRushDirty()` を呼ぶ。`rush-player.js` は変えない
 - Panel / Cut / Timeline / Rush の保存構造は変えない
+- 画面高さを超えたらページを縦スクロールする。Cut 一覧は従来どおり一覧内スクロール
+- PDF viewer は `min(52vh, 38rem)` に収め、下部 UI を `overflow: hidden` で切らない
+- 未配置は数値「配置」に加え、選択して横バーをクリック / ドラッグして初回配置できる
+- 選択中マーカーは `← / →` で 1f、`Shift` 併用で 5f。未選択時は矢印を Timeline に使わない
 
 Cut 編集の Undo、確定済み Panel の移動、履歴永続化、MP4 は M5.3 の範囲ではない。仕様は [SPEC.md](SPEC.md) の M5.3 節を正とする。
 

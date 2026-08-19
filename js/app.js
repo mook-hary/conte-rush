@@ -6,11 +6,11 @@ import {
   parseDurationInput,
 } from "./duration.js";
 import { canvasToObjectUrl, cropPanelImage, PREVIEW_SCALE } from "./panel-image.js";
-import { createHistory } from "./history.js?v=m53-3";
+import { createHistory } from "./history.js?v=m53-5";
 import { createPdfViewer } from "./pdf-viewer.js";
-import { createPanelOverlay } from "./panel-overlay.js?v=m53-3";
-import { createTimelineEditor } from "./timeline-editor.js";
-import { createPanelStore } from "./panel-store.js?v=m53-3";
+import { createPanelOverlay } from "./panel-overlay.js?v=m53-5";
+import { createTimelineEditor } from "./timeline-editor.js?v=m53-5";
+import { createPanelStore } from "./panel-store.js?v=m53-5";
 import { createThumbnailCache } from "./thumbnail-cache.js";
 import {
   createTimelineStore,
@@ -89,6 +89,8 @@ let panelCropQueue = Promise.resolve();
 let selectedCutId = null;
 let timelineCutId = null;
 let panelPlaceMode = "frame";
+let selectedTimelinePanelId = null;
+let unplacedPlaceDrag = null;
 let rushPrepToken = 0;
 let rushPreparing = false;
 let rushError = "";
@@ -124,6 +126,15 @@ const cutTimelineEditor = createTimelineEditor(cutTimelineStripEl, {
   },
   onCancel({ panelId, savedFrame }) {
     restoreStartFrameInput(panelId, savedFrame);
+  },
+  onSelect({ panelId }) {
+    selectTimelinePanel(panelId);
+  },
+  onTrackPreview({ frame }) {
+    previewUnplacedPlace(frame);
+  },
+  onTrackPlace({ frame }) {
+    placeSelectedUnplacedAtFrame(frame);
   },
 });
 
@@ -276,6 +287,9 @@ function removePanelInternal(panelId) {
   cutStore.removePanelFromAll(panelId);
   timelineStore.removePanelFromAll(panelId);
   selectedPanelIds.delete(panelId);
+  if (selectedTimelinePanelId === panelId) {
+    selectedTimelinePanelId = null;
+  }
   panelStore.remove(panelId);
   cancelQueuedThumbnail(panelId);
   thumbnailCache.delete(panelId);
@@ -670,6 +684,124 @@ function restoreStartFrameInput(panelId, frame) {
   previewStartFrameInput(panelId, frame);
 }
 
+function isUnplacedInSelectedCut(panelId) {
+  const cut = selectedCutId ? cutStore.getById(selectedCutId) : null;
+  if (!cut || !panelId || !cut.panelIds.includes(panelId)) {
+    return false;
+  }
+  const timeline = timelineStore.getByCutId(cut.id);
+  return !(timeline?.placements.some((item) => item.panelId === panelId));
+}
+
+function syncTimelineSelectionUi() {
+  timelineRowsEl.querySelectorAll(".timeline-row").forEach((row) => {
+    row.classList.toggle("is-selected", row.dataset.panelId === selectedTimelinePanelId);
+  });
+  cutTimelineStripEl.querySelectorAll(".cut-timeline-marker").forEach((element) => {
+    element.classList.toggle(
+      "is-selected",
+      element.dataset.panelId === selectedTimelinePanelId,
+    );
+  });
+  cutTimelineStripEl.querySelector("[data-role='track']")?.classList.toggle(
+    "is-placing",
+    isUnplacedInSelectedCut(selectedTimelinePanelId),
+  );
+}
+
+function selectTimelinePanel(panelId) {
+  selectedTimelinePanelId = panelId ?? null;
+  syncTimelineSelectionUi();
+}
+
+function previewUnplacedPlace(frame) {
+  if (!isUnplacedInSelectedCut(selectedTimelinePanelId)) {
+    return;
+  }
+  cutTimelineEditor.setPlacePreview(frame);
+}
+
+function placeUnplacedPanelAtFrame(panelId, frame) {
+  const cut = selectedCutId ? cutStore.getById(selectedCutId) : null;
+  if (!cut || !cut.panelIds.includes(panelId)) {
+    return;
+  }
+  if (!isUnplacedInSelectedCut(panelId)) {
+    return;
+  }
+  const result = timelineStore.addPlacement(
+    cut.id,
+    { panelId, startFrame: frame },
+    cut,
+  );
+  if (!result.ok) {
+    setTimelineMessage(result.message);
+    return;
+  }
+  timelineDrafts.set(panelId, String(frame));
+  selectedTimelinePanelId = panelId;
+  markRushDirty();
+  setTimelineMessage("");
+  renderTimelineViews();
+  renderCutList();
+  renderCutDetail();
+}
+
+function placeSelectedUnplacedAtFrame(frame) {
+  if (!Number.isInteger(frame)) {
+    return;
+  }
+  if (!isUnplacedInSelectedCut(selectedTimelinePanelId)) {
+    if (!selectedTimelinePanelId) {
+      setTimelineMessage("未配置のPanelを選んでから Timeline 上へ置いてください。");
+    }
+    return;
+  }
+  placeUnplacedPanelAtFrame(selectedTimelinePanelId, frame);
+}
+
+function nudgeSelectedTimelinePanel(delta) {
+  const cut = selectedCutId ? cutStore.getById(selectedCutId) : null;
+  if (!cut || !selectedTimelinePanelId) {
+    return false;
+  }
+  const panelId = selectedTimelinePanelId;
+  const timeline = timelineStore.getByCutId(cut.id);
+  const placement = timeline?.placements.find((item) => item.panelId === panelId);
+  if (!placement) {
+    return false;
+  }
+  const fromFrame = placement.startFrame;
+  const nextFrame = fromFrame + delta;
+  if (nextFrame === fromFrame) {
+    return true;
+  }
+  const result = timelineStore.updatePlacement(cut.id, panelId, nextFrame, cut);
+  if (!result.ok) {
+    setTimelineMessage(result.message);
+    restoreStartFrameInput(panelId, fromFrame);
+    renderTimelineViews();
+    return true;
+  }
+  timelineDrafts.set(panelId, String(nextFrame));
+  markRushDirty();
+  setTimelineMessage("");
+  renderTimelineViews();
+  renderCutList();
+  renderCutDetail();
+  history.push({
+    label: "Timelineを変更",
+    undo() {
+      revertTimelineStartFrame(cut.id, panelId, fromFrame);
+    },
+    redo() {
+      revertTimelineStartFrame(cut.id, panelId, nextFrame);
+    },
+  });
+  updateHistoryButtons();
+  return true;
+}
+
 function commitCutTimelineDrag({ cutId, panelId, candidateFrame, savedFrame }) {
   if (candidateFrame === savedFrame) {
     restoreStartFrameInput(panelId, savedFrame);
@@ -735,7 +867,7 @@ function revertTimelineStartFrame(cutId, panelId, startFrame) {
 }
 
 function renderCutTimelineStrip() {
-  if (cutTimelineEditor.isDragging()) {
+  if (cutTimelineEditor.isBusy()) {
     return;
   }
   const cut = selectedCutId ? cutStore.getById(selectedCutId) : null;
@@ -765,6 +897,8 @@ function renderCutTimelineStrip() {
     ranges: ranges.map((range) => ({
       text: `${panelLabel(range.panelId)} ${formatRange(range)}`,
     })),
+    selectedPanelId: selectedTimelinePanelId,
+    placing: isUnplacedInSelectedCut(selectedTimelinePanelId),
   });
 }
 
@@ -788,6 +922,7 @@ function maybeInitSinglePanelTimeline(cut) {
 
 function closeTimelineEditor() {
   timelineCutId = null;
+  selectedTimelinePanelId = null;
   timelineDrafts.clear();
   setTimelineMessage("");
 }
@@ -840,7 +975,7 @@ function createTimelineThumbEl(panelId) {
 }
 
 function renderTimelineEditor() {
-  if (cutTimelineEditor.isDragging()) {
+  if (cutTimelineEditor.isBusy()) {
     return;
   }
   if (!timelineCutId) {
@@ -876,14 +1011,18 @@ function renderTimelineEditor() {
   timelineStatusEl.classList.toggle("is-incomplete", !complete);
 
   timelineRowsEl.replaceChildren();
-  for (const panelId of cut.panelIds) {
-    timelineRowsEl.append(createTimelineRowEl(cut, panelId, {
-      placed: placedIds.has(panelId),
-      range: rangeByPanelId.get(panelId) ?? null,
-      startFrame: timeline?.placements.find((item) => item.panelId === panelId)
-        ?.startFrame,
-    }));
-  }
+  const placedPanelIds = cut.panelIds.filter((panelId) => placedIds.has(panelId));
+  const unplacedPanelIds = cut.panelIds.filter((panelId) => !placedIds.has(panelId));
+  appendTimelineSection("配置済み", cut, placedPanelIds, {
+    placedIds,
+    rangeByPanelId,
+    timeline,
+  });
+  appendTimelineSection("未配置", cut, unplacedPanelIds, {
+    placedIds,
+    rangeByPanelId,
+    timeline,
+  });
 
   timelineRangesEl.replaceChildren();
   if (ranges.length === 0) {
@@ -901,9 +1040,33 @@ function renderTimelineEditor() {
   }
 }
 
+function appendTimelineSection(title, cut, panelIds, { placedIds, rangeByPanelId, timeline }) {
+  if (panelIds.length === 0) {
+    return;
+  }
+  const heading = document.createElement("li");
+  heading.className = "timeline-section-label";
+  heading.textContent = title;
+  timelineRowsEl.append(heading);
+  for (const panelId of panelIds) {
+    timelineRowsEl.append(
+      createTimelineRowEl(cut, panelId, {
+        placed: placedIds.has(panelId),
+        range: rangeByPanelId.get(panelId) ?? null,
+        startFrame: timeline?.placements.find((item) => item.panelId === panelId)
+          ?.startFrame,
+      }),
+    );
+  }
+}
+
 function createTimelineRowEl(cut, panelId, { placed, range, startFrame }) {
   const item = document.createElement("li");
   item.className = "timeline-row";
+  item.dataset.panelId = panelId;
+  if (selectedTimelinePanelId === panelId) {
+    item.classList.add("is-selected");
+  }
 
   const label = document.createElement("p");
   label.className = "timeline-row-label";
@@ -950,6 +1113,9 @@ function createTimelineRowEl(cut, panelId, { placed, range, startFrame }) {
     deleteButton.addEventListener("click", () => {
       timelineStore.removePlacement(cut.id, panelId);
       timelineDrafts.delete(panelId);
+      if (selectedTimelinePanelId === panelId) {
+        selectedTimelinePanelId = panelId;
+      }
       markRushDirty();
       setTimelineMessage("");
       renderTimelineViews();
@@ -960,7 +1126,63 @@ function createTimelineRowEl(cut, panelId, { placed, range, startFrame }) {
   }
 
   item.append(createTimelineThumbEl(panelId), label, rangeEl, edit);
+  item.addEventListener("click", (event) => {
+    if (event.target.closest("button, input")) {
+      return;
+    }
+    selectTimelinePanel(panelId);
+  });
+  if (!placed) {
+    item.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || event.target.closest("button, input, label")) {
+        return;
+      }
+      event.preventDefault();
+      startUnplacedPlaceDrag(panelId, event);
+    });
+  }
   return item;
+}
+
+function startUnplacedPlaceDrag(panelId, event) {
+  selectTimelinePanel(panelId);
+  unplacedPlaceDrag = {
+    panelId,
+    pointerId: event.pointerId,
+  };
+  window.addEventListener("pointermove", handleUnplacedPlaceDragMove);
+  window.addEventListener("pointerup", handleUnplacedPlaceDragUp);
+  window.addEventListener("pointercancel", handleUnplacedPlaceDragUp);
+}
+
+function handleUnplacedPlaceDragMove(event) {
+  if (!unplacedPlaceDrag || event.pointerId !== unplacedPlaceDrag.pointerId) {
+    return;
+  }
+  if (cutTimelineEditor.isPointOnTrack(event.clientX, event.clientY)) {
+    cutTimelineEditor.setPlacePreview(
+      cutTimelineEditor.frameAtClientX(event.clientX),
+    );
+    return;
+  }
+  cutTimelineEditor.setPlacePreview(null);
+}
+
+function handleUnplacedPlaceDragUp(event) {
+  if (!unplacedPlaceDrag || event.pointerId !== unplacedPlaceDrag.pointerId) {
+    return;
+  }
+  const panelId = unplacedPlaceDrag.panelId;
+  unplacedPlaceDrag = null;
+  window.removeEventListener("pointermove", handleUnplacedPlaceDragMove);
+  window.removeEventListener("pointerup", handleUnplacedPlaceDragUp);
+  window.removeEventListener("pointercancel", handleUnplacedPlaceDragUp);
+  const onTrack = cutTimelineEditor.isPointOnTrack(event.clientX, event.clientY);
+  const frame = cutTimelineEditor.frameAtClientX(event.clientX);
+  cutTimelineEditor.setPlacePreview(null);
+  if (event.type !== "pointercancel" && onTrack) {
+    placeUnplacedPanelAtFrame(panelId, frame);
+  }
 }
 
 function saveTimelinePlacement(cutId, panelId, rawValue, placed) {
@@ -990,6 +1212,7 @@ function saveTimelinePlacement(cutId, panelId, rawValue, placed) {
     return;
   }
   timelineDrafts.set(panelId, String(parsed.startFrame));
+  selectedTimelinePanelId = panelId;
   markRushDirty();
   setTimelineMessage("");
   renderTimelineViews();
@@ -1503,6 +1726,7 @@ function clearSessionData() {
   cutStore.clear();
   timelineStore.clear();
   selectedPanelIds.clear();
+  selectedTimelinePanelId = null;
   timelineDrafts.clear();
   selectedCutId = null;
   timelineCutId = null;
@@ -1738,6 +1962,20 @@ redoButton.addEventListener("click", () => {
   handleRedo();
 });
 window.addEventListener("keydown", (event) => {
+  if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+    if (isTextEditingTarget(event.target)) {
+      return;
+    }
+    if (cutTimelineEditor.isBusy()) {
+      return;
+    }
+    const step = event.shiftKey ? 5 : 1;
+    const delta = event.key === "ArrowLeft" ? -step : step;
+    if (nudgeSelectedTimelinePanel(delta)) {
+      event.preventDefault();
+    }
+    return;
+  }
   const key = event.key.toLowerCase();
   if (key !== "z") {
     return;

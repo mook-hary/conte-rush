@@ -24,7 +24,7 @@
 - M5: 配置完了した Cut を時間軸に沿って静止画ラッシュとして再生する
 - M5.1: 保存構造を変えず、ページ送り・Cut一覧・入力クリア・Panel 連続登録の UI を改善する
 - M5.2: 保存構造を変えず、既存 Cut の編集導線と横 Timeline のドラッグ編集を追加する
-- M5.3: 保存構造を変えず、常設選択フレームによる Panel 連続取得と、限定した Undo / Redo を追加する
+- M5.3: 保存構造を変えず、常設選択フレームによる Panel 連続取得と、限定した Undo / Redo を追加する。画面高さ不足時はページを縦スクロールし、複数 Panel の初回配置と 1f 微調整を足す
 
 責務の境界:
 
@@ -710,9 +710,11 @@ M4 の数値 `startFrame` 入力は残す。データの正は Timeline Store �
 M5.2 では、未配置 Panel をバーへドロップして初回配置しない。
 
 - 未配置はバーの外（Cut 詳細）に別リストで出す
-- 初回配置は既存の数値入力と「配置」とする
+- 初回配置は数値入力と「配置」で行う
 - 配置成功後はマーカーが現れ、以降はドラッグできる
 - Cut から Panel を外したら placement も消え、マーカーも消す（M4 のまま）
+
+M5.3 でのクリック / ドラッグ初回配置と矢印キー微調整は、M5.3 節に書く。
 
 ### 11. Cut 総尺変更との同期
 
@@ -972,12 +974,34 @@ Redo で Panel が戻ったら、Thumbnail は再生成し、Rush 画像は dirt
 ### 18. モジュール境界
 
 - 新規は `js/history.js` とする
-- 想定する変更ファイル: `index.html`、`css/style.css`、`js/app.js`、`js/panel-overlay.js`、`js/panel-store.js`、`js/history.js`
+- 想定する変更ファイル: `index.html`、`css/style.css`、`js/app.js`、`js/panel-overlay.js`、`js/panel-store.js`、`js/history.js`、`js/timeline-editor.js`
 - 選択フレームの正本は `js/panel-overlay.js` が持つ。`app.js` は `{ x, y, width, height, aspectLocked }` の複製を持たない
 - overlay の公開 API は `getFrame` / `resetFrame` / `clampFrame` / `setAspectLocked` / `setMode` / `setEnabled` / `renderPanels` / `clear` とする。汎用の `setFrame` は置かない
 - `js/timeline-store.js` / `js/cut-store.js` の保存項目は増やさない。削除 Undo 用のスナップショットは履歴 Action が持つ
 - Panel / Cut / Timeline / Rush の保存構造は変えない
 - `rush-player.js` の再生ロジックは変えない
+
+### 19. 画面高さ
+
+M5.3 の情報量を 1 画面に押し込まない。`html` / `body` を `100vh + overflow: hidden` の固定シェルにしない。
+
+- コンテンツが画面高さを超えたら、ページ全体を縦スクロールする
+- PDF / 横 Timeline / Rush / Cut 詳細 / Timeline 詳細のどれも、スクロールすれば到達できる
+- Cut 一覧（および Panel 一覧）だけ、従来どおり領域内スクロールとする
+- PDF viewer は `min(52vh, 38rem)` に収め、ページ全体を viewer が占有して下部を永久に隠さない
+- 左右カラムそれぞれと内部領域を二重・三重にスクロールさせない
+
+### 20. 複数 Panel の Timeline 操作
+
+数値「配置」は残す。加えて次を行う。
+
+- 未配置 Panel を選び、横 Timeline 上をクリック、または Timeline 上へドラッグする
+- その位置を整数 frame へスナップし、検証成功時だけ初回 placement を作る
+- 配置済みマーカーをクリックして選ぶ。選んでいるときだけ `← / →` で 1f、`Shift + ← / →` で 5f 動かす
+- マーカーが選ばれていないときは、矢印キーを Timeline 編集に使わない
+- 有効範囲は `0 ... durationFrames - 1`。同じ `startFrame` は禁止。無効位置は拒否して元の値を維持する
+- 空き frame へ自動ではずらさない。`0f` が無くなれば未完成。他 Panel を自動で `0f` へしない
+- Store 更新成功時だけ `markRushDirty()` する。保存構造は変えない
 
 ## UI 要件
 
@@ -1040,7 +1064,7 @@ Redo で Panel が戻ったら、Thumbnail は再生成し、Rush 画像は dirt
 - 左カラムの横 Timeline バー
 - 配置済み Panel のドラッグ可能な開始マーカー
 - ドラッグ中の候補 frame 表示
-- 未配置 Panel の別リスト（数値で初回配置）
+- 未配置 Panel の別リスト（数値「配置」）
 - 導出区間の確認
 
 ### M5.3（実装済み）
@@ -1052,6 +1076,9 @@ Redo で Panel が戻ったら、Thumbnail は再生成し、Rush 画像は dirt
 - `frame` / `drag` の 2 系統
 - Undo / Redo ボタン
 - 選択フレームは stamp 専用 UI を置かない
+- 画面高さ不足時のページ縦スクロール
+- 未配置 Panel を選んで横 Timeline へクリック / ドラッグして初回配置
+- 選択中マーカーの矢印キー微調整（1f / Shift 5f）
 
 ## 非対象
 
@@ -1070,7 +1097,6 @@ Redo で Panel が戻ったら、Thumbnail は再生成し、Rush 画像は dirt
 - 選択フレームの回転
 - 複数の選択フレーム
 - Panel 表示区間の両端リサイズ
-- 未配置 Panel を Timeline バーへドロップして初回配置すること
 - 同じ `startFrame` を自動で空き frame へずらすこと
 - `0f` が無くなったときに他 Panel を自動で `0f` へ詰めること
 - Panel の `startFrame` / `endFrame`（Panel 本体および Cut 本体への保存）

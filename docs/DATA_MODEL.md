@@ -476,6 +476,25 @@ Cut 詳細ペインの対象。Cut Data の項目ではない。
 - 確定失敗、Esc、pointercancel では破棄し、マーカーと数値欄を保存済み値へ戻す
 - 確定成功時だけ Store を更新し、この候補を捨てる
 
+#### TimelinePanelSelection（M5.3）
+
+横 Timeline の行またはマーカーで選んでいる Panel。Timeline Data ではない。
+
+| 項目 | 意味 |
+|---|---|
+| `selectedTimelinePanelId` | 選択中の `panelId`。未選択はなし |
+
+- 未配置を選んだ状態で横バーをクリック / ドラッグすると、その位置へ初回配置する
+- 配置済みを選んだ状態だけ、矢印キーで `startFrame` を 1f / 5f 動かす
+- ファイルへ保存しない
+
+#### UnplacedPlacePreview（M5.3）
+
+未配置を横バーへ置く操作のあいだだけ持つ UI 状態。Timeline Data ではない。
+
+- バー上のスナップ済み候補 frame を示す
+- pointerup の検証成功時だけ Store へ書く。失敗・キャンセルでは破棄する
+
 ### 持たないもの（現行）
 
 - 永続化した Rush Data

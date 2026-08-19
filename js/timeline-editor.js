@@ -2,6 +2,8 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
+const DRAG_THRESHOLD_PX = 4;
+
 export function frameToRatio(startFrame, durationFrames) {
   if (!Number.isFinite(durationFrames) || durationFrames <= 0) {
     return 0;
@@ -29,9 +31,15 @@ export function createTimelineEditor(rootEl, options) {
 
   let view = null;
   let drag = null;
+  let trackGesture = null;
+  let placePreviewEl = null;
 
   function isDragging() {
-    return Boolean(drag);
+    return Boolean(drag?.moved);
+  }
+
+  function isBusy() {
+    return Boolean(drag || trackGesture);
   }
 
   function markerLeft(startFrame, durationFrames) {
@@ -39,11 +47,27 @@ export function createTimelineEditor(rootEl, options) {
   }
 
   function clientXToFrame(clientX) {
+    if (!view) {
+      return 0;
+    }
     const bounds = trackEl.getBoundingClientRect();
     return xToFrame(clientX - bounds.left, bounds.width, view.durationFrames);
   }
 
+  function isPointOnTrack(clientX, clientY) {
+    const bounds = trackEl.getBoundingClientRect();
+    return (
+      clientX >= bounds.left &&
+      clientX <= bounds.right &&
+      clientY >= bounds.top &&
+      clientY <= bounds.bottom
+    );
+  }
+
   function updateMarkerEl(element, startFrame) {
+    if (!view) {
+      return;
+    }
     element.style.left = markerLeft(startFrame, view.durationFrames);
     const frameEl = element.querySelector("[data-role='frame']");
     if (frameEl) {
@@ -65,6 +89,14 @@ export function createTimelineEditor(rootEl, options) {
     }
   }
 
+  function capturePointer(element, pointerId) {
+    try {
+      element.setPointerCapture(pointerId);
+    } catch {
+      // 実ポインタがない合成イベントでは失敗する。
+    }
+  }
+
   function endDragSession() {
     if (!drag) {
       return null;
@@ -81,11 +113,45 @@ export function createTimelineEditor(rootEl, options) {
     if (!drag) {
       return false;
     }
-    const { panelId, savedFrame } = drag;
+    const { panelId, savedFrame, moved } = drag;
     restoreSavedMarker();
+    drag.element.classList.remove("is-dragging");
     endDragSession();
-    options.onCancel?.({ panelId, savedFrame });
+    if (moved) {
+      options.onCancel?.({ panelId, savedFrame });
+    }
     return true;
+  }
+
+  function clearPlacePreview() {
+    if (placePreviewEl) {
+      placePreviewEl.remove();
+      placePreviewEl = null;
+    }
+  }
+
+  function setPlacePreview(frame) {
+    if (!view || !Number.isInteger(frame)) {
+      clearPlacePreview();
+      return;
+    }
+    if (!placePreviewEl) {
+      placePreviewEl = document.createElement("div");
+      placePreviewEl.className = "cut-timeline-place-preview";
+      trackEl.append(placePreviewEl);
+    }
+    placePreviewEl.style.left = markerLeft(frame, view.durationFrames);
+    placePreviewEl.dataset.frame = String(frame);
+  }
+
+  function applySelectedClass() {
+    const selectedId = view?.selectedPanelId ?? null;
+    trackEl.querySelectorAll(".cut-timeline-marker").forEach((element) => {
+      element.classList.toggle(
+        "is-selected",
+        Boolean(selectedId) && element.dataset.panelId === selectedId,
+      );
+    });
   }
 
   function createMarkerEl(marker) {
@@ -130,26 +196,30 @@ export function createTimelineEditor(rootEl, options) {
       if (drag) {
         cancelDrag();
       }
+      trackGesture = null;
       drag = {
         panelId: marker.panelId,
         savedFrame: marker.startFrame,
         pointerId: event.pointerId,
         element,
+        startX: event.clientX,
+        startY: event.clientY,
+        moved: false,
       };
-      element.classList.add("is-dragging");
-      element.setPointerCapture(event.pointerId);
-      const candidateFrame = clientXToFrame(event.clientX);
-      updateMarkerEl(element, candidateFrame);
-      options.onPreview?.({
-        panelId: marker.panelId,
-        candidateFrame,
-      });
+      capturePointer(element, event.pointerId);
+      options.onSelect?.({ panelId: marker.panelId });
     });
 
     element.addEventListener("pointermove", (event) => {
       if (!drag || event.pointerId !== drag.pointerId || drag.element !== element || !view) {
         return;
       }
+      const distance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
+      if (!drag.moved && distance < DRAG_THRESHOLD_PX) {
+        return;
+      }
+      drag.moved = true;
+      element.classList.add("is-dragging");
       const candidateFrame = clientXToFrame(event.clientX);
       updateMarkerEl(element, candidateFrame);
       options.onPreview?.({
@@ -162,10 +232,13 @@ export function createTimelineEditor(rootEl, options) {
       if (!drag || event.pointerId !== drag.pointerId || drag.element !== element || !view) {
         return;
       }
-      const candidateFrame = clientXToFrame(event.clientX);
-      const { panelId, savedFrame } = drag;
+      const { panelId, savedFrame, moved } = drag;
       element.classList.remove("is-dragging");
       endDragSession();
+      if (!moved) {
+        return;
+      }
+      const candidateFrame = clientXToFrame(event.clientX);
       options.onCommit?.({
         cutId: view.cutId,
         panelId,
@@ -178,7 +251,6 @@ export function createTimelineEditor(rootEl, options) {
       if (!drag || event.pointerId !== drag.pointerId || drag.element !== element) {
         return;
       }
-      element.classList.remove("is-dragging");
       cancelDrag();
     });
 
@@ -186,7 +258,7 @@ export function createTimelineEditor(rootEl, options) {
   }
 
   function render(nextView) {
-    if (drag) {
+    if (isBusy()) {
       return;
     }
     view = nextView;
@@ -198,6 +270,7 @@ export function createTimelineEditor(rootEl, options) {
       metaEl.textContent = "";
       statusEl.textContent = "";
       endEl.textContent = "";
+      clearPlacePreview();
       return;
     }
 
@@ -208,11 +281,13 @@ export function createTimelineEditor(rootEl, options) {
     statusEl.classList.toggle("is-complete", view.complete);
     statusEl.classList.toggle("is-incomplete", !view.complete);
     endEl.textContent = view.endLabel;
+    trackEl.classList.toggle("is-placing", Boolean(view.placing));
 
     trackEl.replaceChildren();
     for (const marker of view.markers) {
       trackEl.append(createMarkerEl(marker));
     }
+    applySelectedClass();
 
     rangesEl.replaceChildren();
     if (view.ranges.length === 0) {
@@ -232,19 +307,79 @@ export function createTimelineEditor(rootEl, options) {
     if (drag) {
       endDragSession();
     }
+    trackGesture = null;
     render(null);
   }
+
+  trackEl.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || !view) {
+      return;
+    }
+    if (event.target.closest(".cut-timeline-marker")) {
+      return;
+    }
+    trackGesture = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+    };
+    capturePointer(trackEl, event.pointerId);
+    const frame = clientXToFrame(event.clientX);
+    setPlacePreview(frame);
+    options.onTrackPreview?.({ frame });
+  });
+
+  trackEl.addEventListener("pointermove", (event) => {
+    if (!trackGesture || event.pointerId !== trackGesture.pointerId || !view) {
+      return;
+    }
+    const frame = clientXToFrame(event.clientX);
+    setPlacePreview(frame);
+    options.onTrackPreview?.({ frame });
+  });
+
+  trackEl.addEventListener("pointerup", (event) => {
+    if (!trackGesture || event.pointerId !== trackGesture.pointerId) {
+      return;
+    }
+    trackGesture = null;
+    if (trackEl.hasPointerCapture?.(event.pointerId)) {
+      trackEl.releasePointerCapture(event.pointerId);
+    }
+    if (!view || drag) {
+      clearPlacePreview();
+      return;
+    }
+    const frame = clientXToFrame(event.clientX);
+    clearPlacePreview();
+    options.onTrackPlace?.({ frame });
+  });
+
+  trackEl.addEventListener("pointercancel", (event) => {
+    if (!trackGesture || event.pointerId !== trackGesture.pointerId) {
+      return;
+    }
+    trackGesture = null;
+    clearPlacePreview();
+  });
 
   window.addEventListener(
     "keydown",
     (event) => {
-      if (event.key !== "Escape" || !drag) {
+      if (event.key !== "Escape") {
         return;
       }
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      drag.element.classList.remove("is-dragging");
-      cancelDrag();
+      if (drag) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        cancelDrag();
+        return;
+      }
+      if (trackGesture) {
+        event.preventDefault();
+        trackGesture = null;
+        clearPlacePreview();
+      }
     },
     true,
   );
@@ -253,6 +388,10 @@ export function createTimelineEditor(rootEl, options) {
     render,
     clear,
     isDragging,
+    isBusy,
     cancelDrag,
+    frameAtClientX: clientXToFrame,
+    isPointOnTrack,
+    setPlacePreview,
   };
 }

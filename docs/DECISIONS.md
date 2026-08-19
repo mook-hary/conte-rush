@@ -497,6 +497,86 @@
 - 採用しなかった案: 既存 Cut への追加でも再均等する。重複開始をずらして無理に置く
 - 結果: 保存は `{ panelId, startFrame }` のまま。追加 Panel は未配置。Cut 作成は Undo 対象にしない
 
+## D63. Motion は Panel / Cut / Timeline から独立させる
+
+- 状態: 採用（M6・仕様）
+- 判断: `{ cutId, motions: [{ panelId, from, to }] }` を別 Store にする。既存 3 構造のフィールドは増やさない
+- 理由: 「いつ始まるか」と「画面をどう動かすか」を混ぜない。削除整合も Timeline と同じパターンにできる
+- 採用しなかった案: Panel へ from/to を書く。Cut へ motions を埋め込む。Timeline placement に scale を足す
+- 結果: Motion 未設定は正常。全 Panel に作らなくてよい
+
+## D64. 正本は from/to の x/y/scale。type は表示ラベル
+
+- 状態: 採用（M6・仕様）
+- 判断: PAN / TU / TB を排他 enum として保存しない。UI プリセットは from/to の初期値を入れるだけ
+- 理由: PAN しながら TU を同じレコードで表せる。後から type を足すと組み合わせが壊れる
+- 採用しなかった案: `"pan" | "tu" | "tb"` の排他。type と from/to を両方正にする
+- 結果: ラベルは位置差と scale 差から導出する
+
+## D65. Motion 時間は Panel 表示区間全体に従属させる
+
+- 状態: 採用（M6・仕様）
+- 判断: `startFrame` / `endFrameExclusive` を Motion に保存しない。区間は既存 `deriveRanges`
+- 理由: Timeline の `startFrame` 変更で期間が自動追従する。独立時間だと無効化ルールが要る
+- 採用しなかった案: Cut ローカルの開始・終了を保存する。部分 Motion を M6 から入れる
+- 結果: 部分区間は将来フィールド追加で足せる。M6 では空の時間欄を置かない。配列 `motions` だけ残す
+
+## D66. Motion は出力フレームへの 16:9 crop である
+
+- 状態: 採用（M6・仕様）
+- 判断: Panel 画像を平行移動しない。16:9 の crop 窓を画像内で動かす / 拡大縮小する
+- 理由: Rush と将来 MP4 が同じ「このフレームでどこを切り出すか」を共有できる
+- 採用しなかった案: 画像全体を canvas 上で translate する。letterbox を Motion 中も出す
+- 結果: Motion 中は cover。Motionなしだけ contain（M5 の静止に近い）
+
+## D67. x/y は Panel 画像の中心、scale 1 は内接最大 16:9
+
+- 状態: 採用（M6・仕様）
+- 判断: 座標は Panel 切り出し画像の 0〜1。PDF の Panel.x / Panel.y とは別。scale >= 1
+- 理由: ページ相対と crop 窓を混ぜると PAN の意味が壊れる。scale 1 未満は Panel の外になる
+- 採用しなかった案: 左上+幅高さで保存する。scale 1 を「画像全体 fit」にする
+- 結果: 16:9 は画素比。PDF 選択フレームの CSS 見た目 16:9（D53）とは定義が違う
+
+## D68. 補間は線形で、最終 frame に to を置く
+
+- 状態: 採用（M6・仕様）
+- 判断: `t = (localFrame - start) / (lastFrame - start)` を 0〜1 にクランプ。1 フレームでは式を使わず適用しない
+- 理由: START/END 画角は区間の両端 inclusive で見てほしい。排他尺で割ると to に届かない
+- 採用しなかった案: ease-in/out。`t = elapsed / duration` のまま
+- 結果: M6 にイージング項目は置かない
+
+## D69. rush-player は時刻解決だけ、描画は Frame Renderer
+
+- 状態: 採用（M6・仕様）
+- 判断: `globalFrame → Cut → localFrame → panelId` は `resolveFrame` のまま。pose 解決は app。`frame-renderer.js` は `{ canvas, image, pose }` だけ描く
+- 理由: MP4 も同じ「frame 解決 → pose 解決 → renderFrame」を回せる。Renderer に Cut 解決を足すと境界が崩れる
+- 採用しなかった案: Renderer が `globalFrame` を受け取って `resolveFrame` する。player 内で lerp する。img + CSS transform
+- 結果: Play 時に Motion は app が凍結する。player snapshot へ Motion を埋め込まない。`rush-player.js` の時計は変えない
+
+## D70. Motion 編集は Undo / Redo 対象にする
+
+- 状態: 採用（M6・仕様）
+- 判断: 作成・削除・from/to 確定を既存 `history.js` に積む。ドラッグ中は Store に書かない
+- 理由: START/END を戻したい操作が中心になる。履歴機構は M5.3 で既にある
+- 採用しなかった案: Motion Undo を M7 へ送る。Cut 作成まで履歴に入れる
+- 結果: Panel 削除 Action は消した Motion も保持して戻す。Cut 作成は対象外のまま
+
+## D71. MP4 は M7。M6 はブラウザ Rush まで
+
+- 状態: 採用（M6・仕様）
+- 判断: 旧ロードマップの「M6 = MP4」を繰り下げる。M6 は Motion 再生と共通 Renderer
+- 理由: エンコード前に crop の定義と Rush 確認が要る
+- 採用しなかった案: M6 で MP4 まで出す。Renderer なしで Rush だけ動かす
+- 結果: 空のエンコーダモジュールは作らない
+
+## D72. 1フレームの表示区間には Motion を設定しない
+
+- 状態: 採用（M6・仕様）
+- 判断: `startFrame === lastFrame` では作成・編集不可。既存 Motion は消さず、Rush では適用しない
+- 理由: 補間の分母が 0 になる。`t = 0` の特例を再生仕様に置きたくない
+- 採用しなかった案: 1 フレームで from だけ出す。1 フレームになったら Motion を自動削除する
+- 結果: 通常 Motion は先頭で from、末尾で to。最低 2 表示フレーム
+
 ## 未決
 
 - ライセンス

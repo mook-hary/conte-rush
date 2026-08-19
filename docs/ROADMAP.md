@@ -188,26 +188,46 @@ Cut 編集の Undo、確定済み Panel の移動、履歴永続化、MP4 は M5
 
 秒+コマ入力、fps 変更、タイムシート、MP4 は M5.4 の範囲ではない。仕様は [SPEC.md](SPEC.md) の M5.4 節を正とする。
 
+## M6（実装済み）
+
+Panel / Cut / Timeline の保存項目は変えず、独立した Motion で PAN / TU / TB をブラウザ Rush に乗せる。MP4 は出さない。
+
+- Motion は `{ cutId, motions: [{ panelId, from, to }] }`。`from` / `to` は `{ x, y, scale }`
+- `type` も開始・終了 frame も保存しない。PAN / TU / TB はラベル。時間は Timeline 表示区間に従属
+- 表示区間が 1 フレームのときは作成・編集不可。既存 Motion は消さず、Rush では適用しない
+- `x` / `y` は Panel 画像内の viewport 中心（0〜1）。`scale` 1.0 は内接最大 16:9
+- 出力は 16:9 crop。Motionなしは contain の静止
+- 線形補間。inclusive 最終 frame で `to`
+- 編集 UI は Cut 詳細。Panel 画像上の START / END 枠。PDF 選択フレームとは別座標
+- `rush-player.js` の時刻解決は維持。描画は `renderFrame({ canvas, image, pose })`
+- 新規は `js/motion-store.js`、`js/frame-renderer.js`、`js/motion-editor.js`
+- Motion 作成・削除・from/to 確定は Undo / Redo 対象
+- Panel / Cut 削除と PDF 再選択成功で Motion 参照を残さない
+- Panel / Cut / Timeline のフィールドは増やさない
+
+MP4 / WebM / 音声 / ease / 複数 Motion 連結 / 部分区間 Motion / 回転は M6 の範囲ではない。仕様は [SPEC.md](SPEC.md) の M6 節を正とする。
+
 ## 以降（構想）
 
-順序の目安であり、確定した計画ではない。M6 以降の詳細モデルはまだ作らない。
+順序の目安であり、確定した計画ではない。
 
 データ境界との対応は [DATA_MODEL.md](DATA_MODEL.md) の将来節を参照する。
 
 | 候補 | 想定する前進 |
 |---|---|
-| M6 | MP4。同じ frame 列と切り出し入口から動画ファイルを出す |
+| M7 | 同じ Frame Renderer の 1 フレーム描画から MP4 を出す |
 
-M6 以降でやり得ることの例（未着手、M5.4 には入れない）:
+M7 以降でやり得ることの例（未着手、M6 には入れない）:
 
 - MP4 / WebM 出力
 - 音声 / BGM / SE
 - ループ再生
 - スクラブバー、再生ヘッドのドラッグ
 - 再生速度変更、fps 変更 UI
-- Panel 同士の切替タイミングの保存
+- Panel 表示の途中だけにかける Motion
+- 1 Panel 内の複数 Motion 連結
 - ディゾルブ等のトランジション
-- カメラワーク解析（PAN / TU / TB 等）
+- カメラワークの自動解析
 - Panel の自動検出（`source: "auto"`）
 - CUT 番号の OCR / 自動認識
 - AI 解析

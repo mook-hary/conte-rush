@@ -7,23 +7,33 @@ import {
   formatFrameTime,
   formatFrameTimeLabel,
   parseDurationInput,
-} from "./duration.js?v=m54-3";
+} from "./duration.js?v=m6-2";
 import { canvasToObjectUrl, cropPanelImage, PREVIEW_SCALE } from "./panel-image.js";
-import { createHistory } from "./history.js?v=m54-3";
+import { createHistory } from "./history.js?v=m6-2";
 import { createPdfViewer } from "./pdf-viewer.js";
-import { createPanelOverlay } from "./panel-overlay.js?v=m54-3";
-import { createTimelineEditor } from "./timeline-editor.js?v=m54-3";
-import { createPanelStore } from "./panel-store.js?v=m54-3";
+import { createPanelOverlay } from "./panel-overlay.js?v=m6-2";
+import { createTimelineEditor } from "./timeline-editor.js?v=m6-2";
+import { createPanelStore } from "./panel-store.js?v=m6-2";
 import { createThumbnailCache } from "./thumbnail-cache.js";
 import {
   createTimelineStore,
+  deriveRanges,
   evenPlacements,
   parseStartFrameInput,
-} from "./timeline-store.js?v=m54-3";
+} from "./timeline-store.js?v=m6-2";
 import {
   createRushImageCache,
   RUSH_SCALE,
 } from "./rush-image-cache.js";
+import { renderFrame, rushCanvasPixelSize } from "./frame-renderer.js";
+import { createMotionEditor } from "./motion-editor.js";
+import {
+  canSampleMotion,
+  createMotionStore,
+  motionLabel,
+  posesEqual,
+  samplePose,
+} from "./motion-store.js";
 import {
   buildSnapshot,
   createRushPlayer,
@@ -62,6 +72,7 @@ const cutDeleteButton = document.querySelector("#cut-delete");
 const cutMembersEl = document.querySelector("#cut-members");
 const cutDetailTitleEl = document.querySelector("#cut-detail-title");
 const cutTimelineStripEl = document.querySelector("#cut-timeline-strip");
+const motionEditorEl = document.querySelector("#motion-editor");
 const timelineMetaEl = document.querySelector("#timeline-meta");
 const timelineStatusEl = document.querySelector("#timeline-status");
 const timelineRowsEl = document.querySelector("#timeline-rows");
@@ -73,7 +84,7 @@ const rushLocalEl = document.querySelector("#rush-local");
 const rushGlobalEl = document.querySelector("#rush-global");
 const rushMessageEl = document.querySelector("#rush-message");
 const rushPlaceholderEl = document.querySelector("#rush-placeholder");
-const rushImageEl = document.querySelector("#rush-image");
+const rushCanvasEl = document.querySelector("#rush-canvas");
 const rushPlayButton = document.querySelector("#rush-play");
 const rushPauseButton = document.querySelector("#rush-pause");
 const rushResetButton = document.querySelector("#rush-reset");
@@ -99,6 +110,7 @@ let rushPrepToken = 0;
 let rushPreparing = false;
 let rushError = "";
 let rushView = null;
+let rushMotionFreeze = null;
 
 const queuedThumbnails = [];
 const queuedThumbnailIds = new Set();
@@ -111,6 +123,7 @@ const viewer = createPdfViewer(canvas, viewerEl);
 const panelStore = createPanelStore();
 const cutStore = createCutStore();
 const timelineStore = createTimelineStore();
+const motionStore = createMotionStore();
 const thumbnailCache = createThumbnailCache();
 const rushImageCache = createRushImageCache();
 const history = createHistory();
@@ -139,6 +152,17 @@ const cutTimelineEditor = createTimelineEditor(cutTimelineStripEl, {
   },
   onTrackPlace({ frame }) {
     placeSelectedUnplacedAtFrame(frame);
+  },
+});
+const motionEditor = createMotionEditor(motionEditorEl, {
+  onSelect({ panelId }) {
+    selectTimelinePanel(panelId);
+  },
+  onCommit(payload) {
+    commitMotionChange(payload);
+  },
+  onDelete(payload) {
+    deleteMotion(payload);
   },
 });
 
@@ -235,6 +259,7 @@ function capturePanelSnapshot(panelId) {
     cutId: cut?.id ?? null,
     panelIdsIndex: cut ? cut.panelIds.indexOf(panelId) : -1,
     startFrame: placement ? placement.startFrame : null,
+    motion: cutId ? motionStore.get(cutId, panelId) : null,
   };
 }
 
@@ -280,6 +305,9 @@ function restorePanelSnapshot(snapshot) {
         setTimelineMessage(result.message);
       }
     }
+    if (snapshot.motion) {
+      motionStore.upsert(snapshot.cutId, snapshot.motion);
+    }
   }
   failedThumbnailIds.delete(snapshot.panel.id);
   requestThumbnail(snapshot.panel);
@@ -290,6 +318,7 @@ function restorePanelSnapshot(snapshot) {
 function removePanelInternal(panelId) {
   cutStore.removePanelFromAll(panelId);
   timelineStore.removePanelFromAll(panelId);
+  motionStore.removePanelFromAll(panelId);
   selectedPanelIds.delete(panelId);
   if (selectedTimelinePanelId === panelId) {
     selectedTimelinePanelId = null;
@@ -370,6 +399,7 @@ function handleUndo() {
   }
   history.undo();
   updatePlaceUi();
+  renderTimelineViews();
 }
 
 function handleRedo() {
@@ -378,6 +408,7 @@ function handleRedo() {
   }
   history.redo();
   updatePlaceUi();
+  renderTimelineViews();
 }
 
 function panelExists(panelId) {
@@ -447,16 +478,80 @@ function rushStatusLabel() {
   return "未準備";
 }
 
+function loadImageElement(url) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("画像を読み込めませんでした。"));
+    image.src = url;
+  });
+}
+
+function sizeRushCanvas() {
+  const { width, height } = rushCanvasPixelSize(window.devicePixelRatio || 1);
+  if (rushCanvasEl.width !== width || rushCanvasEl.height !== height) {
+    rushCanvasEl.width = width;
+    rushCanvasEl.height = height;
+  }
+}
+
+function rangesFromSegment(segment) {
+  return deriveRanges(
+    {
+      durationFrames: segment.durationFrames,
+      panelIds: segment.placements.map((item) => item.panelId),
+    },
+    { placements: segment.placements },
+  );
+}
+
+function findFrozenMotion(cutId, panelId) {
+  const set = rushMotionFreeze?.find((item) => item.cutId === cutId);
+  return set?.motions.find((item) => item.panelId === panelId) ?? null;
+}
+
+function poseForRushView(view) {
+  if (!view) {
+    return null;
+  }
+  const motion = findFrozenMotion(view.cutId, view.panelId);
+  if (!motion) {
+    return null;
+  }
+  const snapshot = rushPlayer.getSnapshot();
+  const segment = snapshot?.segments.find((item) => item.cutId === view.cutId);
+  if (!segment) {
+    return null;
+  }
+  const range = rangesFromSegment(segment).find(
+    (item) => item.panelId === view.panelId,
+  );
+  if (!range || !canSampleMotion(range.startFrame, range.lastFrame)) {
+    return null;
+  }
+  return samplePose(
+    motion.from,
+    motion.to,
+    view.localFrame,
+    range.startFrame,
+    range.lastFrame,
+  );
+}
+
 function showRushView(view) {
   rushView = view;
+  sizeRushCanvas();
   const cached = view?.panelId ? rushImageCache.get(view.panelId) : null;
-  if (cached?.url) {
-    rushImageEl.hidden = false;
-    rushImageEl.src = cached.url;
+  const image = cached?.image ?? null;
+  if (image) {
     rushPlaceholderEl.hidden = true;
+    renderFrame({
+      canvas: rushCanvasEl,
+      image,
+      pose: poseForRushView(view),
+    });
   } else {
-    rushImageEl.hidden = true;
-    rushImageEl.removeAttribute("src");
+    renderFrame({ canvas: rushCanvasEl, image: null, pose: null });
     rushPlaceholderEl.hidden = false;
     rushPlaceholderEl.textContent = rushPreparing
       ? "画像を準備しています"
@@ -522,8 +617,22 @@ async function prepareRushImages(snapshot, token) {
     if (token !== rushPrepToken) {
       return { ok: false, cancelled: true };
     }
-    if (rushImageCache.has(panelId)) {
+    if (rushImageCache.get(panelId)?.image) {
       continue;
+    }
+    const existing = rushImageCache.get(panelId);
+    if (existing?.url) {
+      try {
+        const image = await loadImageElement(existing.url);
+        if (token !== rushPrepToken) {
+          return { ok: false, cancelled: true };
+        }
+        rushImageCache.set(panelId, { url: existing.url, image });
+        continue;
+      } catch (error) {
+        console.error(error);
+        rushImageCache.delete(panelId);
+      }
     }
     const panel = panelStore.getById(panelId);
     const cutNumber = cutNumberForPanel(snapshot, panelId);
@@ -544,7 +653,12 @@ async function prepareRushImages(snapshot, token) {
         URL.revokeObjectURL(url);
         return { ok: false, cancelled: true };
       }
-      rushImageCache.set(panelId, { url });
+      const image = await loadImageElement(url);
+      if (token !== rushPrepToken) {
+        URL.revokeObjectURL(url);
+        return { ok: false, cancelled: true };
+      }
+      rushImageCache.set(panelId, { url, image });
     } catch (error) {
       console.error(error);
       return { ok: false, panelId, cutNumber };
@@ -635,6 +749,7 @@ async function handleRushPlay() {
     return;
   }
 
+  rushMotionFreeze = motionStore.listAll();
   rushPlayer.replaceSnapshot(snapshot);
   rushPlayer.resume();
   renderRush();
@@ -666,6 +781,7 @@ function discardRush() {
   rushPreparing = false;
   rushError = "";
   rushView = null;
+  rushMotionFreeze = null;
   rushPlayer.discard();
   rushImageCache.clear();
   renderRush();
@@ -755,6 +871,7 @@ function syncTimelineSelectionUi() {
 function selectTimelinePanel(panelId) {
   selectedTimelinePanelId = panelId ?? null;
   syncTimelineSelectionUi();
+  renderMotionEditor();
 }
 
 function previewUnplacedPlace(frame) {
@@ -945,9 +1062,159 @@ function renderCutTimelineStrip() {
   });
 }
 
+function motionRangeFor(cut, panelId) {
+  if (!cut || !panelId) {
+    return null;
+  }
+  return (
+    timelineStore.rangesFor(cut).find((item) => item.panelId === panelId) ?? null
+  );
+}
+
+function commitMotionChange({ cutId, panelId, from, to }) {
+  const cut = cutStore.getById(cutId);
+  const range = motionRangeFor(cut, panelId);
+  if (range && !canSampleMotion(range.startFrame, range.lastFrame)) {
+    return;
+  }
+  const previous = motionStore.get(cutId, panelId);
+  if (previous && posesEqual(previous.from, from) && posesEqual(previous.to, to)) {
+    return;
+  }
+  const result = motionStore.upsert(cutId, { panelId, from, to });
+  if (!result.ok) {
+    return;
+  }
+  const existed = Boolean(previous);
+  history.push({
+    label: existed ? "Motionを変更" : "Motionを作成",
+    undo() {
+      if (existed) {
+        motionStore.upsert(cutId, previous);
+      } else {
+        motionStore.remove(cutId, panelId);
+      }
+      markRushDirty();
+      renderMotionEditor();
+    },
+    redo() {
+      motionStore.upsert(cutId, { panelId, from, to });
+      markRushDirty();
+      renderMotionEditor();
+    },
+  });
+  markRushDirty();
+  updateHistoryButtons();
+  renderMotionEditor();
+}
+
+function deleteMotion({ cutId, panelId }) {
+  const previous = motionStore.get(cutId, panelId);
+  if (!previous) {
+    return;
+  }
+  motionStore.remove(cutId, panelId);
+  history.push({
+    label: "Motionを削除",
+    undo() {
+      motionStore.upsert(cutId, previous);
+      markRushDirty();
+      renderMotionEditor();
+    },
+    redo() {
+      motionStore.remove(cutId, panelId);
+      markRushDirty();
+      renderMotionEditor();
+    },
+  });
+  markRushDirty();
+  updateHistoryButtons();
+  renderMotionEditor();
+}
+
+function renderMotionEditor() {
+  if (motionEditor.isBusy()) {
+    return;
+  }
+  const cut = selectedCutId ? cutStore.getById(selectedCutId) : null;
+  if (!cut) {
+    motionEditor.render(null);
+    return;
+  }
+  const panelId =
+    selectedTimelinePanelId && cut.panelIds.includes(selectedTimelinePanelId)
+      ? selectedTimelinePanelId
+      : (cut.panelIds[0] ?? null);
+  const range = motionRangeFor(cut, panelId);
+  const motion = panelId ? motionStore.get(cut.id, panelId) : null;
+  const oneFrame = Boolean(
+    range && !canSampleMotion(range.startFrame, range.lastFrame),
+  );
+  const rows = cut.panelIds.map((id) => {
+    const item = motionStore.get(cut.id, id);
+    const itemRange = motionRangeFor(cut, id);
+    const itemOneFrame = Boolean(
+      itemRange && !canSampleMotion(itemRange.startFrame, itemRange.lastFrame),
+    );
+    let kind = "Motionなし";
+    if (item && itemOneFrame) {
+      kind = "適用不能";
+    } else if (item) {
+      kind = motionLabel(item.from, item.to);
+    }
+    return {
+      panelId: id,
+      label: panelLabel(id),
+      kind,
+    };
+  });
+
+  let statusText = "";
+  let hintText = "";
+  let blocked = false;
+  let editable = Boolean(panelId);
+  if (!panelId) {
+    statusText = "所属Panelがありません";
+    editable = false;
+  } else if (oneFrame) {
+    blocked = true;
+    editable = false;
+    statusText = motion
+      ? "表示区間が1フレームのためMotionを適用できません"
+      : "表示区間が1フレームのためMotionを設定できません";
+  } else if (!range) {
+    hintText = "未配置です。配置後の表示区間全体にMotionがかかります";
+  } else if (motion) {
+    hintText = `${motionLabel(motion.from, motion.to)} / ${formatRange(range)}`;
+  } else {
+    hintText = "プリセットから作成し、START / END 枠で調整できます";
+  }
+
+  const cached = panelId
+    ? thumbnailCache.get(panelId) ?? rushImageCache.get(panelId)
+    : null;
+
+  motionEditor.render({
+    cutId: cut.id,
+    panelId,
+    rows,
+    statusText,
+    hintText,
+    blocked,
+    editable,
+    hasMotion: Boolean(motion),
+    from: motion?.from ?? null,
+    to: motion?.to ?? null,
+    imageUrl: cached?.url ?? "",
+    imageWidth: cached?.image?.naturalWidth ?? 0,
+    imageHeight: cached?.image?.naturalHeight ?? 0,
+  });
+}
+
 function renderTimelineViews() {
   renderTimelineEditor();
   renderCutTimelineStrip();
+  renderMotionEditor();
 }
 
 function maybeInitSinglePanelTimeline(cut) {
@@ -968,6 +1235,7 @@ function closeTimelineEditor() {
   selectedTimelinePanelId = null;
   timelineDrafts.clear();
   setTimelineMessage("");
+  motionEditor.render(null);
 }
 
 function selectCut(cutId, { fillForm = true } = {}) {
@@ -1421,6 +1689,7 @@ function createCutMemberEl(cutId, panelId) {
   removeButton.addEventListener("click", () => {
     cutStore.removePanel(cutId, panelId);
     timelineStore.removePlacement(cutId, panelId);
+    motionStore.remove(cutId, panelId);
     markRushDirty();
     setCutMessage("");
     renderCutList();
@@ -1514,6 +1783,7 @@ function deleteSelectedCut() {
   const cutId = selectedCutId;
   cutStore.remove(cutId);
   timelineStore.removeByCutId(cutId);
+  motionStore.removeByCutId(cutId);
   markRushDirty();
   setCutMessage("");
   clearCutSelection();
@@ -1792,6 +2062,7 @@ function clearSessionData() {
   panelStore.clear();
   cutStore.clear();
   timelineStore.clear();
+  motionStore.clear();
   selectedPanelIds.clear();
   selectedTimelinePanelId = null;
   timelineDrafts.clear();
@@ -1806,6 +2077,7 @@ function clearSessionData() {
   history.clear();
   overlay.clear();
   cutTimelineEditor.clear();
+  motionEditor.clear();
   discardRush();
 }
 

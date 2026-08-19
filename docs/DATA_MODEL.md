@@ -11,7 +11,8 @@
 - Panel = PDF 上のコンテ画像領域
 - Cut = CUT 番号、総尺、所属 Panel
 - Timeline = Cut 内で各 Panel をいつ表示するか（開始フレーム）
-- Rush = Cut と Timeline を時間軸に沿って再生したもの（M5 で再生時の一時構造を定義）
+- Motion = ある Panel 表示区間内で、16:9 出力へどこを crop するか（M6）
+- Rush = Timeline + Motion を時間軸に沿って再生したもの（M5 で再生時の一時構造、M6 で描画を Renderer へ）
 
 ### PdfSession（M0）
 
@@ -178,7 +179,7 @@ M3 のアプリ実装は、この定義に従う。
 - 表示区間
 - 切替タイミング
 - トランジション
-- PAN / TU / TB
+- PAN / TU / TB（Cut へ埋め込まない。M6 の Motion が独立して持つ）
 - 画像
 - Timeline 完成フラグ
 - 詳細ペインで選んでいる Cut の id
@@ -273,7 +274,7 @@ M4 のアプリ実装は、この定義に従う。
 - 秒とコマの保存フィールド
 - 切替タイミング
 - トランジション
-- PAN / TU / TB
+- PAN / TU / TB（Timeline へ埋め込まない）
 - 再生ヘッド、play / pause、実時間タイマー
 - 画像
 - 完成フラグ（描画時に `isComplete` から導出する）
@@ -287,6 +288,86 @@ M4 のアプリ実装は、この定義に従う。
 - Cut から Panel を外したら、その Panel の placement を除く。`panelIds` からの除外は Cut 側の操作とする
 - Cut に Panel を足しても、既存 placement は触らない。足した Panel は未配置とする
 - Timeline から placement を消しても、`panelIds` からは外さない
+- 新しい PDF の読み込み成功時にすべて破棄する
+- 読み込み失敗で直前の PDF を維持する場合は破棄しない
+
+### Motion（M6）
+
+ある Panel の表示区間内で、16:9 の出力フレームへ Panel 画像のどこを crop するかを表す。再生データそのものではない。Panel / Cut / Timeline の一部でもない。
+
+M6 のアプリ実装はこの定義に従う。
+
+| 項目 | 意味 |
+|---|---|
+| `cutId` | 対象 Cut の `id`。Motion 集合のキー |
+| `motions` | 要素は `panelId` と `from` / `to` のみ |
+
+`from` / `to`:
+
+| 項目 | 意味 |
+|---|---|
+| `x` | Panel **画像**内の viewport 中心 X（0〜1） |
+| `y` | Panel **画像**内の viewport 中心 Y（0〜1）。下が + |
+| `scale` | ズーム。`1.0` = 画像に内接する最大 16:9。大きいほど寄る |
+
+例:
+
+```json
+{
+  "cutId": "cut-001",
+  "motions": [
+    {
+      "panelId": "panel-a",
+      "from": { "x": 0.3, "y": 0.5, "scale": 1.0 },
+      "to": { "x": 0.7, "y": 0.5, "scale": 1.4 }
+    }
+  ]
+}
+```
+
+`cutId`:
+
+- Cut 1 件につき Motion 集合は 0 または 1 件とする
+- 独自 id は持たない
+- `motions` が空なら、集合レコード自体を持たなくてよい
+
+`motions`:
+
+- M6 では同一 `panelId` は高々 1 件
+- `panelId` はその Cut の `panelIds` に含まれるものに限る
+- 配列なのは、将来 1 Panel に複数区間を足す余地のため
+- `type`、`startFrame`、`endFrameExclusive` は持たない
+- PAN / TU / TB は from/to から表示時に導出する
+
+時間（導出のみ。保存しない）:
+
+- 対象 Panel の Timeline 表示区間全体にかかる
+- 区間は既存 `deriveRanges` と同じ（`startFrame` … `lastFrame` inclusive）
+- 先頭 frame が `from`、最終 frame が `to`
+- `lastFrame === startFrame` のときは作成・編集しない。既存レコードは残し、再生では適用しない
+
+`scale` と 16:9:
+
+- 画素空間で viewport の幅:高さ = 16:9
+- `scale = 1` の窓は、Panel 画像に収まる最大の 16:9
+- 窓は画像の外へ出さない。中心はクランプする
+- `scale < 1` は持たない
+
+持たないもの:
+
+- Panel / Cut / Timeline への埋め込み
+- PDF ページ座標（Panel.x / Panel.y とは別）
+- 出力 canvas のピクセル幅・高さ
+- 回転、ease、type フィールド
+- 永続ファイル
+
+保持と寿命:
+
+- メモリ上のみ。ファイルへ保存しない
+- Panel 削除: すべての Motion からその `panelId` を除く
+- Cut から Panel を外す: その Cut のその `panelId` を除く
+- Cut 削除: その `cutId` の集合を破棄する
+- Timeline から placement だけ消しても Motion は残してよい
 - 新しい PDF の読み込み成功時にすべて破棄する
 - 読み込み失敗で直前の PDF を維持する場合は破棄しない
 
@@ -362,6 +443,7 @@ segment:
 
 - Play 時に構築する。メモリ上のみ
 - 再生中は live の Cut / Timeline を読まない
+- M6 では live の Motion も読まない。Play 時に app が Motion を別途凍結する。この snapshot オブジェクトへ Motion は埋め込まない
 - dirty な次回 Play で作り直す
 - 新しい PDF の読み込み成功時に破棄する
 
@@ -381,7 +463,7 @@ Rush 表示用の Panel 画像だけを、メモリ上に持つ。M2 の Thumbna
 - 同一 `id` は 1 回だけ生成する
 - 1 件ずつ生成する
 - ウィンドウリサイズでは再生成しない
-- MP4 素材とは定義しない
+- MP4 素材とは定義しない。M6 の Renderer はここの画像をソースにする
 
 寿命:
 
@@ -390,7 +472,7 @@ Rush 表示用の Panel 画像だけを、メモリ上に持つ。M2 の Thumbna
 - 読み込み失敗で直前の PDF を維持する場合は残す
 - ファイルへ保存しない
 
-### UI 状態（M5.1 / M5.2 / M5.3 / M5.4）
+### UI 状態（M5.1 / M5.2 / M5.3 / M5.4 / M6）
 
 Panel / Cut / Timeline / Rush の保存構造ではない。メモリ上の操作状態だけとする。ファイルへ保存しない。`localStorage` にも入れない。
 
@@ -450,7 +532,7 @@ Undo / Redo のメモリ上スタック。Store ではない。ファイルへ�
 | `canUndo` / `canRedo` | ボタンの有効状態 |
 | `clear` | 両方空にする |
 
-必須対象: Panel 登録、Panel 削除、Timeline の `startFrame` 確定。
+必須対象: Panel 登録、Panel 削除、Timeline の `startFrame` 確定、M6 の Motion 作成 / 削除 / from-to 確定。
 
 Panel 削除の 1 Action が保持するもの:
 
@@ -458,6 +540,7 @@ Panel 削除の 1 Action が保持するもの:
 - Panel Store 上の元の挿入位置
 - 所属していた Cut と、その `panelIds` 内位置
 - Timeline placement があった場合の `startFrame`
+- その Panel に付いていた Motion（M6）
 
 新しい PDF の読み込み成功時に `clear` する。失敗維持時は残す。
 
@@ -512,6 +595,26 @@ Cut 詳細ペインの対象。Cut Data の項目ではない。
 - 秒やコマを Store やスナップショットへコピーしない
 - 数値 `startFrame` 入力の補助 `= 1+18` も、パースできた整数に対する導出だけとする
 
+#### MotionEditorView（M6・仕様）
+
+Cut 詳細の Motion 編集 UI 状態。Motion Data ではない。
+
+| 項目 | 意味 |
+|---|---|
+| `selectedMotionPanelId` | START/END 枠を出している Panel |
+| ドラッグ中の候補 from/to | 確定前の枠。Store には書かない |
+
+- 座標は Panel 画像上。PDF 選択フレームとは共有しない
+- ファイルへ保存しない
+
+#### RushMotionFreeze（M6・仕様）
+
+Play 時だけ持つ Motion の複製。RushPlayback snapshot の項目ではない。
+
+- 再生中はこれを読む。live の Motion Store は読まない
+- dirty な次回 Play で作り直す
+- ファイルへ保存しない
+
 ### 持たないもの（現行）
 
 - 永続化した Rush Data
@@ -522,6 +625,8 @@ Cut 詳細ペインの対象。Cut Data の項目ではない。
 - Panel に埋め込んだ画像、CUT 番号、尺、`cutId`、`startFrame`
 - Cut に埋め込んだ `placements` / `startFrame` / global 区間
 - Timeline に埋め込んだ `endFrame`
+- Panel / Cut / Timeline に埋め込んだ Motion
+- Motion の `type` / `startFrame` / `endFrameExclusive`
 - ユーザー設定の永続化
 - Panel テンプレートの永続化
 - 選択フレームの永続化
@@ -542,6 +647,7 @@ Panel は後に Storyboard Data へ入り得るが、Storyboard Data 自体は�
 Storyboard Data
     → Cut Data
         → Timeline
+            → Motion
             → Rush
 ```
 
@@ -550,7 +656,8 @@ Storyboard Data
 | Storyboard Data | 読み込んだ絵コンテ PDF と、そのページ単位の情報 |
 | Cut Data | CUT 番号、総尺、所属 Panel（M3 の Cut がその人手入力部分） |
 | Timeline | Cut 内で各 Panel をいつ表示するか（M4 で開始フレームまで定義） |
-| Rush | Cut と Timeline を時間軸に沿って再生したもの（M5 でブラウザ再生の一時構造まで定義） |
+| Motion | Panel 表示中の crop 窓（M6 で from/to まで定義） |
+| Rush | Timeline + Motion を時間軸に沿って再生したもの（M5 でブラウザ再生の一時構造。M6 で Renderer） |
 
 流れは一方向を想定する。逆方向の編集はまだ定義しない。Storyboard Data と MP4 の中身はまだ定義しない。
 
@@ -563,3 +670,5 @@ M5.2 でも保存構造は増やさない。横 Timeline の候補位置は UI �
 M5.3 でも保存構造は増やさない。常設選択フレームと履歴は UI 状態に留める。`panel-store.js` へ既存 id の復元 API を足してよいが、Panel のフィールドは増やさない。
 
 M5.4 でも保存構造は増やさない。秒+コマは描画時の表示だけとする。正規値は整数 frame のままとする。タイムシート出力はまだ定義しない。
+
+M6 では Motion を独立構造として足す。Panel / Cut / Timeline の項目は増やさない。MP4 エンコードはまだ定義しない。1 フレーム描画の入口は Frame Renderer とする。

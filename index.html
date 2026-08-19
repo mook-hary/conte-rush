@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>conte-rush</title>
-    <link rel="stylesheet" href="css/style.css?v=m54-3" />
+    <link rel="stylesheet" href="css/style.css?v=m6-2" />
   </head>
   <body data-state="idle">
     <header class="toolbar">
@@ -79,7 +79,7 @@
           <section class="rush" id="rush-panel" aria-label="Rush">
             <div class="rush-frame">
               <p id="rush-placeholder" class="rush-placeholder">未準備</p>
-              <img id="rush-image" alt="Rush の現在 Panel" hidden />
+              <canvas id="rush-canvas" class="rush-canvas"></canvas>
             </div>
             <div class="rush-info">
               <p id="rush-status" class="rush-status">未準備</p>
@@ -199,6 +199,59 @@
                   <ul id="timeline-ranges" class="timeline-ranges"></ul>
                   <p id="timeline-message" class="timeline-message" role="status"></p>
                 </section>
+                <section id="motion-editor" class="motion-editor" aria-label="Motion">
+                  <div class="motion-editor-head">
+                    <h2>Motion</h2>
+                  </div>
+                  <p data-role="status" class="motion-status"></p>
+                  <ul data-role="rows" class="motion-rows"></ul>
+                  <p data-role="empty" class="motion-empty">Cutを選ぶとMotionを編集できます</p>
+                  <div data-role="stage-wrap" class="motion-stage-wrap" hidden>
+                    <div class="motion-stage">
+                      <img data-role="image" alt="Motion 編集中の Panel" />
+                      <div
+                        data-role="start"
+                        data-frame="start"
+                        class="motion-frame is-start"
+                        hidden
+                      >
+                        <span class="motion-frame-label">START</span>
+                        <span data-corner="nw" class="motion-handle"></span>
+                        <span data-corner="ne" class="motion-handle"></span>
+                        <span data-corner="sw" class="motion-handle"></span>
+                        <span data-corner="se" class="motion-handle"></span>
+                      </div>
+                      <div
+                        data-role="end"
+                        data-frame="end"
+                        class="motion-frame is-end"
+                        hidden
+                      >
+                        <span class="motion-frame-label">END</span>
+                        <span data-corner="nw" class="motion-handle"></span>
+                        <span data-corner="ne" class="motion-handle"></span>
+                        <span data-corner="sw" class="motion-handle"></span>
+                        <span data-corner="se" class="motion-handle"></span>
+                      </div>
+                    </div>
+                    <div class="motion-presets" role="group" aria-label="Motionプリセット">
+                      <button type="button" data-preset="none">Motionなし</button>
+                      <button type="button" data-preset="pan">PAN</button>
+                      <button type="button" data-preset="tu">TU</button>
+                      <button type="button" data-preset="tb">TB</button>
+                    </div>
+                    <div class="motion-target" role="group" aria-label="編集する画角">
+                      <button type="button" data-target="start" aria-pressed="true">
+                        STARTを編集
+                      </button>
+                      <button type="button" data-target="end" aria-pressed="false">
+                        ENDを編集
+                      </button>
+                    </div>
+                    <p data-role="target-status" class="motion-target-status">編集中: START</p>
+                    <p data-role="hint" class="motion-hint"></p>
+                  </div>
+                </section>
               </div>
             </section>
           </section>
@@ -219,6 +272,6 @@
         status.textContent = `起動エラー: ${event.message}`;
       });
     </script>
-    <script type="module" src="js/app.js?v=m54-3"></script>
+    <script type="module" src="js/app.js?v=m6-2"></script>
   </body>
 </html>

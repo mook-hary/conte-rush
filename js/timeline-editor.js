@@ -1,3 +1,5 @@
+import { formatFrameTime, formatFrameTimeLabel } from "./duration.js?v=m54-3";
+
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
@@ -25,6 +27,7 @@ export function createTimelineEditor(rootEl, options) {
   const bodyEl = rootEl.querySelector("[data-role='body']");
   const metaEl = rootEl.querySelector("[data-role='meta']");
   const statusEl = rootEl.querySelector("[data-role='status']");
+  const startEl = rootEl.querySelector("[data-role='start']");
   const endEl = rootEl.querySelector("[data-role='end']");
   const trackEl = rootEl.querySelector("[data-role='track']");
   const rangesEl = rootEl.querySelector("[data-role='ranges']");
@@ -64,15 +67,37 @@ export function createTimelineEditor(rootEl, options) {
     );
   }
 
+  function fillRulerLabel(element, frame) {
+    if (!element) {
+      return;
+    }
+    element.replaceChildren();
+    const timeEl = document.createElement("span");
+    timeEl.textContent = formatFrameTime(frame);
+    const framesEl = document.createElement("span");
+    framesEl.textContent = `${frame}f`;
+    element.append(timeEl, framesEl);
+  }
+
+  function fillMarkerTime(element, startFrame) {
+    const timeEl = element.querySelector("[data-role='time']");
+    const frameEl = element.querySelector("[data-role='frame']");
+    if (timeEl) {
+      timeEl.textContent = formatFrameTime(startFrame);
+    }
+    if (frameEl) {
+      frameEl.textContent = `${startFrame}f`;
+    }
+    const label = element.querySelector(".cut-timeline-label")?.textContent ?? "";
+    element.title = `${label} ${formatFrameTimeLabel(startFrame)}`.trim();
+  }
+
   function updateMarkerEl(element, startFrame) {
     if (!view) {
       return;
     }
     element.style.left = markerLeft(startFrame, view.durationFrames);
-    const frameEl = element.querySelector("[data-role='frame']");
-    if (frameEl) {
-      frameEl.textContent = `${startFrame}f`;
-    }
+    fillMarkerTime(element, startFrame);
   }
 
   function findMarker(panelId) {
@@ -160,7 +185,6 @@ export function createTimelineEditor(rootEl, options) {
     element.className = "cut-timeline-marker";
     element.dataset.panelId = marker.panelId;
     element.style.left = markerLeft(marker.startFrame, view.durationFrames);
-    element.title = `${marker.label} ${marker.startFrame}f`;
 
     const tick = document.createElement("span");
     tick.className = "cut-timeline-tick";
@@ -179,13 +203,17 @@ export function createTimelineEditor(rootEl, options) {
     labelEl.className = "cut-timeline-label";
     labelEl.textContent = marker.label;
 
+    const timeEl = document.createElement("span");
+    timeEl.className = "cut-timeline-time";
+    timeEl.dataset.role = "time";
+
     const frameEl = document.createElement("span");
     frameEl.className = "cut-timeline-frame";
     frameEl.dataset.role = "frame";
-    frameEl.textContent = `${marker.startFrame}f`;
 
-    card.append(labelEl, frameEl);
+    card.append(labelEl, timeEl, frameEl);
     element.append(tick, card);
+    fillMarkerTime(element, marker.startFrame);
 
     element.addEventListener("pointerdown", (event) => {
       if (event.button !== 0 || !view) {
@@ -269,7 +297,8 @@ export function createTimelineEditor(rootEl, options) {
       rangesEl.replaceChildren();
       metaEl.textContent = "";
       statusEl.textContent = "";
-      endEl.textContent = "";
+      startEl?.replaceChildren();
+      endEl?.replaceChildren();
       clearPlacePreview();
       return;
     }
@@ -280,7 +309,8 @@ export function createTimelineEditor(rootEl, options) {
     statusEl.textContent = view.statusText;
     statusEl.classList.toggle("is-complete", view.complete);
     statusEl.classList.toggle("is-incomplete", !view.complete);
-    endEl.textContent = view.endLabel;
+    fillRulerLabel(startEl, 0);
+    fillRulerLabel(endEl, view.durationFrames);
     trackEl.classList.toggle("is-placing", Boolean(view.placing));
 
     trackEl.replaceChildren();

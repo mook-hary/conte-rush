@@ -3,19 +3,23 @@ import { createCutStore } from "./cut-store.js";
 import {
   formatDuration,
   formatDurationLabel,
+  formatFrameRange,
+  formatFrameTime,
+  formatFrameTimeLabel,
   parseDurationInput,
-} from "./duration.js";
+} from "./duration.js?v=m54-3";
 import { canvasToObjectUrl, cropPanelImage, PREVIEW_SCALE } from "./panel-image.js";
-import { createHistory } from "./history.js?v=m53-5";
+import { createHistory } from "./history.js?v=m54-3";
 import { createPdfViewer } from "./pdf-viewer.js";
-import { createPanelOverlay } from "./panel-overlay.js?v=m53-5";
-import { createTimelineEditor } from "./timeline-editor.js?v=m53-5";
-import { createPanelStore } from "./panel-store.js?v=m53-5";
+import { createPanelOverlay } from "./panel-overlay.js?v=m54-3";
+import { createTimelineEditor } from "./timeline-editor.js?v=m54-3";
+import { createPanelStore } from "./panel-store.js?v=m54-3";
 import { createThumbnailCache } from "./thumbnail-cache.js";
 import {
   createTimelineStore,
+  evenPlacements,
   parseStartFrameInput,
-} from "./timeline-store.js";
+} from "./timeline-store.js?v=m54-3";
 import {
   createRushImageCache,
   RUSH_SCALE,
@@ -460,12 +464,25 @@ function showRushView(view) {
   }
 
   rushCutEl.textContent = view ? `CUT ${view.cutNumber}` : "";
-  rushLocalEl.textContent = view
-    ? `${view.localFrame} / ${view.durationFrames}f`
-    : "";
-  rushGlobalEl.textContent = view
-    ? `Global ${view.globalFrame} / ${view.totalFrames}f`
-    : "";
+  fillRushMeter(rushLocalEl, "Local", view?.localFrame, view?.durationFrames);
+  fillRushMeter(rushGlobalEl, "Global", view?.globalFrame, view?.totalFrames);
+}
+
+function fillRushMeter(element, label, current, total) {
+  element.replaceChildren();
+  if (!Number.isInteger(current) || !Number.isInteger(total)) {
+    return;
+  }
+  const name = document.createElement("span");
+  name.className = "rush-meter-label";
+  name.textContent = label;
+  const time = document.createElement("span");
+  time.className = "rush-meter-time";
+  time.textContent = `${formatFrameTime(current)} / ${formatFrameTime(total)}`;
+  const frames = document.createElement("span");
+  frames.className = "rush-meter-frames";
+  frames.textContent = `${current}f / ${total}f`;
+  element.append(name, time, frames);
 }
 
 function renderRush() {
@@ -667,16 +684,42 @@ function panelLabel(panelId) {
 }
 
 function formatRange(range) {
-  return `${range.startFrame}–${range.lastFrame}f`;
+  return formatFrameRange(range.startFrame, range.lastFrame);
 }
 
-function previewStartFrameInput(panelId, frame) {
+function frameHintText(raw) {
+  const parsed = parseStartFrameInput(raw);
+  if (!parsed.ok || parsed.startFrame < 0) {
+    return "";
+  }
+  return `= ${formatFrameTime(parsed.startFrame)}`;
+}
+
+function syncStartFrameDisplay(panelId, raw) {
   const input = timelineRowsEl.querySelector(
     `[data-timeline-panel="${CSS.escape(panelId)}"]`,
   );
-  if (input) {
-    input.value = String(frame);
+  if (!input) {
+    return;
   }
+  input.value = raw;
+  const row = input.closest(".timeline-row");
+  const hint = row?.querySelector("[data-role='frame-hint']");
+  if (hint) {
+    hint.textContent = frameHintText(raw);
+  }
+  const startLabel = row?.querySelector("[data-role='start-label']");
+  if (startLabel) {
+    const parsed = parseStartFrameInput(raw);
+    startLabel.textContent =
+      parsed.ok && parsed.startFrame >= 0
+        ? formatFrameTimeLabel(parsed.startFrame)
+        : "";
+  }
+}
+
+function previewStartFrameInput(panelId, frame) {
+  syncStartFrameDisplay(panelId, String(frame));
 }
 
 function restoreStartFrameInput(panelId, frame) {
@@ -884,7 +927,7 @@ function renderCutTimelineStrip() {
     complete,
     metaText: `CUT ${cut.cutNumber} / ${formatDurationLabel(cut.durationFrames)}`,
     statusText: complete ? "配置完了" : "未完成",
-    endLabel: `${cut.durationFrames}f`,
+    endLabel: formatDurationLabel(cut.durationFrames),
     markers: (timeline?.placements ?? []).map((placement) => {
       const cached = thumbnailCache.get(placement.panelId);
       return {
@@ -1034,7 +1077,7 @@ function renderTimelineEditor() {
     for (const range of ranges) {
       const item = document.createElement("li");
       item.className = "timeline-range-item";
-      item.textContent = `${range.startFrame}f  ${panelLabel(range.panelId)}  ${formatRange(range)}`;
+      item.textContent = `${panelLabel(range.panelId)}  ${formatRange(range)}`;
       timelineRangesEl.append(item);
     }
   }
@@ -1073,6 +1116,12 @@ function createTimelineRowEl(cut, panelId, { placed, range, startFrame }) {
   label.textContent = placed ? panelLabel(panelId) : `${panelLabel(panelId)}（未配置）`;
   label.title = panelId;
 
+  const startLabel = document.createElement("p");
+  startLabel.className = "timeline-row-start";
+  startLabel.dataset.role = "start-label";
+  startLabel.textContent =
+    placed && Number.isInteger(startFrame) ? formatFrameTimeLabel(startFrame) : "";
+
   const rangeEl = document.createElement("p");
   rangeEl.className = "timeline-row-range";
   rangeEl.textContent = range ? formatRange(range) : "—";
@@ -1091,12 +1140,24 @@ function createTimelineRowEl(cut, panelId, { placed, range, startFrame }) {
   input.value = timelineDrafts.has(panelId)
     ? timelineDrafts.get(panelId)
     : fallback;
-  input.addEventListener("input", () => {
-    timelineDrafts.set(panelId, input.value);
-  });
   const unit = document.createElement("span");
   unit.textContent = "f";
-  field.append(input, unit);
+  const hint = document.createElement("span");
+  hint.className = "timeline-row-hint";
+  hint.dataset.role = "frame-hint";
+  hint.textContent = frameHintText(input.value);
+  input.addEventListener("input", () => {
+    timelineDrafts.set(panelId, input.value);
+    hint.textContent = frameHintText(input.value);
+    if (placed) {
+      const parsed = parseStartFrameInput(input.value);
+      startLabel.textContent =
+        parsed.ok && parsed.startFrame >= 0
+          ? formatFrameTimeLabel(parsed.startFrame)
+          : "";
+    }
+  });
+  field.append(input, unit, hint);
 
   const saveButton = document.createElement("button");
   saveButton.type = "button";
@@ -1125,7 +1186,7 @@ function createTimelineRowEl(cut, panelId, { placed, range, startFrame }) {
     edit.append(deleteButton);
   }
 
-  item.append(createTimelineThumbEl(panelId), label, rangeEl, edit);
+  item.append(createTimelineThumbEl(panelId), label, startLabel, rangeEl, edit);
   item.addEventListener("click", (event) => {
     if (event.target.closest("button, input")) {
       return;
@@ -1602,13 +1663,19 @@ function handleCutFormSubmit(event) {
     durationFrames: duration.durationFrames,
     panelIds,
   });
-  maybeInitSinglePanelTimeline(cutStore.getById(created.id) ?? created);
+  const even = evenPlacements(created.durationFrames, created.panelIds);
+  if (even.ok) {
+    timelineStore.create(created.id, even.placements);
+  }
   markRushDirty();
   selectedPanelIds.clear();
   resetCutForm();
   setCutMessage("");
   renderPanelList();
   selectCut(created.id);
+  if (!even.ok) {
+    setTimelineMessage(even.message);
+  }
 }
 
 function cancelQueuedThumbnail(panelId) {

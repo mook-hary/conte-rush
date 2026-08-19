@@ -167,6 +167,27 @@ MP4、音声、トランジション、PAN / TU / TB、ループ、スクラブ�
 
 Cut 編集の Undo、確定済み Panel の移動、履歴永続化、MP4 は M5.3 の範囲ではない。仕様は [SPEC.md](SPEC.md) の M5.3 節を正とする。
 
+## M5.4（実装済み）
+
+保存構造と Rush 再生ロジックは変えず、整数 frame の表示を秒+コマと総フレームの併記にする。秒+コマは表示専用とする。
+
+- 正は整数 `startFrame` / `durationFrames`。秒やコマを保存しない
+- 24fps は既存 `FRAMES_PER_SECOND` のみ。変換は `duration.js` の formatter に集約する
+- `formatFrameTime` / `formatFrameTimeLabel` / `formatFrameRange` を既存 `formatDuration*` へ委譲する
+- Timeline / Rush へ変換式を重複して書かない
+- 配置済みは `1+18（42f）`。マーカーは `1+18` と `42f` の 2 段
+- 数値 start 入力は整数のまま。有効時だけ `= 1+18` を補助表示する
+- 導出区間は inclusive 最終 frame。例: `1+12–2+11（36–59f）`
+- Cut 総尺は既存の `3+12（84f）`。横バー右端は排他総尺、左端は有効 `0`
+- ドラッグ・矢印キー・「配置」は変えない
+- Rush メーターは表示のみ。`Local` は現在 Cut 内、`Global` はラッシュ全体
+- Cut 新規作成時は `panelIds` 順で `floor(durationFrames * i / N)` に均等配置する。1 Panel は `0f`
+- 総尺が短く開始が重なるときは自動配置せず、未完成のまま理由を出す
+- 既存 Cut への Panel 追加では再均等しない
+- 保存項目は増やさない。`rush-player.js` は変えない
+
+秒+コマ入力、fps 変更、タイムシート、MP4 は M5.4 の範囲ではない。仕様は [SPEC.md](SPEC.md) の M5.4 節を正とする。
+
 ## 以降（構想）
 
 順序の目安であり、確定した計画ではない。M6 以降の詳細モデルはまだ作らない。
@@ -177,7 +198,7 @@ Cut 編集の Undo、確定済み Panel の移動、履歴永続化、MP4 は M5
 |---|---|
 | M6 | MP4。同じ frame 列と切り出し入口から動画ファイルを出す |
 
-M6 以降でやり得ることの例（未着手、M5.3 には入れない）:
+M6 以降でやり得ることの例（未着手、M5.4 には入れない）:
 
 - MP4 / WebM 出力
 - 音声 / BGM / SE

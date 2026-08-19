@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>conte-rush</title>
-    <link rel="stylesheet" href="css/style.css?v=m53-5" />
+    <link rel="stylesheet" href="css/style.css?v=m54-3" />
   </head>
   <body data-state="idle">
     <header class="toolbar">
@@ -68,8 +68,8 @@
                 <p data-role="status" class="cut-timeline-status"></p>
               </div>
               <div class="cut-timeline-ruler">
-                <span>0f</span>
-                <span data-role="end"></span>
+                <span data-role="start" class="cut-timeline-ruler-label"></span>
+                <span data-role="end" class="cut-timeline-ruler-label"></span>
               </div>
               <div data-role="track" class="cut-timeline-track"></div>
               <ul data-role="ranges" class="cut-timeline-ranges"></ul>
@@ -219,6 +219,6 @@
         status.textContent = `起動エラー: ${event.message}`;
       });
     </script>
-    <script type="module" src="js/app.js?v=m53-5"></script>
+    <script type="module" src="js/app.js?v=m54-3"></script>
   </body>
 </html>

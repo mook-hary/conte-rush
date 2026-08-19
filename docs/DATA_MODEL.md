@@ -159,6 +159,7 @@ M3 のアプリ実装は、この定義に従う。
 - 尺の正規値はこの項目だけとする
 - 秒やコマを別フィールドとしては持たない
 - UI の秒+コマとの換算は 1 秒 = 24 フレーム（[DECISIONS.md](DECISIONS.md) の D16）
+- 表示は `formatDuration` / `formatDurationLabel`。M5.4 の開始位置表示も同じ換算を `formatFrameTime*` 経由で使う。保存値は増やさない
 
 `panelIds`:
 
@@ -238,14 +239,17 @@ M4 のアプリ実装は、この定義に従う。
 - 0 始まりの整数（フレーム）
 - `0 ≤ startFrame < cut.durationFrames`
 - 秒+コマでは持たない
+- M5.4 の秒+コマ表示は描画時に `duration.js` の formatter で導出する。項目は増やさない
 
 表示区間（導出のみ。保存しない）:
 
 - `endFrame` は項目にしない
 - `placements` を `startFrame` 昇順に並べる
 - i 番目の表示終了（排他）は、次の `startFrame`。最後はその Cut の `durationFrames`
-- 表示は `startFrame` から終了-1 までとする
-- 例: 84f で 0 / 36 / 60 なら `0–35f`、`36–59f`、`60–83f`
+- 表示する終了は inclusive の最終 frame（排他終端 − 1）とする
+- 例: 84f で 0 / 36 / 60 なら整数区間は `0–35f`、`36–59f`、`60–83f`
+- M5.4 の画面表示例: `0+00–1+11（0–35f）`、`1+12–2+11（36–59f）`、`2+12–3+11（60–83f）`
+- 横バー右端の総尺表示は排他終端（84f なら `3+12（84f）`）。区間の終了とは別である
 
 配置完了（Rush に渡せる条件。M4 では再生しない）:
 
@@ -257,15 +261,16 @@ M4 のアプリ実装は、この定義に従う。
 
 1 Panel Cut の初期化:
 
-- Cut 新規作成時に所属が 1 件なら、`startFrame: 0` を自動配置する
+- Cut 新規作成時は、所属数に応じて M5.4 の均等配置を使う。1 件なら `0f`
 - 既存 Cut を Timeline 編集対象として初めて扱うとき、Timeline が未作成で所属が 1 件だけなら、同様に `0f` を自動配置する
-- 複数 Panel の Cut には自動配置しない
+- 既存 Cut へ Panel を足しても、既存 placement は再均等しない。足した Panel は未配置とする
 - 既存 Timeline がある場合は書き換えない
 
 持たないもの:
 
 - `endFrame`
 - 表示区間の保存
+- 秒とコマの保存フィールド
 - 切替タイミング
 - トランジション
 - PAN / TU / TB
@@ -336,6 +341,8 @@ segment:
 - `totalFrames` は全 `durationFrames` の合計
 - `localFrame = globalFrame - globalStart`
 - 表示 Panel は、`startFrame ≤ localFrame` のうち最大の `startFrame`
+- `localFrame` / `globalFrame` / `totalFrames` は整数 frame のままとする。秒+コマは Rush Data に入れない
+- M5.4 のメーター表示は描画時に `formatFrameTime` する。`rush-player.js` は変えない
 
 再生対象:
 
@@ -349,6 +356,7 @@ segment:
 - トランジション
 - 再生速度
 - Cut への書き戻し
+- 秒とコマの保存フィールド
 
 保持と寿命:
 
@@ -382,7 +390,7 @@ Rush 表示用の Panel 画像だけを、メモリ上に持つ。M2 の Thumbna
 - 読み込み失敗で直前の PDF を維持する場合は残す
 - ファイルへ保存しない
 
-### UI 状態（M5.1 / M5.2 / M5.3）
+### UI 状態（M5.1 / M5.2 / M5.3 / M5.4）
 
 Panel / Cut / Timeline / Rush の保存構造ではない。メモリ上の操作状態だけとする。ファイルへ保存しない。`localStorage` にも入れない。
 
@@ -495,6 +503,15 @@ Cut 詳細ペインの対象。Cut Data の項目ではない。
 - バー上のスナップ済み候補 frame を示す
 - pointerup の検証成功時だけ Store へ書く。失敗・キャンセルでは破棄する
 
+#### FrameTimeDisplay（M5.4）
+
+整数 frame から描画時に導出する表示文字列。Timeline Data / Rush Data ではない。
+
+- `formatFrameTime` / `formatFrameTimeLabel` / `formatFrameRange` は `js/duration.js` が持つ
+- 既存 `formatDuration` / `formatDurationLabel` / `framesToParts` へ委譲する。24 を再定義しない
+- 秒やコマを Store やスナップショットへコピーしない
+- 数値 `startFrame` 入力の補助 `= 1+18` も、パースできた整数に対する導出だけとする
+
 ### 持たないもの（現行）
 
 - 永続化した Rush Data
@@ -510,6 +527,7 @@ Cut 詳細ペインの対象。Cut Data の項目ではない。
 - 選択フレームの永続化
 - Undo / Redo 履歴の永続化
 - 横 Timeline ドラッグ候補の永続化
+- 秒とコマの保存フィールド
 - Storyboard Data の完全なスキーマ
 
 Panel は後に Storyboard Data へ入り得るが、Storyboard Data 自体は未定義のままとする。
@@ -543,3 +561,5 @@ M5.1 では上記の保存構造を増やさない。テンプレートと Cut �
 M5.2 でも保存構造は増やさない。横 Timeline の候補位置は UI 状態に留める。`endFrame` は保存しない。
 
 M5.3 でも保存構造は増やさない。常設選択フレームと履歴は UI 状態に留める。`panel-store.js` へ既存 id の復元 API を足してよいが、Panel のフィールドは増やさない。
+
+M5.4 でも保存構造は増やさない。秒+コマは描画時の表示だけとする。正規値は整数 frame のままとする。タイムシート出力はまだ定義しない。

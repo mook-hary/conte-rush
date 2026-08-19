@@ -13,6 +13,7 @@
 - **M5.1**: 実装済み
 - **M5.2**: 実装済み
 - **M5.3**: 実装済み
+- **M5.4**: 実装済み
 
 ## 目的
 
@@ -25,6 +26,7 @@
 - M5.1: 保存構造を変えず、ページ送り・Cut一覧・入力クリア・Panel 連続登録の UI を改善する
 - M5.2: 保存構造を変えず、既存 Cut の編集導線と横 Timeline のドラッグ編集を追加する
 - M5.3: 保存構造を変えず、常設選択フレームによる Panel 連続取得と、限定した Undo / Redo を追加する。画面高さ不足時はページを縦スクロールし、複数 Panel の初回配置と 1f 微調整を足す
+- M5.4: 保存構造と再生ロジックを変えず、Timeline 編集 UI（および Rush メーター）の frame 表示を秒+コマと総フレームの併記にする
 
 責務の境界:
 
@@ -48,6 +50,8 @@ M5.1 の Panel テンプレートと Cut 選択は UI 状態だけである。Pa
 M5.2 の横 Timeline は `startFrame` の編集 UI である。Cut へ開始フレームを埋め込まない。`endFrame` は保存しない。
 
 M5.3 の常設選択フレームと履歴は UI 状態だけである。Panel Data には入れない。履歴はメモリ上のみとする。
+
+M5.4 の秒+コマは表示専用である。保存の正は整数 frame のままとする。秒やコマを別フィールドとしては持たない。
 
 ## 制約
 
@@ -80,6 +84,8 @@ M5.3 の常設選択フレームと履歴は UI 状態だけである。Panel Da
 - Undo / Redo 履歴はメモリ上のみとする。永続化しない
 - 選択フレームの移動・リサイズ・aspect lock 変更は履歴に入れない
 - Cut の作成・削除・番号/尺・所属変更の Undo / Redo は M5.3 の対象外とする
+- 秒+コマは表示専用とする。`startFrame` の数値入力は整数 frame のままとする
+- frame → 秒+コマの変換は `duration.js` に置き、Timeline / Rush 側へ変換式を重複して書かない
 
 ## M0 で実装する機能（実装済み）
 
@@ -350,7 +356,7 @@ M4 実装開始時点では、M3 までに作った Cut が残っていること
 - Cut を新規作成したとき、所属 Panel が 1 件
 - 既存 Cut を Timeline 編集対象として初めて扱うとき、Timeline が未作成で、所属 Panel が 1 件だけ
 
-複数 Panel の Cut には自動配置しない。均等割りもしない。誰を `0f` にするかはユーザーが決める。`panelIds` の先頭を再生順とはしない。
+複数 Panel の Cut には、M4 では自動配置しなかった。M5.4 の新規作成時は、所属順で総尺へ均等配置する（M5.4 節）。
 
 既存 Timeline がある場合は、空でも配置済みでも、勝手に書き換えない。
 
@@ -1003,6 +1009,165 @@ M5.3 の情報量を 1 画面に押し込まない。`html` / `body` を `100vh 
 - 空き frame へ自動ではずらさない。`0f` が無くなれば未完成。他 Panel を自動で `0f` へしない
 - Store 更新成功時だけ `markRushDirty()` する。保存構造は変えない
 
+## M5.4 で実装する機能（実装済み）
+
+保存構造と Rush 再生ロジックを変えず、整数 frame の表示を Cut 総尺と同じ「秒+コマ / 総フレーム」併記にする。秒+コマは表示専用である。`startFrame` の入力方式、横 Timeline のドラッグ、矢印キー、Timeline Store、Rush 再生ロジックは変えない。
+
+### 1. 正と表示
+
+- 保存と編集の正は整数 frame とする。例: `startFrame = 42` は 42 のまま
+- 秒やコマを別フィールドとしては保存しない
+- 表示は秒+コマを主、総フレームを補助とする。例: `1+18（42f）`
+- 24fps 定数は `duration.js` の `FRAMES_PER_SECOND` のみとする。M5.4 側へ 24 を再定義しない
+
+換算（既存 `framesToParts` と同じ）:
+
+```
+seconds = floor(frame / FRAMES_PER_SECOND)
+frames  = frame % FRAMES_PER_SECOND
+```
+
+| frame | 秒+コマ |
+|---|---|
+| 0 | 0+00 |
+| 18 | 0+18 |
+| 24 | 1+00 |
+| 42 | 1+18 |
+| 60 | 2+12 |
+| 83 | 3+11 |
+| 84 | 3+12（総尺。有効な `startFrame` ではない） |
+
+### 2. 共通 formatter
+
+`js/duration.js` に置き、既存関数へ委譲する。Timeline / Rush へ変換式を書かない。
+
+- `formatFrameTime(frame)` → 既存 `formatDuration(frame)`。例: `"1+18"`
+- `formatFrameTimeLabel(frame)` → 既存 `formatDurationLabel(frame)`。例: `"1+18（42f）"`
+- `formatFrameRange(startFrame, lastFrame)` → `"1+12–2+11（36–59f）"` のように、秒+コマを主、括弧内を inclusive の整数区間とする
+
+`parseDurationInput` は Cut 総尺入力専用のままとする。M5.4 では `startFrame` 入力に使わない。`parseStartFrameInput` は整数のまま `timeline-store.js` とする。
+
+### 3. Timeline 配置済み Panel
+
+行の開始表示は `formatFrameTimeLabel` とする。
+
+```
+Panel B
+1+18（42f）
+```
+
+### 4. 横 Timeline マーカー
+
+カードは 2 段とする。ドラッグ中の候補も同じ形式で更新する。
+
+```
+1+18
+42f
+```
+
+- 主: `formatFrameTime(startFrame)`
+- 副: `{startFrame}f`
+- `title` は `formatFrameTimeLabel`（例: `p.1 1+18（42f）`）
+
+### 5. 数値 startFrame 入力
+
+入力方式は変えない。整数 frame、横バーのクリック / ドラッグ初回配置、配置済みのドラッグ、`← / →` = 1f、`Shift + ← / →` = 5f を維持する。
+
+未配置・配置済みとも、入力値が有効な整数のときだけ補助を出す。
+
+```
+start [ 42 ] f
+= 1+18
+```
+
+空、非整数、`1+18` のような秒+コマ文字列は換算しない。補助を消す。エラー理由は整数 frame のままでよい。
+
+### 6. 導出表示区間
+
+導出ロジックは M4 のままとする。`endFrame` は保存しない。表示する終了は inclusive の最終 frame（次開始または総尺の排他終端 − 1）とする。
+
+```
+Panel A  0+00–1+11（0–35f）
+Panel B  1+12–2+11（36–59f）
+Panel C  2+12–3+11（60–83f）
+```
+
+横バー下の区間リストと Timeline 詳細の区間を同じ形式にする。1 行とし、秒+コマを主、括弧内を frame 補助とする。
+
+### 7. Cut 総尺と定規
+
+Cut 総尺の表示は既存どおり `3+12（84f）`（`formatDurationLabel`）を維持する。開始位置の秒+コマも同じ換算とする。
+
+横バーの定規:
+
+- 左端は有効開始 `0`。`0+00` と `0f` を併記する
+- 右端は排他の総尺。有効な `startFrame` ではない。84f なら `3+12` と `84f`（`3+11` にはしない）
+
+Cut 一覧の `3+12` と `84f` の別カラムは、高密度表示のためそのままとしてよい。
+
+### 8. Rush メーター
+
+`rush-player.js` は変えない。スナップショットと `localFrame` / `globalFrame` の整数はそのまま使い、`app.js` の表示だけを替える。
+
+Local は現在 Cut 内、Global はラッシュ全体とする。ラベルを省略せず、混同しない。
+
+```
+CUT 003
+Local  1+18 / 3+12
+       42f / 84f
+Global 12+06 / 25+00
+       294f / 600f
+```
+
+- Local: 現在 Cut の位置 / その Cut の総尺
+- Global: ラッシュ全体の位置 / 全体の総尺
+- 秒+コマは `formatFrameTime`、frame は整数の正
+
+Play / Pause / dirty / 画像準備は変えない。
+
+### 9. 変えないもの
+
+- Panel / Cut / Timeline / Rush Playback の保存構造
+- `rush-player.js` の再生ロジック
+- 整数 frame の数値入力、横バー操作、矢印キー
+- 秒+コマ形式による `startFrame` 直接入力（将来の余地は残すが M5.4 ではやらない）
+- 既存 Cut の placement を、Panel 追加のたびに再均等しないこと
+
+### 10. モジュール境界
+
+- formatter の追加先は `js/duration.js`
+- 表示の差替えは `js/app.js`、`js/timeline-editor.js`、`css/style.css`、`index.html`
+- 新規 Cut の均等配置計算は `js/timeline-store.js` の `evenPlacements`。保存項目は増やさない
+- `js/rush-player.js` は変えない
+- Panel / Cut / Timeline / Rush の保存構造は変えない
+
+### 11. 完成条件
+
+- `startFrame = 42` が `1+18（42f）` として読める
+- 横マーカーで秒+コマと `42f` を確認できる
+- 数値 frame 入力は従来どおり使える
+- 有効な入力値の秒+コマ換算を補助表示できる
+- 導出区間が秒+コマと inclusive frame で読める
+- Cut 総尺と開始位置の換算が同じである
+- 保存値は整数 frame のままである
+- Timeline Store の保存項目と Rush 再生ロジックを変えていない
+
+### 12. Cut 新規作成時の均等配置
+
+Cut 作成成功時、所属 Panel が 1 件以上なら、`panelIds` の登録順で総尺へ均等配置する。
+
+```
+startFrame(i) = floor(durationFrames * i / panelCount)
+```
+
+`i` は 0 始まり。1 Panel なら従来どおり `0f`。例: 84f / 3 Panel なら `0` / `28` / `56`。
+
+- 保存するのは既存の `{ panelId, startFrame }` だけとする
+- `0 ≤ startFrame < durationFrames`。同一 `startFrame` は置かない
+- 総尺が短く異なる開始を作れないとき（例: `durationFrames < panelCount`）は自動配置しない。Timeline は未完成のまま、理由を Timeline 欄へ出す
+- 既存 Cut へ Panel を足したときは、既存 placement を再均等しない。追加分は未配置とする
+- Cut 作成の Undo / Redo は足さない
+
 ## UI 要件
 
 ### M0（実装済み）
@@ -1080,9 +1245,19 @@ M5.3 の情報量を 1 画面に押し込まない。`html` / `body` を `100vh 
 - 未配置 Panel を選んで横 Timeline へクリック / ドラッグして初回配置
 - 選択中マーカーの矢印キー微調整（1f / Shift 5f）
 
+### M5.4（実装済み）
+
+- Timeline 開始位置の `1+18（42f）` 併記
+- 横マーカーの秒+コマ / frame 2 段表示
+- 数値 start 入力横の `= 1+18` 補助（入力は整数のまま）
+- 導出区間の秒+コマ主・frame 補助
+- 横バー定規の左端（有効 0）と右端（排他総尺）の併記
+- Rush の Local / Global ラベル付き秒+コマ併記
+- Cut 新規作成時の所属順均等配置（短尺では未完成のまま）
+
 ## 非対象
 
-次は M5.3 でも実装しない。UI もデータも作らない。
+次は M5.4 でも実装しない。UI もデータも作らない。
 
 - ファイルをウィンドウへドロップして開くこと
 - ズーム、回転、フィット表示の切替
@@ -1131,6 +1306,9 @@ M5.3 の情報量を 1 画面に押し込まない。`html` / `body` を `100vh 
 - Storyboard Data の完全定義
 - AI 解析
 - カメラワーク解析
+- 秒+コマ形式による `startFrame` 直接入力
+- タイムシート出力
+- Frame Renderer
 
 ## 将来
 
@@ -1153,3 +1331,5 @@ M5.1 のテンプレートと Cut 選択は UI 状態である。保存しない
 M5.2 の横 Timeline は `startFrame` の編集 UI である。保存構造は増やさない。
 
 M5.3 の常設選択フレームと Undo / Redo は UI 状態である。保存構造は増やさない。履歴はメモリ上のみとする。
+
+M5.4 の秒+コマは表示専用である。保存構造は増やさない。正規値は整数 frame のままとする。

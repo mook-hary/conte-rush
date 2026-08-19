@@ -50,3 +50,15 @@ export function formatDuration(durationFrames) {
 export function formatDurationLabel(durationFrames) {
   return `${formatDuration(durationFrames)}（${durationFrames}f）`;
 }
+
+export function formatFrameTime(frame) {
+  return formatDuration(frame);
+}
+
+export function formatFrameTimeLabel(frame) {
+  return formatDurationLabel(frame);
+}
+
+export function formatFrameRange(startFrame, lastFrame) {
+  return `${formatFrameTime(startFrame)}–${formatFrameTime(lastFrame)}（${startFrame}–${lastFrame}f）`;
+}

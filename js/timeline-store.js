@@ -38,6 +38,36 @@ export function parseStartFrameInput(raw) {
   return { ok: true, startFrame };
 }
 
+const EVEN_PLACE_FAIL_MESSAGE = "総尺が短いためPanelを均等配置できません";
+
+export function evenPlacements(durationFrames, panelIds) {
+  const count = panelIds.length;
+  if (count < 1 || !Number.isInteger(durationFrames) || durationFrames < 1) {
+    return { ok: false, message: EVEN_PLACE_FAIL_MESSAGE };
+  }
+  if (durationFrames < count) {
+    return { ok: false, message: EVEN_PLACE_FAIL_MESSAGE };
+  }
+
+  const placements = panelIds.map((panelId, index) => ({
+    panelId,
+    startFrame: Math.floor((durationFrames * index) / count),
+  }));
+  const used = new Set();
+  for (const item of placements) {
+    if (
+      !Number.isInteger(item.startFrame) ||
+      item.startFrame < 0 ||
+      item.startFrame >= durationFrames ||
+      used.has(item.startFrame)
+    ) {
+      return { ok: false, message: EVEN_PLACE_FAIL_MESSAGE };
+    }
+    used.add(item.startFrame);
+  }
+  return { ok: true, placements };
+}
+
 export function validatePlacement({
   cut,
   timeline,

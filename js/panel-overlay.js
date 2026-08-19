@@ -1,4 +1,4 @@
-const MIN_SIZE = 0.01;
+export const MIN_SIZE = 0.01;
 
 function clamp01(value) {
   if (!Number.isFinite(value)) {
@@ -22,9 +22,29 @@ function normalizeRect(x0, y0, x1, y1) {
   };
 }
 
+function clampSize(width, height) {
+  return {
+    width: Math.min(1, Math.max(MIN_SIZE, width)),
+    height: Math.min(1, Math.max(MIN_SIZE, height)),
+  };
+}
+
+function clampRect(x, y, width, height) {
+  const size = clampSize(width, height);
+  return {
+    x: Math.min(Math.max(0, x), 1 - size.width),
+    y: Math.min(Math.max(0, y), 1 - size.height),
+    width: size.width,
+    height: size.height,
+  };
+}
+
 export function createPanelOverlay(overlayEl, options) {
+  let mode = "drag";
   let draft = null;
   let draftEl = null;
+  let candidate = null;
+  let candidateEl = null;
 
   function isEnabled() {
     return Boolean(options.isEnabled?.());
@@ -50,6 +70,16 @@ export function createPanelOverlay(overlayEl, options) {
     return draftEl;
   }
 
+  function ensureCandidateEl() {
+    if (candidateEl) {
+      return candidateEl;
+    }
+    candidateEl = document.createElement("div");
+    candidateEl.className = "panel-candidate";
+    overlayEl.appendChild(candidateEl);
+    return candidateEl;
+  }
+
   function placeRect(element, rect) {
     element.style.left = toPercent(rect.x);
     element.style.top = toPercent(rect.y);
@@ -67,11 +97,81 @@ export function createPanelOverlay(overlayEl, options) {
     );
   }
 
+  function notifyCandidateChange() {
+    options.onCandidateChange?.(candidate);
+  }
+
+  function updateCandidateEl() {
+    if (!candidate) {
+      return;
+    }
+    placeRect(ensureCandidateEl(), candidate);
+  }
+
   function cancelDraft() {
     draft = null;
     if (draftEl) {
       draftEl.remove();
       draftEl = null;
+    }
+  }
+
+  function clearCandidate() {
+    candidate = null;
+    if (candidateEl) {
+      candidateEl.remove();
+      candidateEl = null;
+    }
+    notifyCandidateChange();
+  }
+
+  function getCandidate() {
+    return candidate ? { ...candidate } : null;
+  }
+
+  function hasCandidate() {
+    return Boolean(candidate);
+  }
+
+  function placeCandidateAt(cx, cy, size) {
+    if (!size) {
+      return null;
+    }
+    candidate = clampRect(
+      cx - size.width / 2,
+      cy - size.height / 2,
+      size.width,
+      size.height,
+    );
+    updateCandidateEl();
+    notifyCandidateChange();
+    return getCandidate();
+  }
+
+  function resizeCandidate(size) {
+    if (!candidate || !size) {
+      return getCandidate();
+    }
+    const centerX = candidate.x + candidate.width / 2;
+    const centerY = candidate.y + candidate.height / 2;
+    candidate = clampRect(
+      centerX - size.width / 2,
+      centerY - size.height / 2,
+      size.width,
+      size.height,
+    );
+    updateCandidateEl();
+    notifyCandidateChange();
+    return getCandidate();
+  }
+
+  function setMode(nextMode) {
+    mode = nextMode === "stamp" ? "stamp" : "drag";
+    overlayEl.classList.toggle("is-stamp", mode === "stamp");
+    if (mode === "drag") {
+      clearCandidate();
+    } else {
+      cancelDraft();
     }
   }
 
@@ -93,10 +193,14 @@ export function createPanelOverlay(overlayEl, options) {
       placeRect(element, panel);
       overlayEl.appendChild(element);
     }
+    if (candidateEl) {
+      overlayEl.appendChild(candidateEl);
+    }
   }
 
   function clear() {
     cancelDraft();
+    clearCandidate();
     overlayEl.querySelectorAll(".panel-rect").forEach((element) => {
       element.remove();
     });
@@ -107,6 +211,16 @@ export function createPanelOverlay(overlayEl, options) {
       return;
     }
     if (!isEnabled()) {
+      return;
+    }
+    if (mode === "stamp") {
+      event.preventDefault();
+      const point = clientToRelative(event);
+      const size = options.getTemplate?.();
+      if (!size) {
+        return;
+      }
+      placeCandidateAt(point.x, point.y, size);
       return;
     }
     event.preventDefault();
@@ -139,7 +253,7 @@ export function createPanelOverlay(overlayEl, options) {
     const point = clientToRelative(event);
     const rect = normalizeRect(draft.startX, draft.startY, point.x, point.y);
     cancelDraft();
-    if (!isEnabled()) {
+    if (!isEnabled() || mode !== "drag") {
       return;
     }
     if (rect.width < MIN_SIZE || rect.height < MIN_SIZE) {
@@ -167,7 +281,13 @@ export function createPanelOverlay(overlayEl, options) {
 
   return {
     setEnabled,
+    setMode,
     renderPanels,
     clear,
+    clearCandidate,
+    getCandidate,
+    hasCandidate,
+    placeCandidateAt,
+    resizeCandidate,
   };
 }

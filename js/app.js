@@ -7,7 +7,8 @@ import {
 } from "./duration.js";
 import { canvasToObjectUrl, cropPanelImage, PREVIEW_SCALE } from "./panel-image.js";
 import { createPdfViewer } from "./pdf-viewer.js";
-import { createPanelOverlay } from "./panel-overlay.js";
+import { createPanelOverlay, MIN_SIZE } from "./panel-overlay.js";
+import { createTimelineEditor } from "./timeline-editor.js";
 import { createPanelStore } from "./panel-store.js";
 import { createThumbnailCache } from "./thumbnail-cache.js";
 import {
@@ -33,19 +34,29 @@ const pageInfoEl = document.querySelector("#page-info");
 const prevButton = document.querySelector("#prev-page");
 const nextButton = document.querySelector("#next-page");
 const canvas = document.querySelector("#pdf-canvas");
-const viewerEl = document.querySelector(".viewer");
+const viewerEl = document.querySelector(".viewer-main");
 const overlayEl = document.querySelector("#panel-overlay");
 const panelCountsEl = document.querySelector("#panel-counts");
 const panelListEl = document.querySelector("#panel-list");
 const cutForm = document.querySelector("#cut-form");
 const cutNumberInput = document.querySelector("#cut-number-input");
 const cutDurationInput = document.querySelector("#cut-duration-input");
-const cutSubmitButton = document.querySelector("#cut-submit");
-const cutCancelEditButton = document.querySelector("#cut-cancel-edit");
+const cutNumberClear = document.querySelector("#cut-number-clear");
+const cutDurationClear = document.querySelector("#cut-duration-clear");
 const cutMessageEl = document.querySelector("#cut-message");
 const cutListEl = document.querySelector("#cut-list");
-const timelineEditorEl = document.querySelector("#timeline-editor");
-const timelineCloseButton = document.querySelector("#timeline-close");
+const cutDetailEmptyEl = document.querySelector("#cut-detail-empty");
+const cutDetailBodyEl = document.querySelector("#cut-detail-body");
+const cutDetailForm = document.querySelector("#cut-detail-form");
+const detailCutNumberInput = document.querySelector("#detail-cut-number-input");
+const detailCutDurationInput = document.querySelector("#detail-cut-duration-input");
+const detailCutNumberClear = document.querySelector("#detail-cut-number-clear");
+const detailCutDurationClear = document.querySelector("#detail-cut-duration-clear");
+const cutAddSelectedButton = document.querySelector("#cut-add-selected");
+const cutDeleteButton = document.querySelector("#cut-delete");
+const cutMembersEl = document.querySelector("#cut-members");
+const cutDetailTitleEl = document.querySelector("#cut-detail-title");
+const cutTimelineStripEl = document.querySelector("#cut-timeline-strip");
 const timelineMetaEl = document.querySelector("#timeline-meta");
 const timelineStatusEl = document.querySelector("#timeline-status");
 const timelineRowsEl = document.querySelector("#timeline-rows");
@@ -61,6 +72,13 @@ const rushImageEl = document.querySelector("#rush-image");
 const rushPlayButton = document.querySelector("#rush-play");
 const rushPauseButton = document.querySelector("#rush-pause");
 const rushResetButton = document.querySelector("#rush-reset");
+const placeModeDragButton = document.querySelector("#place-mode-drag");
+const placeModeStampButton = document.querySelector("#place-mode-stamp");
+const panelSizeFieldsEl = document.querySelector("#panel-size-fields");
+const panelWidthPercentInput = document.querySelector("#panel-width-percent");
+const panelHeightPercentInput = document.querySelector("#panel-height-percent");
+const stampCommitButton = document.querySelector("#stamp-commit");
+const stampCancelButton = document.querySelector("#stamp-cancel");
 
 let session = null;
 let loadToken = 0;
@@ -68,8 +86,10 @@ let resizeTimer = 0;
 let thumbnailToken = 0;
 let drainingThumbnails = false;
 let panelCropQueue = Promise.resolve();
-let editingCutId = null;
+let selectedCutId = null;
 let timelineCutId = null;
+let panelTemplate = null;
+let panelPlaceMode = "drag";
 let rushPrepToken = 0;
 let rushPreparing = false;
 let rushError = "";
@@ -91,10 +111,26 @@ const rushImageCache = createRushImageCache();
 const overlay = createPanelOverlay(overlayEl, {
   isEnabled: () => document.body.dataset.state === "viewing" && Boolean(session),
   getPageNumber: () => session?.currentPage ?? null,
+  getTemplate: () => panelTemplate,
+  onCandidateChange() {
+    updatePlaceUi();
+  },
   onCreate(rect) {
     const panel = panelStore.add(rect);
+    rememberPanelTemplate(panel);
     syncPanels();
     requestThumbnail(panel);
+  },
+});
+const cutTimelineEditor = createTimelineEditor(cutTimelineStripEl, {
+  onPreview({ panelId, candidateFrame }) {
+    previewStartFrameInput(panelId, candidateFrame);
+  },
+  onCommit(payload) {
+    commitCutTimelineDrag(payload);
+  },
+  onCancel({ panelId, savedFrame }) {
+    restoreStartFrameInput(panelId, savedFrame);
   },
 });
 
@@ -115,6 +151,126 @@ function updatePager() {
   pageInfoEl.textContent = `${session.currentPage} / ${session.pageCount}`;
   prevButton.disabled = session.currentPage <= 1;
   nextButton.disabled = session.currentPage >= session.pageCount;
+}
+
+function toPercentDisplay(value) {
+  return String(Math.round(value * 100));
+}
+
+function parsePercentInput(raw) {
+  const trimmed = String(raw ?? "").trim();
+  if (!trimmed) {
+    return { ok: false };
+  }
+  const percent = Number(trimmed);
+  if (!Number.isFinite(percent) || percent < 1 || percent > 100) {
+    return { ok: false };
+  }
+  const value = percent / 100;
+  if (value < MIN_SIZE || value > 1) {
+    return { ok: false };
+  }
+  return { ok: true, value };
+}
+
+function rememberPanelTemplate(panel) {
+  if (!panel) {
+    return;
+  }
+  panelTemplate = {
+    width: panel.width,
+    height: panel.height,
+  };
+  updatePlaceUi();
+}
+
+function resetPanelPlaceState() {
+  panelTemplate = null;
+  panelPlaceMode = "drag";
+  overlay.setMode("drag");
+  overlay.clearCandidate();
+  updatePlaceUi();
+}
+
+function updatePlaceUi() {
+  if (!panelTemplate && panelPlaceMode === "stamp") {
+    panelPlaceMode = "drag";
+    overlay.setMode("drag");
+  }
+  const hasTemplate = Boolean(panelTemplate);
+  const hasCandidate = overlay.hasCandidate();
+  placeModeDragButton.setAttribute(
+    "aria-pressed",
+    panelPlaceMode === "drag" ? "true" : "false",
+  );
+  placeModeStampButton.setAttribute(
+    "aria-pressed",
+    panelPlaceMode === "stamp" ? "true" : "false",
+  );
+  placeModeStampButton.disabled = !hasTemplate;
+  panelSizeFieldsEl.hidden = !hasTemplate;
+  if (hasTemplate) {
+    panelWidthPercentInput.value = toPercentDisplay(panelTemplate.width);
+    panelHeightPercentInput.value = toPercentDisplay(panelTemplate.height);
+  } else {
+    panelWidthPercentInput.value = "";
+    panelHeightPercentInput.value = "";
+  }
+  stampCommitButton.disabled = !hasCandidate;
+  stampCancelButton.disabled = !hasCandidate;
+}
+
+function setPanelPlaceMode(nextMode) {
+  if (nextMode === "stamp" && !panelTemplate) {
+    return;
+  }
+  panelPlaceMode = nextMode === "stamp" ? "stamp" : "drag";
+  overlay.setMode(panelPlaceMode);
+  updatePlaceUi();
+}
+
+function applyTemplateSizeFromInputs() {
+  if (!panelTemplate) {
+    return;
+  }
+  const width = parsePercentInput(panelWidthPercentInput.value);
+  const height = parsePercentInput(panelHeightPercentInput.value);
+  if (!width.ok || !height.ok) {
+    panelWidthPercentInput.value = toPercentDisplay(panelTemplate.width);
+    panelHeightPercentInput.value = toPercentDisplay(panelTemplate.height);
+    return;
+  }
+  panelTemplate = {
+    width: width.value,
+    height: height.value,
+  };
+  if (overlay.hasCandidate()) {
+    overlay.resizeCandidate(panelTemplate);
+  }
+  updatePlaceUi();
+}
+
+function confirmStampCandidate() {
+  const rect = overlay.getCandidate();
+  if (!rect || !session) {
+    return;
+  }
+  overlay.clearCandidate();
+  const panel = panelStore.add({
+    pageNumber: session.currentPage,
+    x: rect.x,
+    y: rect.y,
+    width: rect.width,
+    height: rect.height,
+  });
+  rememberPanelTemplate(panel);
+  syncPanels();
+  requestThumbnail(panel);
+}
+
+function cancelStampCandidate() {
+  overlay.clearCandidate();
+  updatePlaceUi();
 }
 
 function panelExists(panelId) {
@@ -411,6 +567,92 @@ function formatRange(range) {
   return `${range.startFrame}–${range.lastFrame}f`;
 }
 
+function previewStartFrameInput(panelId, frame) {
+  const input = timelineRowsEl.querySelector(
+    `[data-timeline-panel="${CSS.escape(panelId)}"]`,
+  );
+  if (input) {
+    input.value = String(frame);
+  }
+}
+
+function restoreStartFrameInput(panelId, frame) {
+  timelineDrafts.set(panelId, String(frame));
+  previewStartFrameInput(panelId, frame);
+}
+
+function commitCutTimelineDrag({ cutId, panelId, candidateFrame, savedFrame }) {
+  if (candidateFrame === savedFrame) {
+    restoreStartFrameInput(panelId, savedFrame);
+    renderTimelineViews();
+    return;
+  }
+  const cut = cutStore.getById(cutId);
+  if (!cut) {
+    setTimelineMessage("Cutが見つかりません。");
+    restoreStartFrameInput(panelId, savedFrame);
+    renderTimelineViews();
+    return;
+  }
+  const result = timelineStore.updatePlacement(
+    cutId,
+    panelId,
+    candidateFrame,
+    cut,
+  );
+  if (!result.ok) {
+    setTimelineMessage(result.message);
+    restoreStartFrameInput(panelId, savedFrame);
+    renderTimelineViews();
+    return;
+  }
+  timelineDrafts.set(panelId, String(candidateFrame));
+  markRushDirty();
+  setTimelineMessage("");
+  renderTimelineViews();
+  renderCutList();
+  renderCutDetail();
+}
+
+function renderCutTimelineStrip() {
+  if (cutTimelineEditor.isDragging()) {
+    return;
+  }
+  const cut = selectedCutId ? cutStore.getById(selectedCutId) : null;
+  if (!cut) {
+    cutTimelineEditor.render(null);
+    return;
+  }
+  const timeline = timelineStore.getByCutId(cut.id);
+  const complete = timelineStore.isComplete(cut);
+  const ranges = timelineStore.rangesFor(cut);
+  cutTimelineEditor.render({
+    cutId: cut.id,
+    durationFrames: cut.durationFrames,
+    complete,
+    metaText: `CUT ${cut.cutNumber} / ${formatDurationLabel(cut.durationFrames)}`,
+    statusText: complete ? "配置完了" : "未完成",
+    endLabel: `${cut.durationFrames}f`,
+    markers: (timeline?.placements ?? []).map((placement) => {
+      const cached = thumbnailCache.get(placement.panelId);
+      return {
+        panelId: placement.panelId,
+        startFrame: placement.startFrame,
+        label: panelLabel(placement.panelId),
+        thumbUrl: cached?.url ?? "",
+      };
+    }),
+    ranges: ranges.map((range) => ({
+      text: `${panelLabel(range.panelId)} ${formatRange(range)}`,
+    })),
+  });
+}
+
+function renderTimelineViews() {
+  renderTimelineEditor();
+  renderCutTimelineStrip();
+}
+
 function maybeInitSinglePanelTimeline(cut) {
   if (!cut || cut.panelIds.length !== 1) {
     return;
@@ -428,21 +670,40 @@ function closeTimelineEditor() {
   timelineCutId = null;
   timelineDrafts.clear();
   setTimelineMessage("");
-  timelineEditorEl.hidden = true;
-  renderCutList();
 }
 
-function openTimelineEditor(cutId) {
+function selectCut(cutId, { fillForm = true } = {}) {
   const cut = cutStore.getById(cutId);
   if (!cut) {
+    clearCutSelection();
     return;
   }
-  timelineCutId = cutId;
+  selectedCutId = cut.id;
+  timelineCutId = cut.id;
   timelineDrafts.clear();
   maybeInitSinglePanelTimeline(cut);
   setTimelineMessage("");
+  if (fillForm) {
+    fillDetailForm(cut);
+  }
   renderCutList();
-  renderTimelineEditor();
+  renderCutDetail();
+  renderTimelineViews();
+}
+
+function fillDetailForm(cut) {
+  detailCutNumberInput.value = cut.cutNumber;
+  detailCutDurationInput.value = formatDuration(cut.durationFrames);
+}
+
+function clearCutSelection() {
+  selectedCutId = null;
+  closeTimelineEditor();
+  detailCutNumberInput.value = "";
+  detailCutDurationInput.value = "";
+  renderCutList();
+  renderCutDetail();
+  renderTimelineViews();
 }
 
 function createTimelineThumbEl(panelId) {
@@ -459,8 +720,10 @@ function createTimelineThumbEl(panelId) {
 }
 
 function renderTimelineEditor() {
+  if (cutTimelineEditor.isDragging()) {
+    return;
+  }
   if (!timelineCutId) {
-    timelineEditorEl.hidden = true;
     timelineMetaEl.replaceChildren();
     timelineStatusEl.textContent = "";
     timelineRowsEl.replaceChildren();
@@ -480,7 +743,6 @@ function renderTimelineEditor() {
   const placedIds = new Set((timeline?.placements ?? []).map((item) => item.panelId));
   const complete = timelineStore.isComplete(cut);
 
-  timelineEditorEl.hidden = false;
   timelineMetaEl.replaceChildren();
 
   const numberEl = document.createElement("p");
@@ -541,6 +803,7 @@ function createTimelineRowEl(cut, panelId, { placed, range, startFrame }) {
   input.type = "text";
   input.inputMode = "numeric";
   input.autocomplete = "off";
+  input.dataset.timelinePanel = panelId;
   const fallback = placed && startFrame !== undefined ? String(startFrame) : "";
   input.value = timelineDrafts.has(panelId)
     ? timelineDrafts.get(panelId)
@@ -569,8 +832,9 @@ function createTimelineRowEl(cut, panelId, { placed, range, startFrame }) {
       timelineDrafts.delete(panelId);
       markRushDirty();
       setTimelineMessage("");
-      renderTimelineEditor();
+      renderTimelineViews();
       renderCutList();
+      renderCutDetail();
     });
     edit.append(deleteButton);
   }
@@ -603,16 +867,14 @@ function saveTimelinePlacement(cutId, panelId, rawValue, placed) {
   timelineDrafts.set(panelId, String(parsed.startFrame));
   markRushDirty();
   setTimelineMessage("");
-  renderTimelineEditor();
+  renderTimelineViews();
   renderCutList();
+  renderCutDetail();
 }
 
 function resetCutForm() {
-  editingCutId = null;
   cutNumberInput.value = "";
   cutDurationInput.value = "";
-  cutSubmitButton.textContent = "この選択でCutを作成";
-  cutCancelEditButton.hidden = true;
 }
 
 function thumbnailStatus(panelId) {
@@ -741,7 +1003,8 @@ function createCutMemberEl(cutId, panelId) {
     markRushDirty();
     setCutMessage("");
     renderCutList();
-    renderTimelineEditor();
+    renderCutDetail();
+    renderTimelineViews();
   });
   item.append(removeButton);
 
@@ -753,89 +1016,131 @@ function renderCutList() {
   cutListEl.replaceChildren();
 
   for (const cut of cuts) {
+    const complete = timelineStore.isComplete(cut);
     const item = document.createElement("li");
-    item.className = "cut-item";
-    if (cut.id === timelineCutId) {
-      item.classList.add("is-timeline-target");
+    item.className = "cut-row";
+    item.tabIndex = 0;
+    if (cut.id === selectedCutId) {
+      item.classList.add("is-selected");
     }
 
-    const numberEl = document.createElement("p");
-    numberEl.className = "cut-number";
+    const numberEl = document.createElement("span");
+    numberEl.className = "cut-row-number";
     numberEl.textContent = cut.cutNumber;
+    numberEl.title = cut.cutNumber;
 
-    const durationEl = document.createElement("p");
-    durationEl.className = "cut-duration";
-    durationEl.textContent = formatDurationLabel(cut.durationFrames);
+    const durationEl = document.createElement("span");
+    durationEl.className = "cut-row-duration";
+    durationEl.textContent = formatDuration(cut.durationFrames);
 
-    const countEl = document.createElement("p");
-    countEl.className = "cut-count";
-    countEl.textContent = `Panel ${cut.panelIds.length}件`;
+    const framesEl = document.createElement("span");
+    framesEl.className = "cut-row-frames";
+    framesEl.textContent = `${cut.durationFrames}f`;
 
-    const members = document.createElement("ul");
-    members.className = "cut-members";
-    for (const panelId of cut.panelIds) {
-      members.append(createCutMemberEl(cut.id, panelId));
-    }
+    const countEl = document.createElement("span");
+    countEl.className = "cut-row-count";
+    countEl.textContent = `P${cut.panelIds.length}`;
 
-    const actions = document.createElement("div");
-    actions.className = "cut-actions";
+    const completeEl = document.createElement("span");
+    completeEl.className = "cut-row-complete";
+    completeEl.classList.toggle("is-complete", complete);
+    completeEl.classList.toggle("is-incomplete", !complete);
+    completeEl.textContent = complete ? "✓" : "!";
+    completeEl.title = complete ? "Timeline 完成" : "Timeline 未完成";
 
-    const addButton = document.createElement("button");
-    addButton.type = "button";
-    addButton.textContent = "選択Panelを追加";
-    addButton.addEventListener("click", () => {
-      addSelectedPanelsToCut(cut.id);
+    item.append(numberEl, durationEl, framesEl, countEl, completeEl);
+    item.addEventListener("click", () => {
+      selectCut(cut.id);
     });
-
-    const timelineButton = document.createElement("button");
-    timelineButton.type = "button";
-    timelineButton.textContent = "Timeline";
-    timelineButton.addEventListener("click", () => {
-      openTimelineEditor(cut.id);
-    });
-
-    const editButton = document.createElement("button");
-    editButton.type = "button";
-    editButton.textContent = "編集";
-    editButton.addEventListener("click", () => {
-      startCutEdit(cut.id);
-    });
-
-    const deleteButton = document.createElement("button");
-    deleteButton.type = "button";
-    deleteButton.textContent = "削除";
-    deleteButton.addEventListener("click", () => {
-      cutStore.remove(cut.id);
-      timelineStore.removeByCutId(cut.id);
-      markRushDirty();
-      if (editingCutId === cut.id) {
-        resetCutForm();
+    item.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        selectCut(cut.id);
       }
-      if (timelineCutId === cut.id) {
-        closeTimelineEditor();
-      }
-      setCutMessage("");
-      renderCutList();
     });
-
-    actions.append(addButton, timelineButton, editButton, deleteButton);
-    item.append(numberEl, durationEl, countEl, members, actions);
     cutListEl.append(item);
   }
 }
 
-function startCutEdit(cutId) {
-  const cut = cutStore.getById(cutId);
+function renderCutDetail() {
+  const cut = selectedCutId ? cutStore.getById(selectedCutId) : null;
   if (!cut) {
+    if (selectedCutId) {
+      selectedCutId = null;
+      closeTimelineEditor();
+    }
+    cutDetailEmptyEl.hidden = false;
+    cutDetailBodyEl.hidden = true;
+    cutDetailTitleEl.textContent = "Cut編集";
+    cutMembersEl.replaceChildren();
+    renderCutTimelineStrip();
     return;
   }
-  editingCutId = cutId;
-  cutNumberInput.value = cut.cutNumber;
-  cutDurationInput.value = formatDuration(cut.durationFrames);
-  cutSubmitButton.textContent = "変更を保存";
-  cutCancelEditButton.hidden = false;
+
+  cutDetailEmptyEl.hidden = true;
+  cutDetailBodyEl.hidden = false;
+  cutDetailTitleEl.textContent = `CUT ${cut.cutNumber} を編集中`;
+  cutMembersEl.replaceChildren();
+  for (const panelId of cut.panelIds) {
+    cutMembersEl.append(createCutMemberEl(cut.id, panelId));
+  }
+}
+
+function deleteSelectedCut() {
+  if (!selectedCutId) {
+    return;
+  }
+  const cutId = selectedCutId;
+  cutStore.remove(cutId);
+  timelineStore.removeByCutId(cutId);
+  markRushDirty();
   setCutMessage("");
-  cutNumberInput.focus();
+  clearCutSelection();
+}
+
+function saveSelectedCut(event) {
+  event.preventDefault();
+  if (!selectedCutId) {
+    return;
+  }
+  const cutNumber = normalizeCutNumber(detailCutNumberInput.value);
+  if (!cutNumber) {
+    setCutMessage("CUT番号を入力してください。");
+    return;
+  }
+  const duration = parseDurationInput(detailCutDurationInput.value);
+  if (!duration.ok) {
+    setCutMessage(duration.message);
+    return;
+  }
+  if (cutStore.hasCutNumber(cutNumber, selectedCutId)) {
+    setCutMessage("同じCUT番号がすでにあります。");
+    return;
+  }
+  const blocking = timelineStore.placementsBlockingDuration(
+    selectedCutId,
+    duration.durationFrames,
+  );
+  if (blocking.length > 0) {
+    const frames = blocking.map((item) => `${item.startFrame}f`).join("、");
+    setCutMessage(
+      `${frames} の配置があるため ${duration.durationFrames}f にできません。`,
+    );
+    return;
+  }
+  cutStore.update(selectedCutId, {
+    cutNumber,
+    durationFrames: duration.durationFrames,
+  });
+  markRushDirty();
+  setCutMessage("");
+  const cut = cutStore.getById(selectedCutId);
+  if (cut) {
+    fillDetailForm(cut);
+  }
+  renderCutList();
+  renderCutDetail();
+  renderTimelineViews();
 }
 
 function addSelectedPanelsToCut(cutId) {
@@ -888,7 +1193,8 @@ function addSelectedPanelsToCut(cutId) {
   setCutMessage("");
   renderPanelList();
   renderCutList();
-  renderTimelineEditor();
+  renderCutDetail();
+  renderTimelineViews();
 }
 
 function handleCutFormSubmit(event) {
@@ -902,34 +1208,6 @@ function handleCutFormSubmit(event) {
   const duration = parseDurationInput(cutDurationInput.value);
   if (!duration.ok) {
     setCutMessage(duration.message);
-    return;
-  }
-
-  if (editingCutId) {
-    if (cutStore.hasCutNumber(cutNumber, editingCutId)) {
-      setCutMessage("同じCUT番号がすでにあります。");
-      return;
-    }
-    const blocking = timelineStore.placementsBlockingDuration(
-      editingCutId,
-      duration.durationFrames,
-    );
-    if (blocking.length > 0) {
-      const frames = blocking.map((item) => `${item.startFrame}f`).join("、");
-      setCutMessage(
-        `${frames} の配置があるため ${duration.durationFrames}f にできません。`,
-      );
-      return;
-    }
-    cutStore.update(editingCutId, {
-      cutNumber,
-      durationFrames: duration.durationFrames,
-    });
-    markRushDirty();
-    resetCutForm();
-    setCutMessage("");
-    renderCutList();
-    renderTimelineEditor();
     return;
   }
 
@@ -970,8 +1248,7 @@ function handleCutFormSubmit(event) {
   resetCutForm();
   setCutMessage("");
   renderPanelList();
-  renderCutList();
-  renderTimelineEditor();
+  selectCut(created.id);
 }
 
 function cancelQueuedThumbnail(panelId) {
@@ -1047,7 +1324,8 @@ async function drainThumbnailQueue() {
       if (job.generation === thumbnailToken) {
         renderPanelList();
         renderCutList();
-        renderTimelineEditor();
+        renderCutDetail();
+        renderTimelineViews();
       }
     }
   }
@@ -1085,12 +1363,16 @@ function clearSessionData() {
   timelineStore.clear();
   selectedPanelIds.clear();
   timelineDrafts.clear();
+  selectedCutId = null;
   timelineCutId = null;
-  timelineEditorEl.hidden = true;
   resetCutForm();
+  detailCutNumberInput.value = "";
+  detailCutDurationInput.value = "";
   setCutMessage("");
   setTimelineMessage("");
+  resetPanelPlaceState();
   overlay.clear();
+  cutTimelineEditor.clear();
   discardRush();
 }
 
@@ -1101,7 +1383,8 @@ function syncPanels() {
   overlay.renderPanels(pagePanels);
   renderPanelList();
   renderCutList();
-  renderTimelineEditor();
+  renderCutDetail();
+  renderTimelineViews();
   renderRush();
 }
 
@@ -1111,9 +1394,11 @@ function showIdle() {
   overlay.setEnabled(false);
   overlay.clear();
   updatePager();
+  updatePlaceUi();
   renderPanelList();
   renderCutList();
-  renderTimelineEditor();
+  renderCutDetail();
+  renderTimelineViews();
   renderRush();
   setState("idle", "PDFファイルを選択してください");
 }
@@ -1165,7 +1450,9 @@ async function handleFileChange(event) {
     });
     renderPanelList();
     renderCutList();
-    renderTimelineEditor();
+    renderTimelineViews();
+    setState("viewing", "読み込み中…");
+    void viewerEl.offsetHeight;
 
     try {
       await showPage();
@@ -1210,7 +1497,8 @@ async function handleFileChange(event) {
     updatePager();
     renderPanelList();
     renderCutList();
-    renderTimelineEditor();
+    renderCutDetail();
+    renderTimelineViews();
     renderRush();
     setState(
       "error",
@@ -1227,6 +1515,7 @@ async function goToPage(pageNumber) {
   if (nextPage === session.currentPage) {
     return;
   }
+  overlay.clearCandidate();
   session.currentPage = nextPage;
   updatePager();
   try {
@@ -1259,12 +1548,61 @@ function scheduleRefit() {
 }
 
 cutForm.addEventListener("submit", handleCutFormSubmit);
-cutCancelEditButton.addEventListener("click", () => {
-  resetCutForm();
-  setCutMessage("");
+cutDetailForm.addEventListener("submit", saveSelectedCut);
+cutNumberClear.addEventListener("click", () => {
+  cutNumberInput.value = "";
+  cutNumberInput.focus();
 });
-timelineCloseButton.addEventListener("click", () => {
-  closeTimelineEditor();
+cutDurationClear.addEventListener("click", () => {
+  cutDurationInput.value = "";
+  cutDurationInput.focus();
+});
+detailCutNumberClear.addEventListener("click", () => {
+  detailCutNumberInput.value = "";
+  detailCutNumberInput.focus();
+});
+detailCutDurationClear.addEventListener("click", () => {
+  detailCutDurationInput.value = "";
+  detailCutDurationInput.focus();
+});
+cutAddSelectedButton.addEventListener("click", () => {
+  if (selectedCutId) {
+    addSelectedPanelsToCut(selectedCutId);
+  }
+});
+cutDeleteButton.addEventListener("click", () => {
+  deleteSelectedCut();
+});
+placeModeDragButton.addEventListener("click", () => {
+  setPanelPlaceMode("drag");
+});
+placeModeStampButton.addEventListener("click", () => {
+  setPanelPlaceMode("stamp");
+});
+panelWidthPercentInput.addEventListener("change", () => {
+  applyTemplateSizeFromInputs();
+});
+panelHeightPercentInput.addEventListener("change", () => {
+  applyTemplateSizeFromInputs();
+});
+stampCommitButton.addEventListener("click", () => {
+  confirmStampCandidate();
+});
+stampCancelButton.addEventListener("click", () => {
+  cancelStampCandidate();
+});
+window.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") {
+    return;
+  }
+  if (cutTimelineEditor.isDragging()) {
+    return;
+  }
+  if (!overlay.hasCandidate()) {
+    return;
+  }
+  event.preventDefault();
+  cancelStampCandidate();
 });
 rushPlayButton.addEventListener("click", () => {
   handleRushPlay();
@@ -1288,4 +1626,12 @@ nextButton.addEventListener("click", () => {
 });
 window.addEventListener("resize", scheduleRefit);
 
-showIdle();
+try {
+  showIdle();
+} catch (error) {
+  console.error(error);
+  if (statusEl) {
+    statusEl.textContent = `起動エラー: ${error.message}`;
+  }
+  throw error;
+}

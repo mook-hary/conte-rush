@@ -22,9 +22,74 @@
       <div class="workspace">
         <div class="stage-column">
           <section class="viewer" aria-label="PDF表示">
-            <div class="page-stage">
-              <canvas id="pdf-canvas"></canvas>
-              <div id="panel-overlay" class="panel-overlay"></div>
+            <div class="viewer-main">
+              <div class="page-stage">
+                <canvas id="pdf-canvas"></canvas>
+                <div id="panel-overlay" class="panel-overlay"></div>
+              </div>
+            </div>
+            <nav class="pager" aria-label="ページ操作">
+              <button id="prev-page" type="button" disabled>前へ</button>
+              <span id="page-info" class="page-info"></span>
+              <button id="next-page" type="button" disabled>次へ</button>
+            </nav>
+            <div class="panel-place-bar">
+              <div class="place-modes" role="group" aria-label="Panel登録モード">
+                <button id="place-mode-drag" type="button" aria-pressed="true">
+                  ドラッグで作る
+                </button>
+                <button id="place-mode-stamp" type="button" aria-pressed="false" disabled>
+                  前回サイズで置く
+                </button>
+              </div>
+              <div id="panel-size-fields" class="panel-size-fields" hidden>
+                <label>
+                  幅 %
+                  <input
+                    id="panel-width-percent"
+                    type="number"
+                    min="1"
+                    max="100"
+                    step="1"
+                  />
+                </label>
+                <label>
+                  高さ %
+                  <input
+                    id="panel-height-percent"
+                    type="number"
+                    min="1"
+                    max="100"
+                    step="1"
+                  />
+                </label>
+              </div>
+              <div class="stamp-actions">
+                <button id="stamp-commit" type="button" disabled>この位置で登録</button>
+                <button id="stamp-cancel" type="button" disabled>やめる</button>
+              </div>
+            </div>
+          </section>
+
+          <section
+            id="cut-timeline-strip"
+            class="cut-timeline-strip"
+            aria-label="横Timeline"
+          >
+            <p data-role="empty" class="cut-timeline-empty">
+              Cut一覧から編集するCutを選んでください
+            </p>
+            <div data-role="body" hidden>
+              <div class="cut-timeline-head">
+                <p data-role="meta" class="cut-timeline-meta"></p>
+                <p data-role="status" class="cut-timeline-status"></p>
+              </div>
+              <div class="cut-timeline-ruler">
+                <span>0f</span>
+                <span data-role="end"></span>
+              </div>
+              <div data-role="track" class="cut-timeline-track"></div>
+              <ul data-role="ranges" class="cut-timeline-ranges"></ul>
             </div>
           </section>
 
@@ -55,49 +120,122 @@
           </section>
 
           <section class="cut-sidebar" aria-label="Cut">
-            <h2>Cut</h2>
+            <h2>新規 Cut</h2>
             <form id="cut-form" class="cut-form">
               <label>
                 CUT番号
-                <input id="cut-number-input" type="text" autocomplete="off" />
+                <span class="field-with-clear">
+                  <input id="cut-number-input" type="text" autocomplete="off" />
+                  <button
+                    id="cut-number-clear"
+                    type="button"
+                    class="field-clear"
+                    aria-label="CUT番号をクリア"
+                  >
+                    ×
+                  </button>
+                </span>
               </label>
               <label>
                 尺（秒+コマ）
-                <input
-                  id="cut-duration-input"
-                  type="text"
-                  placeholder="3+12"
-                  autocomplete="off"
-                />
+                <span class="field-with-clear">
+                  <input
+                    id="cut-duration-input"
+                    type="text"
+                    placeholder="3+12"
+                    autocomplete="off"
+                  />
+                  <button
+                    id="cut-duration-clear"
+                    type="button"
+                    class="field-clear"
+                    aria-label="尺をクリア"
+                  >
+                    ×
+                  </button>
+                </span>
               </label>
               <button id="cut-submit" type="submit">この選択でCutを作成</button>
-              <button id="cut-cancel-edit" type="button" hidden>編集をやめる</button>
             </form>
             <p id="cut-message" class="cut-message" role="status"></p>
             <ul id="cut-list" class="cut-list"></ul>
-            <section id="timeline-editor" class="timeline-editor" hidden aria-label="Timeline">
-              <div class="timeline-editor-head">
-                <h2>Timeline</h2>
-                <button id="timeline-close" type="button">閉じる</button>
+            <section id="cut-detail" class="cut-detail" aria-label="Cut編集">
+              <h2 id="cut-detail-title">Cut編集</h2>
+              <p id="cut-detail-empty" class="cut-detail-empty">一覧からCutを選んでください</p>
+              <div id="cut-detail-body" hidden>
+                <form id="cut-detail-form" class="cut-form">
+                  <label>
+                    CUT番号
+                    <span class="field-with-clear">
+                      <input id="detail-cut-number-input" type="text" autocomplete="off" />
+                      <button
+                        id="detail-cut-number-clear"
+                        type="button"
+                        class="field-clear"
+                        aria-label="CUT番号をクリア"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  </label>
+                  <label>
+                    尺（秒+コマ）
+                    <span class="field-with-clear">
+                      <input
+                        id="detail-cut-duration-input"
+                        type="text"
+                        placeholder="3+12"
+                        autocomplete="off"
+                      />
+                      <button
+                        id="detail-cut-duration-clear"
+                        type="button"
+                        class="field-clear"
+                        aria-label="尺をクリア"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  </label>
+                  <button id="cut-detail-save" type="submit">変更を保存</button>
+                </form>
+                <div class="cut-detail-actions">
+                  <button id="cut-add-selected" type="button">選択Panelを追加</button>
+                  <button id="cut-delete" type="button">Cutを削除</button>
+                </div>
+                <p class="cut-detail-label">所属 Panel</p>
+                <ul id="cut-members" class="cut-members"></ul>
+                <section id="timeline-editor" class="timeline-editor" aria-label="Timeline">
+                  <div class="timeline-editor-head">
+                    <h2>Timeline</h2>
+                  </div>
+                  <div id="timeline-meta" class="timeline-meta"></div>
+                  <p id="timeline-status" class="timeline-status"></p>
+                  <ul id="timeline-rows" class="timeline-rows"></ul>
+                  <p class="timeline-confirm-label">確認</p>
+                  <ul id="timeline-ranges" class="timeline-ranges"></ul>
+                  <p id="timeline-message" class="timeline-message" role="status"></p>
+                </section>
               </div>
-              <div id="timeline-meta" class="timeline-meta"></div>
-              <p id="timeline-status" class="timeline-status"></p>
-              <ul id="timeline-rows" class="timeline-rows"></ul>
-              <p class="timeline-confirm-label">確認</p>
-              <ul id="timeline-ranges" class="timeline-ranges"></ul>
-              <p id="timeline-message" class="timeline-message" role="status"></p>
             </section>
           </section>
         </aside>
       </div>
-
-      <nav class="pager" aria-label="ページ操作">
-        <button id="prev-page" type="button" disabled>前へ</button>
-        <span id="page-info" class="page-info"></span>
-        <button id="next-page" type="button" disabled>次へ</button>
-      </nav>
     </main>
 
-    <script type="module" src="js/app.js"></script>
+    <script>
+      window.addEventListener("error", (event) => {
+        const status = document.getElementById("status");
+        if (!status || !event.message) {
+          return;
+        }
+        const file = String(event.filename || "");
+        if (file && !file.includes("/js/")) {
+          return;
+        }
+        status.textContent = `起動エラー: ${event.message}`;
+      });
+    </script>
+    <script type="module" src="js/app.js?v=m52-1"></script>
   </body>
 </html>

@@ -6,10 +6,11 @@ import {
   parseDurationInput,
 } from "./duration.js";
 import { canvasToObjectUrl, cropPanelImage, PREVIEW_SCALE } from "./panel-image.js";
+import { createHistory } from "./history.js?v=m53-3";
 import { createPdfViewer } from "./pdf-viewer.js";
-import { createPanelOverlay, MIN_SIZE } from "./panel-overlay.js";
+import { createPanelOverlay } from "./panel-overlay.js?v=m53-3";
 import { createTimelineEditor } from "./timeline-editor.js";
-import { createPanelStore } from "./panel-store.js";
+import { createPanelStore } from "./panel-store.js?v=m53-3";
 import { createThumbnailCache } from "./thumbnail-cache.js";
 import {
   createTimelineStore,
@@ -72,13 +73,12 @@ const rushImageEl = document.querySelector("#rush-image");
 const rushPlayButton = document.querySelector("#rush-play");
 const rushPauseButton = document.querySelector("#rush-pause");
 const rushResetButton = document.querySelector("#rush-reset");
+const placeModeFrameButton = document.querySelector("#place-mode-frame");
 const placeModeDragButton = document.querySelector("#place-mode-drag");
-const placeModeStampButton = document.querySelector("#place-mode-stamp");
-const panelSizeFieldsEl = document.querySelector("#panel-size-fields");
-const panelWidthPercentInput = document.querySelector("#panel-width-percent");
-const panelHeightPercentInput = document.querySelector("#panel-height-percent");
-const stampCommitButton = document.querySelector("#stamp-commit");
-const stampCancelButton = document.querySelector("#stamp-cancel");
+const aspectLockInput = document.querySelector("#aspect-lock");
+const capturePanelButton = document.querySelector("#capture-panel");
+const undoButton = document.querySelector("#undo");
+const redoButton = document.querySelector("#redo");
 
 let session = null;
 let loadToken = 0;
@@ -88,8 +88,7 @@ let drainingThumbnails = false;
 let panelCropQueue = Promise.resolve();
 let selectedCutId = null;
 let timelineCutId = null;
-let panelTemplate = null;
-let panelPlaceMode = "drag";
+let panelPlaceMode = "frame";
 let rushPrepToken = 0;
 let rushPreparing = false;
 let rushError = "";
@@ -108,18 +107,12 @@ const cutStore = createCutStore();
 const timelineStore = createTimelineStore();
 const thumbnailCache = createThumbnailCache();
 const rushImageCache = createRushImageCache();
+const history = createHistory();
 const overlay = createPanelOverlay(overlayEl, {
   isEnabled: () => document.body.dataset.state === "viewing" && Boolean(session),
   getPageNumber: () => session?.currentPage ?? null,
-  getTemplate: () => panelTemplate,
-  onCandidateChange() {
-    updatePlaceUi();
-  },
   onCreate(rect) {
-    const panel = panelStore.add(rect);
-    rememberPanelTemplate(panel);
-    syncPanels();
-    requestThumbnail(panel);
+    registerPanel(rect, { returnToFrame: true });
   },
 });
 const cutTimelineEditor = createTimelineEditor(cutTimelineStripEl, {
@@ -138,6 +131,7 @@ function setState(state, message) {
   document.body.dataset.state = state;
   statusEl.textContent = message;
   overlay.setEnabled(state === "viewing" && Boolean(session));
+  updatePlaceUi();
 }
 
 function updatePager() {
@@ -153,123 +147,218 @@ function updatePager() {
   nextButton.disabled = session.currentPage >= session.pageCount;
 }
 
-function toPercentDisplay(value) {
-  return String(Math.round(value * 100));
-}
-
-function parsePercentInput(raw) {
-  const trimmed = String(raw ?? "").trim();
-  if (!trimmed) {
-    return { ok: false };
-  }
-  const percent = Number(trimmed);
-  if (!Number.isFinite(percent) || percent < 1 || percent > 100) {
-    return { ok: false };
-  }
-  const value = percent / 100;
-  if (value < MIN_SIZE || value > 1) {
-    return { ok: false };
-  }
-  return { ok: true, value };
-}
-
-function rememberPanelTemplate(panel) {
-  if (!panel) {
-    return;
-  }
-  panelTemplate = {
-    width: panel.width,
-    height: panel.height,
-  };
-  updatePlaceUi();
-}
-
-function resetPanelPlaceState() {
-  panelTemplate = null;
-  panelPlaceMode = "drag";
-  overlay.setMode("drag");
-  overlay.clearCandidate();
-  updatePlaceUi();
+function updateHistoryButtons() {
+  undoButton.disabled = !history.canUndo();
+  redoButton.disabled = !history.canRedo();
+  undoButton.title = history.peekUndo()?.label
+    ? `Undo: ${history.peekUndo().label}`
+    : "Undo";
+  redoButton.title = history.peekRedo()?.label
+    ? `Redo: ${history.peekRedo().label}`
+    : "Redo";
 }
 
 function updatePlaceUi() {
-  if (!panelTemplate && panelPlaceMode === "stamp") {
-    panelPlaceMode = "drag";
-    overlay.setMode("drag");
-  }
-  const hasTemplate = Boolean(panelTemplate);
-  const hasCandidate = overlay.hasCandidate();
+  placeModeFrameButton.setAttribute(
+    "aria-pressed",
+    panelPlaceMode === "frame" ? "true" : "false",
+  );
   placeModeDragButton.setAttribute(
     "aria-pressed",
     panelPlaceMode === "drag" ? "true" : "false",
   );
-  placeModeStampButton.setAttribute(
-    "aria-pressed",
-    panelPlaceMode === "stamp" ? "true" : "false",
-  );
-  placeModeStampButton.disabled = !hasTemplate;
-  panelSizeFieldsEl.hidden = !hasTemplate;
-  if (hasTemplate) {
-    panelWidthPercentInput.value = toPercentDisplay(panelTemplate.width);
-    panelHeightPercentInput.value = toPercentDisplay(panelTemplate.height);
-  } else {
-    panelWidthPercentInput.value = "";
-    panelHeightPercentInput.value = "";
-  }
-  stampCommitButton.disabled = !hasCandidate;
-  stampCancelButton.disabled = !hasCandidate;
+  const frame = overlay.getFrame();
+  aspectLockInput.checked = frame?.aspectLocked ?? true;
+  capturePanelButton.disabled =
+    document.body.dataset.state !== "viewing" || !session || !frame;
+  updateHistoryButtons();
 }
 
 function setPanelPlaceMode(nextMode) {
-  if (nextMode === "stamp" && !panelTemplate) {
-    return;
-  }
-  panelPlaceMode = nextMode === "stamp" ? "stamp" : "drag";
+  panelPlaceMode = nextMode === "drag" ? "drag" : "frame";
   overlay.setMode(panelPlaceMode);
   updatePlaceUi();
 }
 
-function applyTemplateSizeFromInputs() {
-  if (!panelTemplate) {
-    return;
-  }
-  const width = parsePercentInput(panelWidthPercentInput.value);
-  const height = parsePercentInput(panelHeightPercentInput.value);
-  if (!width.ok || !height.ok) {
-    panelWidthPercentInput.value = toPercentDisplay(panelTemplate.width);
-    panelHeightPercentInput.value = toPercentDisplay(panelTemplate.height);
-    return;
-  }
-  panelTemplate = {
-    width: width.value,
-    height: height.value,
-  };
-  if (overlay.hasCandidate()) {
-    overlay.resizeCandidate(panelTemplate);
-  }
+function resetPanelPlaceState() {
+  panelPlaceMode = "frame";
+  overlay.setMode("frame");
+  aspectLockInput.checked = true;
   updatePlaceUi();
 }
 
-function confirmStampCandidate() {
-  const rect = overlay.getCandidate();
-  if (!rect || !session) {
+function initSelectionFrame() {
+  overlay.resetFrame();
+  aspectLockInput.checked = true;
+  setPanelPlaceMode("frame");
+}
+
+function clonePanelData(panel) {
+  return {
+    id: panel.id,
+    pageNumber: panel.pageNumber,
+    x: panel.x,
+    y: panel.y,
+    width: panel.width,
+    height: panel.height,
+    source: panel.source,
+  };
+}
+
+function capturePanelSnapshot(panelId) {
+  const panel = panelStore.getById(panelId);
+  if (!panel) {
+    return null;
+  }
+  const cutId = cutStore.findCutIdByPanelId(panelId);
+  const cut = cutId ? cutStore.getById(cutId) : null;
+  const timeline = cutId ? timelineStore.getByCutId(cutId) : null;
+  const placement = timeline?.placements.find((item) => item.panelId === panelId);
+  return {
+    panel: clonePanelData(panel),
+    index: panelStore.indexOf(panelId),
+    cutId: cut?.id ?? null,
+    panelIdsIndex: cut ? cut.panelIds.indexOf(panelId) : -1,
+    startFrame: placement ? placement.startFrame : null,
+  };
+}
+
+function insertPanelIdAt(cutId, panelId, index) {
+  const cut = cutStore.getById(cutId);
+  if (!cut) {
+    return false;
+  }
+  const ids = cut.panelIds.filter((id) => id !== panelId);
+  const at = Math.min(Math.max(0, index), ids.length);
+  ids.splice(at, 0, panelId);
+  cutStore.update(cutId, { panelIds: ids });
+  return true;
+}
+
+function restorePanelSnapshot(snapshot) {
+  if (!snapshot?.panel) {
     return;
   }
-  overlay.clearCandidate();
+  panelStore.restore(snapshot.panel, snapshot.index);
+  if (snapshot.cutId) {
+    insertPanelIdAt(snapshot.cutId, snapshot.panel.id, snapshot.panelIdsIndex);
+    const cut = cutStore.getById(snapshot.cutId);
+    if (cut && snapshot.startFrame !== null && snapshot.startFrame !== undefined) {
+      timelineDrafts.set(snapshot.panel.id, String(snapshot.startFrame));
+      const timeline = timelineStore.getByCutId(cut.id);
+      const exists = timeline?.placements.some(
+        (item) => item.panelId === snapshot.panel.id,
+      );
+      const result = exists
+        ? timelineStore.updatePlacement(
+            cut.id,
+            snapshot.panel.id,
+            snapshot.startFrame,
+            cut,
+          )
+        : timelineStore.addPlacement(
+            cut.id,
+            { panelId: snapshot.panel.id, startFrame: snapshot.startFrame },
+            cut,
+          );
+      if (!result.ok) {
+        setTimelineMessage(result.message);
+      }
+    }
+  }
+  failedThumbnailIds.delete(snapshot.panel.id);
+  requestThumbnail(snapshot.panel);
+  markRushDirty();
+  syncPanels();
+}
+
+function removePanelInternal(panelId) {
+  cutStore.removePanelFromAll(panelId);
+  timelineStore.removePanelFromAll(panelId);
+  selectedPanelIds.delete(panelId);
+  panelStore.remove(panelId);
+  cancelQueuedThumbnail(panelId);
+  thumbnailCache.delete(panelId);
+  rushImageCache.delete(panelId);
+  failedThumbnailIds.delete(panelId);
+  timelineDrafts.delete(panelId);
+  markRushDirty();
+  syncPanels();
+}
+
+function registerPanel(rect, { returnToFrame = false } = {}) {
+  if (!session || !rect) {
+    return null;
+  }
   const panel = panelStore.add({
-    pageNumber: session.currentPage,
+    pageNumber: rect.pageNumber,
     x: rect.x,
     y: rect.y,
     width: rect.width,
     height: rect.height,
   });
-  rememberPanelTemplate(panel);
-  syncPanels();
+  const snapshot = capturePanelSnapshot(panel.id);
+  history.push({
+    label: "Panelを追加",
+    undo() {
+      removePanelInternal(panel.id);
+    },
+    redo() {
+      restorePanelSnapshot(snapshot);
+    },
+  });
+  markRushDirty();
   requestThumbnail(panel);
+  syncPanels();
+  if (returnToFrame) {
+    setPanelPlaceMode("frame");
+  }
+  updateHistoryButtons();
+  return panel;
 }
 
-function cancelStampCandidate() {
-  overlay.clearCandidate();
+function captureCurrentFrame() {
+  if (!session) {
+    return;
+  }
+  const frame = overlay.getFrame();
+  if (!frame) {
+    return;
+  }
+  registerPanel({
+    pageNumber: session.currentPage,
+    x: frame.x,
+    y: frame.y,
+    width: frame.width,
+    height: frame.height,
+  });
+  setPanelPlaceMode("frame");
+}
+
+function isTextEditingTarget(target) {
+  if (!(target instanceof Element)) {
+    return false;
+  }
+  const tag = target.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
+    return true;
+  }
+  return Boolean(target.closest("[contenteditable='true'], [contenteditable='']"));
+}
+
+function handleUndo() {
+  if (!history.canUndo()) {
+    return;
+  }
+  history.undo();
+  updatePlaceUi();
+}
+
+function handleRedo() {
+  if (!history.canRedo()) {
+    return;
+  }
+  history.redo();
   updatePlaceUi();
 }
 
@@ -612,6 +701,37 @@ function commitCutTimelineDrag({ cutId, panelId, candidateFrame, savedFrame }) {
   renderTimelineViews();
   renderCutList();
   renderCutDetail();
+  history.push({
+    label: "Timelineを変更",
+    undo() {
+      revertTimelineStartFrame(cutId, panelId, savedFrame);
+    },
+    redo() {
+      revertTimelineStartFrame(cutId, panelId, candidateFrame);
+    },
+  });
+  updateHistoryButtons();
+}
+
+function revertTimelineStartFrame(cutId, panelId, startFrame) {
+  const cut = cutStore.getById(cutId);
+  if (!cut) {
+    setTimelineMessage("Cutが見つかりません。");
+    return;
+  }
+  const result = timelineStore.updatePlacement(cutId, panelId, startFrame, cut);
+  if (!result.ok) {
+    setTimelineMessage(result.message);
+    restoreStartFrameInput(panelId, startFrame);
+    renderTimelineViews();
+    return;
+  }
+  timelineDrafts.set(panelId, String(startFrame));
+  markRushDirty();
+  setTimelineMessage("");
+  renderTimelineViews();
+  renderCutList();
+  renderCutDetail();
 }
 
 function renderCutTimelineStrip() {
@@ -854,6 +974,11 @@ function saveTimelinePlacement(cutId, panelId, rawValue, placed) {
     setTimelineMessage(parsed.message);
     return;
   }
+  const previous = placed
+    ? timelineStore
+        .getByCutId(cutId)
+        ?.placements.find((item) => item.panelId === panelId)?.startFrame
+    : null;
   const result = placed
     ? timelineStore.updatePlacement(cutId, panelId, parsed.startFrame, cut)
     : timelineStore.addPlacement(cutId, {
@@ -870,6 +995,18 @@ function saveTimelinePlacement(cutId, panelId, rawValue, placed) {
   renderTimelineViews();
   renderCutList();
   renderCutDetail();
+  if (placed && Number.isInteger(previous) && previous !== parsed.startFrame) {
+    history.push({
+      label: "Timelineを変更",
+      undo() {
+        revertTimelineStartFrame(cutId, panelId, previous);
+      },
+      redo() {
+        revertTimelineStartFrame(cutId, panelId, parsed.startFrame);
+      },
+    });
+    updateHistoryButtons();
+  }
 }
 
 function resetCutForm() {
@@ -1334,17 +1471,21 @@ async function drainThumbnailQueue() {
 }
 
 function deletePanel(panelId) {
-  cutStore.removePanelFromAll(panelId);
-  timelineStore.removePanelFromAll(panelId);
-  selectedPanelIds.delete(panelId);
-  panelStore.remove(panelId);
-  cancelQueuedThumbnail(panelId);
-  thumbnailCache.delete(panelId);
-  rushImageCache.delete(panelId);
-  failedThumbnailIds.delete(panelId);
-  timelineDrafts.delete(panelId);
-  markRushDirty();
-  syncPanels();
+  const snapshot = capturePanelSnapshot(panelId);
+  if (!snapshot) {
+    return;
+  }
+  removePanelInternal(panelId);
+  history.push({
+    label: "Panelを削除",
+    undo() {
+      restorePanelSnapshot(snapshot);
+    },
+    redo() {
+      removePanelInternal(panelId);
+    },
+  });
+  updateHistoryButtons();
 }
 
 function resetThumbnails() {
@@ -1371,6 +1512,7 @@ function clearSessionData() {
   setCutMessage("");
   setTimelineMessage("");
   resetPanelPlaceState();
+  history.clear();
   overlay.clear();
   cutTimelineEditor.clear();
   discardRush();
@@ -1381,6 +1523,7 @@ function syncPanels() {
   const pagePanels =
     currentPage === null ? [] : panelStore.listByPage(currentPage);
   overlay.renderPanels(pagePanels);
+  overlay.clampFrame();
   renderPanelList();
   renderCutList();
   renderCutDetail();
@@ -1393,6 +1536,8 @@ function showIdle() {
   viewer.clear();
   overlay.setEnabled(false);
   overlay.clear();
+  history.clear();
+  resetPanelPlaceState();
   updatePager();
   updatePlaceUi();
   renderPanelList();
@@ -1474,6 +1619,7 @@ async function handleFileChange(event) {
       return;
     }
     setState("viewing", "");
+    initSelectionFrame();
     syncPanels();
   } catch (error) {
     if (token !== loadToken) {
@@ -1515,7 +1661,6 @@ async function goToPage(pageNumber) {
   if (nextPage === session.currentPage) {
     return;
   }
-  overlay.clearCandidate();
   session.currentPage = nextPage;
   updatePager();
   try {
@@ -1573,36 +1718,43 @@ cutAddSelectedButton.addEventListener("click", () => {
 cutDeleteButton.addEventListener("click", () => {
   deleteSelectedCut();
 });
+placeModeFrameButton.addEventListener("click", () => {
+  setPanelPlaceMode("frame");
+});
 placeModeDragButton.addEventListener("click", () => {
   setPanelPlaceMode("drag");
 });
-placeModeStampButton.addEventListener("click", () => {
-  setPanelPlaceMode("stamp");
+aspectLockInput.addEventListener("change", () => {
+  overlay.setAspectLocked(aspectLockInput.checked);
+  updatePlaceUi();
 });
-panelWidthPercentInput.addEventListener("change", () => {
-  applyTemplateSizeFromInputs();
+capturePanelButton.addEventListener("click", () => {
+  captureCurrentFrame();
 });
-panelHeightPercentInput.addEventListener("change", () => {
-  applyTemplateSizeFromInputs();
+undoButton.addEventListener("click", () => {
+  handleUndo();
 });
-stampCommitButton.addEventListener("click", () => {
-  confirmStampCandidate();
-});
-stampCancelButton.addEventListener("click", () => {
-  cancelStampCandidate();
+redoButton.addEventListener("click", () => {
+  handleRedo();
 });
 window.addEventListener("keydown", (event) => {
-  if (event.key !== "Escape") {
+  const key = event.key.toLowerCase();
+  if (key !== "z") {
     return;
   }
-  if (cutTimelineEditor.isDragging()) {
+  const modifier = event.metaKey || event.ctrlKey;
+  if (!modifier) {
     return;
   }
-  if (!overlay.hasCandidate()) {
+  if (isTextEditingTarget(event.target)) {
     return;
   }
   event.preventDefault();
-  cancelStampCandidate();
+  if (event.shiftKey) {
+    handleRedo();
+    return;
+  }
+  handleUndo();
 });
 rushPlayButton.addEventListener("click", () => {
   handleRushPlay();

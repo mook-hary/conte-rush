@@ -11,7 +11,8 @@
 - **M4**: 実装済み
 - **M5**: 実装済み
 - **M5.1**: 実装済み
-- **M5.2**: 仕様策定済み。アプリは未実装。この仕様に従って実装する
+- **M5.2**: 実装済み
+- **M5.3**: 実装済み
 
 ## 目的
 
@@ -23,6 +24,7 @@
 - M5: 配置完了した Cut を時間軸に沿って静止画ラッシュとして再生する
 - M5.1: 保存構造を変えず、ページ送り・Cut一覧・入力クリア・Panel 連続登録の UI を改善する
 - M5.2: 保存構造を変えず、既存 Cut の編集導線と横 Timeline のドラッグ編集を追加する
+- M5.3: 保存構造を変えず、常設選択フレームによる Panel 連続取得と、限定した Undo / Redo を追加する
 
 責務の境界:
 
@@ -44,6 +46,8 @@ M5 の Rush は再生時に導出した一時構造である。Cut / Timeline �
 M5.1 の Panel テンプレートと Cut 選択は UI 状態だけである。Panel / Cut には保存しない。
 
 M5.2 の横 Timeline は `startFrame` の編集 UI である。Cut へ開始フレームを埋め込まない。`endFrame` は保存しない。
+
+M5.3 の常設選択フレームと履歴は UI 状態だけである。Panel Data には入れない。履歴はメモリ上のみとする。
 
 ## 制約
 
@@ -71,6 +75,11 @@ M5.2 の横 Timeline は `startFrame` の編集 UI である。Cut へ開始フ�
 - Rush の再生ロジックを、UI 改善のために変えない
 - 横 Timeline のドラッグ中に Timeline Store を書き換えない
 - ドラッグ確定失敗時は保存済み `startFrame` へ戻し、Rush を dirty にしない
+- 常設選択フレームはメモリ上の UI 状態のみとする。Panel Data へ入れない
+- 16:9 は overlay 上の CSS ピクセル見た目であり、相対座標 `width / height` の比ではない
+- Undo / Redo 履歴はメモリ上のみとする。永続化しない
+- 選択フレームの移動・リサイズ・aspect lock 変更は履歴に入れない
+- Cut の作成・削除・番号/尺・所属変更の Undo / Redo は M5.3 の対象外とする
 
 ## M0 で実装する機能（実装済み）
 
@@ -594,7 +603,7 @@ Play 時にだけ作る一時構造とする。ファイルへ保存しない。
 - Panel / Cut / Timeline / Rush の保存構造は変えない
 - Rush 再生ロジック（検証、スナップショット、画像準備、クロック、dirty）は変えない
 
-## M5.2 で実装する機能（仕様策定済み・アプリ未実装）
+## M5.2 で実装する機能（実装済み）
 
 保存構造を変えず、既存 Cut の編集導線を明確にし、配置済み Panel の `startFrame` を横バーのドラッグで編集する。Rush 再生ロジックは変えない。Cut に `startFrame` を足さない。Timeline に `endFrame` を保存しない。
 
@@ -719,6 +728,257 @@ M5.2 では、未配置 Panel をバーへドロップして初回配置しな�
 - Panel / Cut / Timeline / Rush の保存構造は変えない
 - `rush-player.js` の再生ロジックは変えない。確定成功時だけ既存 `markRushDirty()` を呼ぶ
 
+## M5.3 で実装する機能（実装済み）
+
+保存構造を変えず、Panel 取得の標準操作を常設選択フレームへ移し、Panel 登録・削除と Timeline の `startFrame` 確定を Undo / Redo できるようにする。Rush 再生ロジックは変えない。確定済み Panel の移動・リサイズはしない。
+
+### 1. 常設選択フレーム
+
+PDF 上に、操作対象の選択フレームを常時 1 つ持つ。
+
+- Panel 取得の標準操作はこのフレームとする
+- 状態はメモリ上の UI だけとする。Panel Data にも `localStorage` にも入れない
+- 構造は `{ x, y, width, height, aspectLocked }` とする。座標は M1 と同じ相対 0〜1
+- PDF 読み込み成功後、1ページ目の表示後に初期表示する
+- 初期位置はページ中央（枠の中心が 0.5, 0.5）
+- 初期幅はページ表示幅の約 45%（`width = 0.45`）
+- 初期高さは、overlay 上の CSS ピクセル見た目が 16:9 になる値とする
+- ページ外へ出ないよう、既存の `MIN_SIZE` と矩形クランプで 0〜1 に収める
+- 確定済み Panel の枠とは見た目を分ける。動かすのは選択フレームだけとする
+
+### 2. 見た目 16:9
+
+16:9 は相対座標の `width / height === 16/9` ではない。
+
+overlay（ページ表示矩形）の CSS ピクセルで、選択フレームの見た目が 16:9 であることとする。
+
+```
+(width  * overlay.clientWidth)
+--------------------------------  =  16 / 9
+(height * overlay.clientHeight)
+```
+
+lock の再計算は、その時点の overlay 実寸を使う。PDF ページの表示アスペクトが変わらなければ、相対 `width` / `height` を保てば見た目 16:9 も保たれる。
+
+### 3. 移動
+
+- 枠の内部（ハンドル以外）をドラッグすると、矩形全体を移動する
+- `width` / `height` は変えない
+- 矩形全体が相対 0〜1 から出ないようクランプする
+- pointer 操作を使う
+- 確定済み Panel は動かさない
+- 移動そのものは Undo 履歴に入れない
+
+### 4. リサイズ
+
+四隅にハンドルを置く。辺ハンドルは置かない。
+
+- 掴んだ角を動かし、対角は固定する
+- 最小サイズは既存 Panel の `MIN_SIZE`（0.01）と整合させる
+- ページ外へ出ないようクランプする
+- リサイズそのものは Undo 履歴に入れない
+
+### 5. 16:9 固定
+
+PDF 付近に「16:9を維持」を置く。初期値は ON とする。
+
+- ON: リサイズしても見た目 16:9 を維持する
+- OFF: `width` / `height` を独立に変更できる
+- ON へ戻すときは、基本的に幅を維持して高さを合わせる。枠の中心は維持する
+- はみ出す場合は高さを先に収め、必要なら幅を 16:9 に合わせてからクランプする
+- lock の切替そのものは Undo 履歴に入れない
+
+### 6. 画像取得
+
+PDF 付近に「画像取得」を置く。
+
+押した時点の選択フレームから、既存と同じ形式で Panel を作る。
+
+```json
+{
+  "id": "<新規UUID>",
+  "pageNumber": "<表示中ページ>",
+  "x": 0.2,
+  "y": 0.3,
+  "width": 0.4,
+  "height": 0.225,
+  "source": "manual"
+}
+```
+
+- Panel Data の項目は増やさない
+- `source` は `"manual"` のままとする
+- 登録後は既存 M2 どおりサムネイル生成へつなぐ
+- 登録成功時は既存の `markRushDirty()` を呼ぶ
+- PDF 非表示中は無効とする
+
+### 7. 取得後もフレームを残す
+
+Panel 登録成功後も、選択フレームの位置・サイズ・`aspectLocked` を消さない、初期化しない。
+
+作業の主経路は、枠を合わせる → 画像取得 → 次のコマへ枠を移動 → 画像取得、とする。同サイズの連続取得を優先する。
+
+### 8. ページ移動
+
+前へ / 次へでは、選択フレームの位置・サイズ・`aspectLocked` を維持する。新ページではみ出す分だけクランプする。
+
+初期値へ戻すのは、新しい PDF の読み込み成功時だけとする。
+
+### 9. drag / stamp の整理
+
+M5.1 の stamp は常設選択フレームへ統合する。M5.3 の現行 UI からは外す。
+
+| 系統 | 役割 |
+|---|---|
+| 常設選択フレーム | 標準の Panel 取得 |
+| 自由ドラッグ | 例外的な別サイズの取得 |
+
+M5.3 の現行 UI から外すもの:
+
+- 「前回サイズで置く」
+- stamp 候補矩形
+- 「この位置で登録」
+- 「やめる」
+
+`PanelPlaceMode` は `frame` と `drag` の 2 値とする。初期は `frame`。
+
+drag 中は常設フレームを隠す。drag で Panel を登録したあと、常設フレームの位置・サイズをその結果へ吸い寄せない。drag 前の枠を維持する。
+
+### 10. Undo / Redo の UI とキーボード
+
+画面上に Undo / Redo ボタンを置く。押せないときは disabled とする。
+
+キーボード:
+
+- Mac: ⌘Z で Undo、⇧⌘Z で Redo
+- Windows / Linux: Ctrl+Z で Undo、Ctrl+Shift+Z で Redo
+
+`input` / `textarea` / `select` / `contenteditable` にフォーカスがあるときは、アプリ側の Undo / Redo を発火しない。文字編集の Undo を邪魔しない。
+
+⌘Y / Ctrl+Y は必須としない。
+
+### 11. 履歴対象
+
+M5.3 の必須対象:
+
+- Panel 登録（画像取得と、自由ドラッグの確定）
+- Panel 削除
+- Timeline の `startFrame` 変更（数値の確定成功、横バーの pointerup 成功）
+
+対象外:
+
+- 選択フレームの移動・リサイズ・aspect lock 変更
+- 未確定のドラッグ矩形
+- 横 Timeline の pointermove ごとの候補
+- ページ送り、PDF フィット、Cut 一覧の選択
+- Rush の Play / Pause
+- Cut の作成・削除・番号/尺変更・所属の付け外し
+
+確定に失敗した Store 更新は履歴に積まない。
+
+新しい操作を push したら Redo 履歴を破棄する。Undo の途中で新操作した場合も、それ以降の Redo は捨てる。
+
+### 12. 履歴モジュール
+
+新規 `js/history.js` とする。Panel / Cut / Timeline Store は所有しない。
+
+最低限の責務: `push` / `undo` / `redo` / `canUndo` / `canRedo` / `clear`
+
+履歴はメモリ上のみとする。関数を永続化する必要はない。件数の上限を設けて古い履歴を捨ててよい。
+
+1 件の形は、実行時クロージャでよい。
+
+```js
+{
+  label: "Panelを追加",
+  undo(),
+  redo()
+}
+```
+
+### 13. Panel 登録の Undo / Redo
+
+Undo:
+
+- Panel Store から削除する
+- ThumbnailCache を破棄する
+- Rush 画像キャッシュがあれば破棄する
+- 非同期生成中なら、完了結果が復活しないように既存の世代管理で捨てる
+- Rush を dirty にする
+- 主ケースはまだ Cut に所属していない Panel とする。所属していれば現行の Panel 削除と同じく Cut / Timeline からも外す
+
+Redo:
+
+- 新しい Panel id は発行しない
+- 登録時と同じ Panel id で復元する
+- サムネイルは再生成してよい
+- Rush を dirty にする
+
+同じ id で戻すため、`panel-store.js` に既存 id での復元や指定位置への挿入 API を足してよい。Panel Data のフィールドは増やさない。
+
+### 14. Panel 削除の Undo / Redo
+
+削除を履歴へ積むときは、削除前の関連状態を 1 つの Action として保持する。
+
+最低限保持するもの:
+
+- Panel Data 全体
+- Panel Store 上の元の挿入位置（追加順）
+- 所属していた Cut（無ければ無し）
+- その Cut 内での `panelIds` の位置
+- Timeline placement があった場合の `startFrame`
+
+Undo:
+
+1. 同じ Panel id で Panel を復元する
+2. 元の Cut 所属を復元する
+3. 元の所属順を可能な範囲で復元する
+4. Timeline placement があった場合は元の `startFrame` へ復元する
+5. サムネイルを再生成する
+6. Rush を dirty にする
+
+Panel だけ戻り、Cut 所属や Timeline が消えた状態にはしない。
+
+Redo では、同じ Panel を再度削除する（現行の Panel 削除と同じ副作用）。
+
+### 15. Timeline `startFrame` の Undo / Redo
+
+確定成功した 1 操作を 1 履歴とする。例: `36f → 42f`
+
+- Undo: `42 → 36`
+- Redo: `36 → 42`
+
+横 Timeline ドラッグでも数値入力でも、Store 更新が成功したときだけ積む。pointermove ごとには積まない。
+
+Undo / Redo 成功時は Rush を dirty にする。既存の `updatePlacement` を使う。検証に失敗したらその操作は中断し、理由を Timeline 欄へ出す。
+
+### 16. PDF 再選択
+
+新しい PDF の読み込み成功時:
+
+- Undo 履歴と Redo 履歴を `clear` する
+- 常設選択フレームを初期状態へ戻す
+
+読み込み失敗で直前の PDF を維持する場合は、履歴も選択フレームも維持する。
+
+### 17. Rush dirty
+
+`rush-player.js` は変えない。履歴対象の確定操作とその Undo / Redo のあと、既存 `markRushDirty()` を呼ぶ。
+
+選択フレームの移動・リサイズ・lock では dirty にしない。
+
+Redo で Panel が戻ったら、Thumbnail は再生成し、Rush 画像は dirty な次回 Play で不足分だけ作る（M5 のまま）。
+
+### 18. モジュール境界
+
+- 新規は `js/history.js` とする
+- 想定する変更ファイル: `index.html`、`css/style.css`、`js/app.js`、`js/panel-overlay.js`、`js/panel-store.js`、`js/history.js`
+- 選択フレームの正本は `js/panel-overlay.js` が持つ。`app.js` は `{ x, y, width, height, aspectLocked }` の複製を持たない
+- overlay の公開 API は `getFrame` / `resetFrame` / `clampFrame` / `setAspectLocked` / `setMode` / `setEnabled` / `renderPanels` / `clear` とする。汎用の `setFrame` は置かない
+- `js/timeline-store.js` / `js/cut-store.js` の保存項目は増やさない。削除 Undo 用のスナップショットは履歴 Action が持つ
+- Panel / Cut / Timeline / Rush の保存構造は変えない
+- `rush-player.js` の再生ロジックは変えない
+
 ## UI 要件
 
 ### M0（実装済み）
@@ -773,12 +1033,8 @@ M5.2 では、未配置 Panel をバーへドロップして初回配置しな�
 - 高密度な Cut 1行一覧（CUT番号、尺、frames、所属数、完成状態）
 - 一覧とは別の Cut 詳細編集ペイン
 - CUT番号 / 尺の個別クリア
-- `drag` / `stamp` のモード切替
-- stamp の候補矩形（クリックは位置指定のみ）
-- 「この位置で登録」 / 「やめる」
-- 幅・高さの % 調整
 
-### M5.2（仕様策定済み・アプリ未実装）
+### M5.2（実装済み）
 
 - 「新規 Cut」と「CUT nnn を編集中」の別フォーム
 - 左カラムの横 Timeline バー
@@ -787,9 +1043,19 @@ M5.2 では、未配置 Panel をバーへドロップして初回配置しな�
 - 未配置 Panel の別リスト（数値で初回配置）
 - 導出区間の確認
 
+### M5.3（実装済み）
+
+- PDF 上の常設選択フレーム
+- 枠内部ドラッグでの移動と、四隅ハンドルでのリサイズ
+- 「16:9を維持」
+- 「画像取得」
+- `frame` / `drag` の 2 系統
+- Undo / Redo ボタン
+- 選択フレームは stamp 専用 UI を置かない
+
 ## 非対象
 
-次は M5.2 でも実装しない。UI もデータも作らない。
+次は M5.3 でも実装しない。UI もデータも作らない。
 
 - ファイルをウィンドウへドロップして開くこと
 - ズーム、回転、フィット表示の切替
@@ -801,6 +1067,8 @@ M5.2 では、未配置 Panel をバーへドロップして初回配置しな�
 - CUT 番号の自動認識
 - 確定済み Panel のリサイズ編集
 - 確定済み Panel の移動編集
+- 選択フレームの回転
+- 複数の選択フレーム
 - Panel 表示区間の両端リサイズ
 - 未配置 Panel を Timeline バーへドロップして初回配置すること
 - 同じ `startFrame` を自動で空き frame へずらすこと
@@ -825,7 +1093,9 @@ M5.2 では、未配置 Panel をバーへドロップして初回配置しな�
 - WebM
 - 音声 / BGM / SE
 - `panelIds` の並べ替え UI
-- Undo / Redo
+- Cut の作成・削除・番号/尺変更・所属変更の Undo / Redo
+- 選択フレームの移動・リサイズ・aspect lock の Undo / Redo
+- 履歴の永続化
 - 一覧のソート UI / フィルタ UI
 - localStorage
 - IndexedDB
@@ -855,3 +1125,5 @@ M5 の Rush は再生時の一時構造である。MP4 や音声はまだ定義�
 M5.1 のテンプレートと Cut 選択は UI 状態である。保存しない。
 
 M5.2 の横 Timeline は `startFrame` の編集 UI である。保存構造は増やさない。
+
+M5.3 の常設選択フレームと Undo / Redo は UI 状態である。保存構造は増やさない。履歴はメモリ上のみとする。

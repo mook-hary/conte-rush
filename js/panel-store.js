@@ -5,6 +5,18 @@ function createPanelId(serial) {
   return `panel-${serial}`;
 }
 
+function clonePanel(panel) {
+  return {
+    id: panel.id,
+    pageNumber: panel.pageNumber,
+    x: panel.x,
+    y: panel.y,
+    width: panel.width,
+    height: panel.height,
+    source: panel.source,
+  };
+}
+
 export function createPanelStore() {
   const panels = [];
   let nextSerial = 1;
@@ -21,7 +33,28 @@ export function createPanelStore() {
     };
     nextSerial += 1;
     panels.push(panel);
-    return panel;
+    return clonePanel(panel);
+  }
+
+  function indexOf(id) {
+    return panels.findIndex((panel) => panel.id === id);
+  }
+
+  function restore(panel, index) {
+    if (!panel?.id) {
+      return null;
+    }
+    const existing = getById(panel.id);
+    if (existing) {
+      return existing;
+    }
+    const copy = clonePanel(panel);
+    const at =
+      Number.isInteger(index) && index >= 0 && index <= panels.length
+        ? index
+        : panels.length;
+    panels.splice(at, 0, copy);
+    return clonePanel(copy);
   }
 
   function remove(id) {
@@ -46,15 +79,18 @@ export function createPanelStore() {
         }
         return a.index - b.index;
       })
-      .map(({ panel }) => panel);
+      .map(({ panel }) => clonePanel(panel));
   }
 
   function listByPage(pageNumber) {
-    return panels.filter((panel) => panel.pageNumber === pageNumber);
+    return panels
+      .filter((panel) => panel.pageNumber === pageNumber)
+      .map(clonePanel);
   }
 
   function getById(id) {
-    return panels.find((panel) => panel.id === id) ?? null;
+    const panel = panels.find((item) => item.id === id);
+    return panel ? clonePanel(panel) : null;
   }
 
   function count() {
@@ -62,11 +98,13 @@ export function createPanelStore() {
   }
 
   function countByPage(pageNumber) {
-    return listByPage(pageNumber).length;
+    return panels.filter((panel) => panel.pageNumber === pageNumber).length;
   }
 
   return {
     add,
+    restore,
+    indexOf,
     remove,
     clear,
     listAll,

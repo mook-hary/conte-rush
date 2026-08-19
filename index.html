@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>conte-rush</title>
-    <link rel="stylesheet" href="css/style.css" />
+    <link rel="stylesheet" href="css/style.css?v=m53-3" />
   </head>
   <body data-state="idle">
     <header class="toolbar">
@@ -35,38 +35,21 @@
             </nav>
             <div class="panel-place-bar">
               <div class="place-modes" role="group" aria-label="Panel登録モード">
-                <button id="place-mode-drag" type="button" aria-pressed="true">
-                  ドラッグで作る
+                <button id="place-mode-frame" type="button" aria-pressed="true">
+                  選択フレーム
                 </button>
-                <button id="place-mode-stamp" type="button" aria-pressed="false" disabled>
-                  前回サイズで置く
+                <button id="place-mode-drag" type="button" aria-pressed="false">
+                  ドラッグ
                 </button>
               </div>
-              <div id="panel-size-fields" class="panel-size-fields" hidden>
-                <label>
-                  幅 %
-                  <input
-                    id="panel-width-percent"
-                    type="number"
-                    min="1"
-                    max="100"
-                    step="1"
-                  />
-                </label>
-                <label>
-                  高さ %
-                  <input
-                    id="panel-height-percent"
-                    type="number"
-                    min="1"
-                    max="100"
-                    step="1"
-                  />
-                </label>
-              </div>
-              <div class="stamp-actions">
-                <button id="stamp-commit" type="button" disabled>この位置で登録</button>
-                <button id="stamp-cancel" type="button" disabled>やめる</button>
+              <label class="aspect-lock">
+                <input id="aspect-lock" type="checkbox" checked />
+                16:9を維持
+              </label>
+              <button id="capture-panel" type="button">画像取得</button>
+              <div class="history-actions">
+                <button id="undo" type="button" disabled>Undo</button>
+                <button id="redo" type="button" disabled>Redo</button>
               </div>
             </div>
           </section>
@@ -236,6 +219,6 @@
         status.textContent = `起動エラー: ${event.message}`;
       });
     </script>
-    <script type="module" src="js/app.js?v=m52-1"></script>
+    <script type="module" src="js/app.js?v=m53-3"></script>
   </body>
 </html>

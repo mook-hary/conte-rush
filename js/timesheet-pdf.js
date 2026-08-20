@@ -1,5 +1,5 @@
 import { PDFDocument } from "https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/+esm";
-import { PAGE_HEIGHT_MM, PAGE_WIDTH_MM, renderTimesheetSheet } from "./timesheet-renderer.js?v=m9-3";
+import { PAGE_HEIGHT_MM, PAGE_WIDTH_MM, renderTimesheetSheet } from "./timesheet-renderer.js?v=m9-5";
 import { buildSheetView } from "./timesheet-model.js?v=m9-3";
 
 export const PDF_LIB_VERSION = "1.17.1";

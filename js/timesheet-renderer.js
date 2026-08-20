@@ -4,22 +4,56 @@ import { TIMESHEET_FRAMES_PER_SHEET } from "./timesheet-model.js?v=m9-3";
 export const PAGE_WIDTH_MM = 257;
 export const PAGE_HEIGHT_MM = 364;
 
-const PAPER = "#f6e7b8";
-const INK = "#9a3a24";
-const INK_DARK = "#6e2416";
-const TEXT = "#4a1c12";
+const IMG_W = 1455;
+const IMG_H = 2048;
+
+function mmX(px) {
+  return (px / IMG_W) * PAGE_WIDTH_MM;
+}
+
+function mmY(py) {
+  return (py / IMG_H) * PAGE_HEIGHT_MM;
+}
+
+const PAPER = "#f4e3b3";
+const INK = "#b85a3c";
+const INK_DARK = "#7a2c1c";
+const TEXT = "#4e1c12";
+
+const LINE_HAIR = 0.07;
+const LINE_COL = 0.2;
+const LINE_24 = 0.42;
+const LINE_OUTER = 0.58;
+
+const BLOCK_PX = 665;
+const ACTION_PX = 170;
+const S_PX = 49;
+const CELL_PX = 296;
+const CAMERA_PX = 150;
 
 export const LAYOUT = {
-  margin: 6,
-  headerHeight: 16,
-  headerGap: 1.6,
-  gutterSec: 3.4,
-  gutterFrame: 4.2,
-  actionCol: 3.6,
-  sCol: 3.4,
-  cellCol: 5.0,
-  colHeader: 6.2,
+  marginLeft: mmX(47),
+  marginRight: mmX(48),
+  blockGap: mmX(28),
+  leftBlockWidth: mmX(665),
+  rightBlockWidth: mmX(667),
+  headerTop: mmY(31),
+  headerBottom: mmY(137),
+  gridTop: mmY(324),
+  bodyTop: mmY(373),
+  bottomMargin: mmY(35),
+  gutterSec: 2.4,
+  gutterFrame: 3.05,
+  actionShare: ACTION_PX / BLOCK_PX,
+  sShare: S_PX / BLOCK_PX,
+  cellShare: CELL_PX / BLOCK_PX,
+  cameraShare: CAMERA_PX / BLOCK_PX,
+  headerBoundsPx: [47, 195, 532, 741, 952, 1084, 1218],
+  headerRightPx: 1407,
 };
+
+LAYOUT.headerHeight = LAYOUT.headerBottom - LAYOUT.headerTop;
+LAYOUT.colHeader = LAYOUT.bodyTop - LAYOUT.gridTop;
 
 function mm(ctx) {
   return ctx.__mm ?? 1;
@@ -34,13 +68,31 @@ function xpt(ctx, mmValue) {
 }
 
 function lineWidth(ctx, mmValue) {
-  return Math.max(0.6, mmValue * mm(ctx));
+  return Math.max(0.55, mmValue * mm(ctx));
 }
 
-function strokeRect(ctx, x, y, w, h, widthMm = 0.18) {
-  ctx.strokeStyle = INK;
+function strokeRect(ctx, x, y, w, h, widthMm = LINE_COL, color = INK) {
+  ctx.strokeStyle = color;
   ctx.lineWidth = lineWidth(ctx, widthMm);
   ctx.strokeRect(xpt(ctx, x), xpt(ctx, y), xpt(ctx, w), xpt(ctx, h));
+}
+
+function vline(ctx, xMm, y1Mm, y2Mm, widthMm, color = INK) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lineWidth(ctx, widthMm);
+  ctx.beginPath();
+  ctx.moveTo(xpt(ctx, xMm), xpt(ctx, y1Mm));
+  ctx.lineTo(xpt(ctx, xMm), xpt(ctx, y2Mm));
+  ctx.stroke();
+}
+
+function hline(ctx, x1Mm, x2Mm, yMm, widthMm, color = INK) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lineWidth(ctx, widthMm);
+  ctx.beginPath();
+  ctx.moveTo(xpt(ctx, x1Mm), xpt(ctx, yMm));
+  ctx.lineTo(xpt(ctx, x2Mm), xpt(ctx, yMm));
+  ctx.stroke();
 }
 
 function fillPaper(ctx) {
@@ -58,35 +110,36 @@ function drawText(ctx, text, xMm, yMm, { sizeMm = 2.4, align = "center", bold = 
 }
 
 function blockGeometry(side) {
-  const { margin, headerHeight, headerGap } = LAYOUT;
-  const gap = 2.4;
-  const top = margin + headerHeight + headerGap;
-  const height = PAGE_HEIGHT_MM - margin - top;
-  const width = (PAGE_WIDTH_MM - margin * 2 - gap) / 2;
-  const x = side === "left" ? margin : margin + width + gap;
-  return { x, y: top, width, height };
+  const y = LAYOUT.gridTop;
+  const height = PAGE_HEIGHT_MM - LAYOUT.bottomMargin - y;
+  if (side === "left") {
+    return { x: LAYOUT.marginLeft, y, width: LAYOUT.leftBlockWidth, height };
+  }
+  return {
+    x: LAYOUT.marginLeft + LAYOUT.leftBlockWidth + LAYOUT.blockGap,
+    y,
+    width: LAYOUT.rightBlockWidth,
+    height,
+  };
 }
 
 function columnLayout(block) {
-  const actionWidth = LAYOUT.actionCol * 6;
-  const cellWidth = LAYOUT.cellCol * 6;
-  const used =
-    LAYOUT.gutterSec +
-    LAYOUT.gutterFrame +
-    actionWidth +
-    LAYOUT.sCol +
-    cellWidth;
-  const cameraWidth = Math.max(18, block.width - used);
+  const timeWidth = LAYOUT.gutterSec + LAYOUT.gutterFrame;
+  const contentWidth = block.width - timeWidth;
+  const actionWidth = contentWidth * LAYOUT.actionShare;
+  const sWidth = contentWidth * LAYOUT.sShare;
+  const cellWidth = contentWidth * LAYOUT.cellShare;
+  const cameraWidth = contentWidth * LAYOUT.cameraShare;
   let x = block.x;
   const sec = { x, width: LAYOUT.gutterSec };
   x += LAYOUT.gutterSec;
   const frame = { x, width: LAYOUT.gutterFrame };
   x += LAYOUT.gutterFrame;
-  const action = { x, width: actionWidth, col: LAYOUT.actionCol };
+  const action = { x, width: actionWidth, col: actionWidth / 6 };
   x += actionWidth;
-  const s = { x, width: LAYOUT.sCol };
-  x += LAYOUT.sCol;
-  const cell = { x, width: cellWidth, col: LAYOUT.cellCol };
+  const s = { x, width: sWidth };
+  x += sWidth;
+  const cell = { x, width: cellWidth, col: cellWidth / 6 };
   x += cellWidth;
   const camera = { x, width: cameraWidth };
   return { sec, frame, action, s, cell, camera };
@@ -115,26 +168,41 @@ export function createTimesheetCanvas(pxPerMm) {
   return { canvas, ctx };
 }
 
-function drawHeader(ctx, header) {
-  const { margin, headerHeight } = LAYOUT;
-  const y = margin;
-  const w = PAGE_WIDTH_MM - margin * 2;
-  const x = margin;
+function headerColumns() {
+  const xs = LAYOUT.headerBoundsPx.map(mmX);
   const cols = [
-    { key: "episode", label: "話数", width: 16 },
-    { key: "title", label: "タイトル", width: 0 },
-    { key: "cut", label: "カット", width: 26 },
-    { key: "sec", label: "秒数", width: 22 },
-    { key: "genga", label: "原画", width: 20 },
-    { key: "satsuei", label: "撮影", width: 20 },
-    { key: "sheet", label: "シート", width: 22 },
+    { key: "episode", label: "話数" },
+    { key: "title", label: "タイトル" },
+    { key: "cut", label: "カット" },
+    { key: "sec", label: "秒数" },
+    { key: "genga", label: "原画" },
+    { key: "satsuei", label: "撮影" },
   ];
-  const fixed = cols.reduce((sum, col) => sum + col.width, 0);
-  cols[1].width = w - fixed;
-  strokeRect(ctx, x, y, w, headerHeight, 0.35);
-  let cx = x;
-  const labelY = y + 3.8;
-  const valueY = y + 10.8;
+  return cols.map((col, i) => ({
+    ...col,
+    x: xs[i],
+    width: xs[i + 1] - xs[i],
+  }));
+}
+
+function sheetBox() {
+  const x = mmX(LAYOUT.headerBoundsPx[LAYOUT.headerBoundsPx.length - 1]);
+  const right = mmX(LAYOUT.headerRightPx);
+  return { x, width: right - x };
+}
+
+function drawHeader(ctx, header) {
+  const y = LAYOUT.headerTop;
+  const h = LAYOUT.headerHeight;
+  const cols = headerColumns();
+  const mainX = cols[0].x;
+  const mainW = cols[cols.length - 1].x + cols[cols.length - 1].width - mainX;
+  const sheet = sheetBox();
+  strokeRect(ctx, mainX, y, mainW, h, LINE_OUTER, INK_DARK);
+  strokeRect(ctx, sheet.x, y, sheet.width, h, LINE_OUTER, INK_DARK);
+  const labelY = y + h * 0.28;
+  const valueY = y + h * 0.68;
+  const splitY = y + h * 0.46;
   const values = {
     episode: header.episodeNumber,
     title: header.title,
@@ -142,36 +210,30 @@ function drawHeader(ctx, header) {
     sec: header.durationLabel,
     genga: "",
     satsuei: "",
-    sheet: header.sheetLabel,
   };
-  for (const col of cols) {
-    if (cx > x) {
-      ctx.strokeStyle = INK;
-      ctx.lineWidth = lineWidth(ctx, 0.18);
-      ctx.beginPath();
-      ctx.moveTo(xpt(ctx, cx), xpt(ctx, y));
-      ctx.lineTo(xpt(ctx, cx), xpt(ctx, y + headerHeight));
-      ctx.stroke();
+  hline(ctx, mainX, mainX + mainW, splitY, LINE_HAIR, INK);
+  hline(ctx, sheet.x, sheet.x + sheet.width, splitY, LINE_HAIR, INK);
+  for (let i = 0; i < cols.length; i += 1) {
+    const col = cols[i];
+    if (i > 0) {
+      vline(ctx, col.x, y, y + h, LINE_COL, INK);
     }
-    drawText(ctx, col.label, cx + col.width / 2, labelY, { sizeMm: 1.8 });
-    drawText(ctx, values[col.key], cx + col.width / 2, valueY, {
-      sizeMm: col.key === "title" ? 2.6 : 2.5,
+    drawText(ctx, col.label, col.x + col.width / 2, labelY, { sizeMm: 1.55 });
+    drawText(ctx, values[col.key], col.x + col.width / 2, valueY, {
+      sizeMm: col.key === "title" ? 3.05 : 2.95,
       bold: true,
     });
-    cx += col.width;
   }
-  ctx.strokeStyle = INK;
-  ctx.lineWidth = lineWidth(ctx, 0.15);
-  ctx.beginPath();
-  ctx.moveTo(xpt(ctx, x), xpt(ctx, y + 6.6));
-  ctx.lineTo(xpt(ctx, x + w), xpt(ctx, y + 6.6));
-  ctx.stroke();
+  drawText(ctx, "シート", sheet.x + sheet.width / 2, labelY, { sizeMm: 1.55 });
+  drawText(ctx, header.sheetLabel, sheet.x + sheet.width / 2, valueY, {
+    sizeMm: 2.95,
+    bold: true,
+  });
 }
 
 function drawColHeaders(ctx, cols, block) {
   const y = block.y;
   const h = LAYOUT.colHeader;
-  strokeRect(ctx, block.x, y, block.width, h, 0.28);
   const labels = [
     { box: cols.action, text: "ACTION" },
     { box: cols.s, text: "S" },
@@ -179,20 +241,20 @@ function drawColHeaders(ctx, cols, block) {
     { box: cols.camera, text: "CAMERA" },
   ];
   for (const item of labels) {
-    strokeRect(ctx, item.box.x, y, item.box.width, h, 0.18);
-    drawText(ctx, item.text, item.box.x + item.box.width / 2, y + h * 0.38, {
-      sizeMm: 1.7,
+    strokeRect(ctx, item.box.x, y, item.box.width, h, LINE_COL, INK);
+    drawText(ctx, item.text, item.box.x + item.box.width / 2, y + h * 0.34, {
+      sizeMm: 1.42,
       bold: true,
     });
   }
-  const subY = y + h * 0.72;
+  const subY = y + h * 0.74;
   for (let i = 0; i < 6; i += 1) {
     const letter = String.fromCharCode(65 + i);
     drawText(ctx, letter, cols.action.x + (i + 0.5) * cols.action.col, subY, {
-      sizeMm: 1.5,
+      sizeMm: 1.32,
     });
     drawText(ctx, letter, cols.cell.x + (i + 0.5) * cols.cell.col, subY, {
-      sizeMm: 1.5,
+      sizeMm: 1.32,
     });
   }
 }
@@ -201,52 +263,37 @@ function drawBlockGrid(ctx, block, cols, side) {
   const bodyY = block.y + LAYOUT.colHeader;
   const bodyH = block.height - LAYOUT.colHeader;
   const rowH = bodyH / 72;
-  strokeRect(ctx, block.x, block.y, block.width, block.height, 0.32);
+  strokeRect(ctx, block.x, block.y, block.width, block.height, LINE_OUTER, INK_DARK);
 
   for (let i = 0; i <= 72; i += 1) {
     const y = bodyY + i * rowH;
     const thick = i % FRAMES_PER_SECOND === 0;
-    ctx.strokeStyle = INK;
-    ctx.lineWidth = lineWidth(ctx, thick ? 0.32 : 0.09);
-    ctx.beginPath();
-    ctx.moveTo(xpt(ctx, block.x), xpt(ctx, y));
-    ctx.lineTo(xpt(ctx, block.x + block.width), xpt(ctx, y));
-    ctx.stroke();
+    if (thick) {
+      hline(ctx, block.x, block.x + block.width, y, LINE_24, INK_DARK);
+      continue;
+    }
+    hline(ctx, block.x, cols.s.x, y, LINE_HAIR, INK);
+    hline(ctx, cols.cell.x, block.x + block.width, y, LINE_HAIR, INK);
   }
 
-  const verticals = [
-    cols.frame.x,
-    cols.action.x,
-    cols.s.x,
-    cols.cell.x,
-    cols.camera.x,
-    block.x + block.width,
-  ];
-  ctx.strokeStyle = INK;
-  for (const vx of verticals) {
-    ctx.lineWidth = lineWidth(ctx, 0.18);
-    ctx.beginPath();
-    ctx.moveTo(xpt(ctx, vx), xpt(ctx, block.y));
-    ctx.lineTo(xpt(ctx, vx), xpt(ctx, block.y + block.height));
-    ctx.stroke();
-  }
+  vline(ctx, cols.frame.x, block.y, block.y + block.height, LINE_COL, INK);
+  vline(ctx, cols.action.x, block.y, block.y + block.height, LINE_COL, INK);
+  vline(ctx, cols.s.x, block.y, block.y + block.height, LINE_COL, INK);
+  vline(ctx, cols.cell.x, block.y, block.y + block.height, LINE_COL, INK);
+  vline(ctx, cols.camera.x, block.y, block.y + block.height, LINE_COL, INK);
+
   for (let i = 1; i < 6; i += 1) {
-    ctx.lineWidth = lineWidth(ctx, 0.08);
     const ax = cols.action.x + i * cols.action.col;
     const cx = cols.cell.x + i * cols.cell.col;
-    for (const vx of [ax, cx]) {
-      ctx.beginPath();
-      ctx.moveTo(xpt(ctx, vx), xpt(ctx, bodyY));
-      ctx.lineTo(xpt(ctx, vx), xpt(ctx, block.y + block.height));
-      ctx.stroke();
-    }
+    vline(ctx, ax, bodyY, block.y + block.height, LINE_HAIR, INK);
+    vline(ctx, cx, bodyY, block.y + block.height, LINE_HAIR, INK);
   }
 
   const secondBase = side === "left" ? 1 : 4;
   for (let group = 0; group < 3; group += 1) {
     const secY = bodyY + (group * 24 + 12) * rowH;
     drawText(ctx, String(secondBase + group), cols.sec.x + cols.sec.width / 2, secY, {
-      sizeMm: 2.8,
+      sizeMm: 2.35,
       bold: true,
       color: INK_DARK,
     });
@@ -255,7 +302,7 @@ function drawBlockGrid(ctx, block, cols, side) {
       const fy = bodyY + (row + 0.5) * rowH;
       if (f === 0 || f === 5 || f === 11 || f === 17 || f === 23) {
         drawText(ctx, String(f + 1), cols.frame.x + cols.frame.width / 2, fy, {
-          sizeMm: 1.55,
+          sizeMm: 1.28,
         });
       }
     }
@@ -297,7 +344,13 @@ function drawCellMarks(ctx, sheetView, leftCols, rightCols, leftBlock, rightBloc
     const box = cellABox(cols, row);
     const cx = box.x + box.width / 2;
     if (mark.kind === "number") {
-      drawCircledNumber(ctx, mark.panelNumber, cx, row.y + row.height / 2, Math.min(box.width * 0.86, row.height * 0.72, 4.2));
+      drawCircledNumber(
+        ctx,
+        mark.panelNumber,
+        cx,
+        row.y + row.height / 2,
+        Math.min(box.width * 0.72, row.height * 0.78, 3.35),
+      );
     } else if (mark.kind === "continue") {
       ctx.strokeStyle = INK_DARK;
       ctx.lineWidth = lineWidth(ctx, 0.28);
@@ -314,7 +367,7 @@ function cameraAnchor(cols, block, displayRow) {
   const localRow = side === "left" ? displayRow : displayRow - 72;
   const row = rowBox(block, localRow);
   return {
-    x: cols.camera.x + cols.camera.width * 0.38,
+    x: cols.camera.x + cols.camera.width * 0.34,
     y: row.y + row.height / 2,
     row,
     cols,
@@ -391,27 +444,98 @@ function drawCameraClips(ctx, sheetView, leftCols, rightCols, leftBlock, rightBl
       const isMotion = segment.kind === "motion";
       if (segment.showLabel) {
         drawText(ctx, segment.label, textX, start.y - start.row.height * 0.12, {
-          sizeMm: isMotion ? 1.85 : 1.7,
+          sizeMm: isMotion ? 1.72 : 1.58,
           bold: true,
           align: "center",
         });
       }
       if (segment.showA) {
-        drawText(ctx, "A", start.x, start.y, { sizeMm: 2.1, bold: true });
+        drawText(ctx, "A", start.x, start.y, { sizeMm: 1.95, bold: true });
       }
       if (segment.showB) {
-        drawText(ctx, "B", end.x, end.y, { sizeMm: 2.1, bold: true });
+        drawText(ctx, "B", end.x, end.y, { sizeMm: 1.95, bold: true });
       }
       const fromTop = segment.continuesFromPrev || (!segment.showA && !segment.showLabel);
       const y1 = fromTop ? start.row.y : start.y + (isMotion ? 1.05 : 0.7);
-      const y2 = segment.showHead
-        ? end.y - 1.05
-        : end.row.y + end.row.height;
+      const y2 = segment.showHead ? end.y - 1.05 : end.row.y + end.row.height;
       drawCameraStroke(ctx, start.x, y1, Math.max(y1, y2), {
         head: Boolean(segment.showHead),
       });
     }
   }
+}
+
+export function getTimesheetLayoutInfo() {
+  const left = blockGeometry("left");
+  const right = blockGeometry("right");
+  const leftCols = columnLayout(left);
+  const rightCols = columnLayout(right);
+  const headerCols = headerColumns();
+  const sheet = sheetBox();
+  const bodyH = left.height - LAYOUT.colHeader;
+  return {
+    page: { width: PAGE_WIDTH_MM, height: PAGE_HEIGHT_MM },
+    conversion: {
+      imagePx: { width: IMG_W, height: IMG_H },
+      mmPerPxX: PAGE_WIDTH_MM / IMG_W,
+      mmPerPxY: PAGE_HEIGHT_MM / IMG_H,
+    },
+    margins: {
+      left: LAYOUT.marginLeft,
+      right: LAYOUT.marginRight,
+      bottom: LAYOUT.bottomMargin,
+      gap: LAYOUT.blockGap,
+    },
+    header: {
+      top: LAYOUT.headerTop,
+      bottom: LAYOUT.headerBottom,
+      height: LAYOUT.headerHeight,
+      cols: headerCols.map((col) => ({
+        key: col.key,
+        label: col.label,
+        x: col.x,
+        width: col.width,
+      })),
+      sheet,
+    },
+    grid: {
+      top: LAYOUT.gridTop,
+      bodyTop: LAYOUT.bodyTop,
+      colHeader: LAYOUT.colHeader,
+      bottom: PAGE_HEIGHT_MM - LAYOUT.bottomMargin,
+      bodyHeight: bodyH,
+      rowHeight: bodyH / 72,
+      line24: LAYOUT.bodyTop + (bodyH / 72) * 24,
+      line48: LAYOUT.bodyTop + (bodyH / 72) * 48,
+      line72: LAYOUT.bodyTop + bodyH,
+    },
+    left: {
+      x: left.x,
+      width: left.width,
+      cols: {
+        action: leftCols.action.width,
+        actionCol: leftCols.action.col,
+        s: leftCols.s.width,
+        cell: leftCols.cell.width,
+        cellCol: leftCols.cell.col,
+        camera: leftCols.camera.width,
+        time: leftCols.sec.width + leftCols.frame.width,
+      },
+    },
+    right: {
+      x: right.x,
+      width: right.width,
+      cols: {
+        action: rightCols.action.width,
+        actionCol: rightCols.action.col,
+        s: rightCols.s.width,
+        cell: rightCols.cell.width,
+        cellCol: rightCols.cell.col,
+        camera: rightCols.camera.width,
+        time: rightCols.sec.width + rightCols.frame.width,
+      },
+    },
+  };
 }
 
 export function drawTimesheetSheet(ctx, sheetView) {
@@ -429,7 +553,7 @@ export function drawTimesheetSheet(ctx, sheetView) {
   drawCameraClips(ctx, sheetView, leftCols, rightCols, leftBlock, rightBlock);
 }
 
-export function paintTimesheetOnto(canvas, sheetView, pxPerMm = 2.4) {
+export function paintTimesheetOnto(canvas, sheetView, pxPerMm = 4) {
   const scale = Math.max(1, pxPerMm);
   canvas.width = Math.round(PAGE_WIDTH_MM * scale);
   canvas.height = Math.round(PAGE_HEIGHT_MM * scale);

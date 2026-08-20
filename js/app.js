@@ -49,11 +49,11 @@ import {
   buildTimesheetModel,
   buildSheetView,
 } from "./timesheet-model.js?v=m9-3";
-import { paintTimesheetOnto } from "./timesheet-renderer.js?v=m9-3";
+import { paintTimesheetOnto } from "./timesheet-renderer.js?v=m9-5";
 import {
   buildTimesheetPdf,
   timesheetFileName,
-} from "./timesheet-pdf.js?v=m9-3";
+} from "./timesheet-pdf.js?v=m9-5";
 import {
   buildSnapshot,
   createRushPlayer,
@@ -1637,7 +1637,7 @@ function paintCurrentTimesheetPreview(model) {
   const maxIndex = Math.max(0, model.sheetTotal - 1);
   timesheetPreviewIndex = Math.min(timesheetPreviewIndex, maxIndex);
   const view = buildSheetView(model, timesheetPreviewIndex);
-  paintTimesheetOnto(timesheetPreviewCanvasEl, view, 2.2);
+  paintTimesheetOnto(timesheetPreviewCanvasEl, view, 4);
   if (timesheetSheetInfoEl) {
     timesheetSheetInfoEl.textContent = `sheet ${view.sheetNumber} / ${view.sheetTotal}`;
   }

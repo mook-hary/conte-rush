@@ -885,9 +885,10 @@ body[data-state="viewing"] .page-stage {
 .timesheet-preview-canvas {
   display: block;
   width: 100%;
-  max-width: 22rem;
+  max-width: 28rem;
   height: auto;
-  background: #f6e7b8;
+  aspect-ratio: 257 / 364;
+  background: #f4e3b3;
   border: 1px solid var(--border);
 }
 

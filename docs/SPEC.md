@@ -17,6 +17,7 @@
 - **M6**: 実装済み
 - **M7**: 実装済み
 - **M8**: 実装済み
+- **M9**: 実装済み
 
 ## 目的
 
@@ -33,6 +34,7 @@
 - M6: Panel / Cut / Timeline の保存項目は変えず、独立した Motion Data で PAN / TU / TB をブラウザ Rush 上に再生する。MP4 は出さない
 - M7: M6 と同じ Frame Renderer の結果を、ブラウザ内で 16:9 / 24fps / 映像のみの H.264 MP4 として書き出す。音声は扱わない
 - M8: 同一 Panel を Cut 内で複数 placement できるようにし、所属順の Repeat 展開を編集コマンドとして Timeline へ書き込む。再生モードは増やさない
+- M9: 最終 Timeline と Motion から、印刷用の B4 縦タイムシート PDF を一方向に出力する。タイムシートは正本にしない
 
 責務の境界:
 
@@ -1330,6 +1332,8 @@ pose.scale = lerp(from.scale, to.scale, t)
 
 先頭 frame で from（t = 0）、inclusive 最終 frame で to（t = 1）。1 フレーム（`startFrame === lastFrame`）ではこの式を評価せず、Motion を適用しない。
 
+M9 では `preFixFrames` / `postFixFrames` がある。補間の `startFrame` / `lastFrame` は Panel 表示区間そのものではなく、`motionStart` / `motionLast` である。preFIX は from 静止、postFIX は to 静止。共通関数は `sampleMotionOnRange`。
+
 `localFrame` はその Cut 内 frame（`resolveFrame` が返す値）。Panel 先頭からの相対に直してから t を求める。
 
 ### 9. Timeline 変更との整合
@@ -1361,6 +1365,7 @@ M6 の必須対象に含める（既存 `history.js` の command 形式。永続
 - Motion 作成
 - Motion 削除（「Motionなし」へ戻す）
 - START / END（from / to）の確定変更
+- 前FIX / 後FIX（`preFixFrames` / `postFixFrames`）の確定変更
 
 含めない:
 
@@ -2074,11 +2079,11 @@ Cut から A を外す: その Cut の A の全 placement と、その Cut の A
 
 ### 15. Motion
 
-保存は現行どおり `{ cutId, motions: [{ panelId, from, to }] }`。placement 単位にはしない。
+保存は `{ cutId, motions: [{ panelId, from, to, preFixFrames, postFixFrames }] }`。未指定の FIX は 0。placement 単位にはしない。
 
-同じ panelId の全出現で同じ from/to を使う。各出現の **その表示区間** の先頭→末尾で `samplePose` する。
+同じ panelId の全出現で同じ from/to と FIX を使う。各出現の **その表示区間** で `sampleMotionOnRange` する（preFIX は from 静止、本体は線形補間、postFIX は to 静止）。
 
-そのため `poseForResolvedFrame` は「その panelId の最初の range」を使ってはいけない。`resolveFrame` が返す `placementId`、または `localFrame` を含む range で選ぶ。`samplePose` 自体は再利用できる。表示が 1 フレームの出現は現行どおり Motion 非適用。
+そのため `poseForResolvedFrame` は「その panelId の最初の range」を使ってはいけない。`resolveFrame` が返す `placementId`、または `localFrame` を含む range で選ぶ。表示が 1 フレームの出現は現行どおり Motion 非適用。
 
 Timeline からその panelId の placement が 0 件になっても Motion は残してよい（現行）。再配置後に同じ画角を使える。
 
@@ -2140,6 +2145,90 @@ M5.4 のまま。正規値は整数 frame。holdFrames の補助だけ秒+コマ
 - pose の range 選択を直し忘れると 2 回目の A で Motion がずれる
 - マーカー重なり（近い startFrame）の操作しづらさ
 - 確認なし Repeat は破壊的（確認と Undo で緩和）
+
+## M9（実装済み）
+
+選択中 Cut の最終 Timeline と Motion から、印刷用の **JIS B4 縦（257mm × 364mm）** タイムシート PDF を出す。タイムシートは正本にしない。一方向:
+
+既存データ → Timesheet View Model → プレビュー / PDF
+
+Panel / Cut / Timeline / Motion / Repeat / Rush / MP4 の Store と再生ロジックは変えない。
+
+### 1. 用紙と frame
+
+- 用紙: JIS B4 縦（portrait）。PDF の MediaBox は 257mm × 364mm（pt 換算 `mm * 72 / 25.4`）。`page width < page height`
+- 1 秒 = `FRAMES_PER_SECOND`（24）。M9 側へ 24 を再定義しない
+- 1 シート = `TIMESHEET_SECONDS_PER_SHEET`（6）× `FRAMES_PER_SECOND` = 144 frame
+- 内部 cutFrame は 0 始まり。紙面の行は 1〜144。`0f → 行1`、`23f → 行24`、`144f → シート2の行1`
+- 左ブロック 1〜72、右ブロック 73〜144。24 frame ごとに太線
+- `sheetCount = ceil(durationFrames / 144)`。各ページのグリッド表記は常に 1〜144
+
+### 2. ヘッダ
+
+自動: 話数、タイトル、カット（`cut.cutNumber`）、秒数（`formatDuration(durationFrames)`）、シート `n / N`  
+空白: 原画、撮影  
+ロゴなし
+
+話数 / タイトルは Cut に保存しない。PDF セッション単位の UI 状態。新しい PDF の読み込み成功時に初期化する。
+
+### 3. ACTION / CELL
+
+ACTION A〜F は枠だけ。中身は空白。Panel 番号は書かない。
+
+CELL は A 列だけ使う。番号は `Cut.panelIds` 順の 1, 2, 3…。同じ panelId は何度出ても同じ番号。UUID は書かない。
+
+丸数字は Unicode に頼らず、円と数字を描画する（21 以上も同じ。桁が増えたら文字を小さくする）。
+
+同一 Panel の継続区間は開始行に番号、以降は縦線。シート先頭では、そのページで継続中の Panel を再番号する（縦線だけから始めない）。
+
+### 4. 出力時 collapse
+
+M8 の連続同一 panelId placement は、**View Model 生成時だけ** `collapseConsecutive` する。Timeline Store は触らない。A→A→B は A 継続→B。A→B→A は 3 切替。
+
+### 5. CAMERA
+
+`motionLabel(from, to)` を再利用。PAN / TU / TB / PAN+TU / PAN+TB。`静止` と 1 フレーム区間（`canSampleMotion` 不可）は描かない。Motion Data は消さない。
+
+Motion は `cutId + panelId`。同じ Panel の各 range ごとに、preFIX / 本体 / postFIX を描く。
+
+本体:
+
+- 真の `motionStart` に Motion名 + A
+- 途中は一本の縦線
+- 真の `motionLast` にだけ矢印head + B
+- 矢印head は Motion range につき 1 つ
+
+シート / 左右ブロック境界で分割されても、途中に矢印headを置かない。継続ページは線のみ。B と head は真の終了があるページだけ。
+
+FIX:
+
+- 区間の先頭（と、シート先頭で継続しているとき）に `FIX`
+- 縦線。矢印headなし
+- ページ単体で FIX 中だと分かるようにする
+
+Rush / MP4 と同じ `sampleMotionOnRange` の区間（`motionStart`〜`motionLast`）を CAMERA の本体に使う。
+
+### 6. 生成
+
+- `js/timesheet-model.js`: 純粋関数。DOM / PDF を知らない
+- `js/timesheet-renderer.js`: 1 シートを Canvas に描く（クリーム紙、赤茶罫線）。B4 縦へ再フィット。回転しない
+- `js/timesheet-pdf.js`: pdf-lib `1.17.1`。各シートを 8 px/mm で描き PNG として B4 ページ全面へ。サーバーへ送らない
+
+ファイル名: `<PDF名>-cut<cutNumber>-timesheet.pdf`。数字の CUT 番号は 3 桁に揃える。危険文字は除去。
+
+Timeline 未完成、Cut 未選択では出力しない。
+
+### 7. Motion の preFIX / postFIX（M9）
+
+Motion Data へ `preFixFrames` / `postFixFrames`（0 以上の整数、初期 0）を足す。秒は保存しない。無いレコードは 0。
+
+`sampleMotionOnRange` が Rush と MP4 の唯一の補間入口である。`poseForResolvedFrame` がそれを呼ぶ。
+
+本体が 2 frame 未満になる FIX は保存拒否。既存 Motion は消さない。同一 Panel の各 placement range に同じ FIX を適用する。
+
+### 8. M9 では実装しない
+
+ACTION 自動記入、CELL B〜F、原画/撮影の自動、タイムシート上の編集、Excel/CSV/import、音声、任意 fps
 
 ## UI 要件
 
@@ -2253,9 +2342,16 @@ M5.4 のまま。正規値は整数 frame。holdFrames の補助だけ秒+コマ
 - Repeat（共通 holdFrames、所属順、確認のうえ置換）
 - Repeat の Undo / Redo（Timeline 全体）
 
+### M9（実装済み）
+
+- Cut 詳細のタイムシート欄（話数 / タイトル）
+- タイムシートをプレビュー（シート送り）
+- B4 縦タイムシート PDF の書き出し
+- Motion の前FIX / 後FIX（整数 frame、秒+コマ補助）
+
 ## 非対象
 
-次は M8 でも実装しない。UI もデータも作らない。
+次は M9 でも実装しない。UI もデータも作らない。
 
 - ファイルをウィンドウへドロップして開くこと
 - ズーム、回転、フィット表示の切替
@@ -2310,7 +2406,10 @@ M5.4 のまま。正規値は整数 frame。holdFrames の補助だけ秒+コマ
 - AI 解析
 - カメラワーク解析
 - 秒+コマ形式による `startFrame` 直接入力
-- タイムシート出力
+- ACTION 自動記入
+- CELL B〜F の使用
+- タイムシート上での直接編集
+- タイムシートの import / Excel / CSV
 - 1 Panel 内の複数 Motion 連結
 - Panel 表示区間の一部だけにかける Motion
 - Motion の `type` フィールド
@@ -2348,4 +2447,6 @@ M6 の Motion は独立データである。ブラウザ Rush までとする。
 
 M7 の MP4 は Frame Renderer を共用する書き出しである。保存構造は増やさない。音声とタイムシートはまだ定義しない。
 
-M8 の複数 placement と Repeat は Timeline 編集である。Rush / MP4 は最終 placements だけを見る。タイムシートは M9 で定義する。
+M8 の複数 placement と Repeat は Timeline 編集である。Rush / MP4 は最終 placements だけを見る。
+
+M9 のタイムシートは最終 placements と Motion からの一方向出力である。Store には保存しない。

@@ -29,19 +29,31 @@ import {
   RUSH_SCALE,
 } from "./rush-image-cache.js";
 import { renderFrame, rushCanvasPixelSize } from "./frame-renderer.js";
-import { createMotionEditor } from "./motion-editor.js";
+import { createMotionEditor } from "./motion-editor.js?v=m9-3";
 import {
   canSampleMotion,
   createMotionStore,
+  deriveMotionWindow,
+  fixFramesOf,
   motionLabel,
-  posesEqual,
-} from "./motion-store.js";
-import { poseForResolvedFrame } from "./frame-pose.js?v=m8-1";
+  motionsEqual,
+  validateMotionWindowForRanges,
+} from "./motion-store.js?v=m9-3";
+import { poseForResolvedFrame } from "./frame-pose.js?v=m9-3";
 import {
   ExportError,
   exportFileName,
   exportMp4,
-} from "./mp4-exporter.js?v=m8-1";
+} from "./mp4-exporter.js?v=m9-3";
+import {
+  buildTimesheetModel,
+  buildSheetView,
+} from "./timesheet-model.js?v=m9-3";
+import { paintTimesheetOnto } from "./timesheet-renderer.js?v=m9-3";
+import {
+  buildTimesheetPdf,
+  timesheetFileName,
+} from "./timesheet-pdf.js?v=m9-3";
 import {
   buildSnapshot,
   createRushPlayer,
@@ -109,6 +121,18 @@ const rushResetButton = document.querySelector("#rush-reset");
 const exportButton = document.querySelector("#export-mp4");
 const exportCancelButton = document.querySelector("#export-cancel");
 const exportStatusEl = document.querySelector("#export-status");
+const timesheetEpisodeInput = document.querySelector("#timesheet-episode");
+const timesheetTitleInput = document.querySelector("#timesheet-title");
+const timesheetPreviewButton = document.querySelector("#timesheet-preview");
+const timesheetExportButton = document.querySelector("#timesheet-export");
+const timesheetMessageEl = document.querySelector("#timesheet-message");
+const timesheetPreviewWrapEl = document.querySelector("#timesheet-preview-wrap");
+const timesheetPreviewCanvasEl = document.querySelector(
+  "#timesheet-preview-canvas",
+);
+const timesheetPrevSheetButton = document.querySelector("#timesheet-prev-sheet");
+const timesheetNextSheetButton = document.querySelector("#timesheet-next-sheet");
+const timesheetSheetInfoEl = document.querySelector("#timesheet-sheet-info");
 const placeModeFrameButton = document.querySelector("#place-mode-frame");
 const placeModeDragButton = document.querySelector("#place-mode-drag");
 const aspectLockInput = document.querySelector("#aspect-lock");
@@ -136,6 +160,13 @@ let rushView = null;
 let rushMotionFreeze = null;
 let exportRunning = false;
 let exportCancelRequested = false;
+let timesheetEpisode = "";
+let timesheetTitle = "";
+let timesheetPreviewIndex = 0;
+let timesheetPreviewOpen = false;
+let timesheetExporting = false;
+let motionFixMessage = "";
+let motionFixPanelId = null;
 
 const queuedThumbnails = [];
 const queuedThumbnailIds = new Set();
@@ -1308,7 +1339,14 @@ function motionRangeFor(cut, panelId) {
   );
 }
 
-function commitMotionChange({ cutId, panelId, from, to }) {
+function commitMotionChange({
+  cutId,
+  panelId,
+  from,
+  to,
+  preFixFrames,
+  postFixFrames,
+}) {
   const cut = cutStore.getById(cutId);
   const ranges = motionRangesFor(cut, panelId);
   if (
@@ -1318,13 +1356,40 @@ function commitMotionChange({ cutId, panelId, from, to }) {
     return;
   }
   const previous = motionStore.get(cutId, panelId);
-  if (previous && posesEqual(previous.from, from) && posesEqual(previous.to, to)) {
+  const nextFixes = fixFramesOf({
+    preFixFrames: preFixFrames ?? previous?.preFixFrames,
+    postFixFrames: postFixFrames ?? previous?.postFixFrames,
+  });
+  const next = {
+    panelId,
+    from: from ?? previous?.from,
+    to: to ?? previous?.to,
+    preFixFrames: nextFixes.preFixFrames,
+    postFixFrames: nextFixes.postFixFrames,
+  };
+  if (!next.from || !next.to) {
     return;
   }
-  const result = motionStore.upsert(cutId, { panelId, from, to });
+  if (previous && motionsEqual(previous, next)) {
+    motionFixMessage = "";
+    return;
+  }
+  const windowCheck = validateMotionWindowForRanges(ranges, next);
+  if (!windowCheck.ok) {
+    motionFixMessage = windowCheck.message;
+    motionFixPanelId = panelId;
+    renderMotionEditor();
+    return;
+  }
+  const result = motionStore.upsert(cutId, next);
   if (!result.ok) {
+    motionFixMessage = result.message;
+    motionFixPanelId = panelId;
+    renderMotionEditor();
     return;
   }
+  motionFixMessage = "";
+  motionFixPanelId = null;
   const existed = Boolean(previous);
   history.push({
     label: existed ? "Motionを変更" : "Motionを作成",
@@ -1338,7 +1403,7 @@ function commitMotionChange({ cutId, panelId, from, to }) {
       renderMotionEditor();
     },
     redo() {
-      motionStore.upsert(cutId, { panelId, from, to });
+      motionStore.upsert(cutId, next);
       markRushDirty();
       renderMotionEditor();
     },
@@ -1385,6 +1450,10 @@ function renderMotionEditor() {
     selectedTimelinePanelId && cut.panelIds.includes(selectedTimelinePanelId)
       ? selectedTimelinePanelId
       : (cut.panelIds[0] ?? null);
+  if (motionFixPanelId && motionFixPanelId !== panelId) {
+    motionFixMessage = "";
+    motionFixPanelId = null;
+  }
   const ranges = motionRangesFor(cut, panelId);
   const range = motionRangeFor(cut, panelId);
   const motion = panelId ? motionStore.get(cut.id, panelId) : null;
@@ -1426,7 +1495,26 @@ function renderMotionEditor() {
   } else if (!range) {
     hintText = "未使用です。配置後の各表示区間にMotionがかかります";
   } else if (motion) {
-    hintText = `${motionLabel(motion.from, motion.to)} / ${formatRange(range)}`;
+    const window = deriveMotionWindow(range.startFrame, range.lastFrame, motion);
+    if (window.preFixFrames > 0 || window.postFixFrames > 0) {
+      const parts = [];
+      if (window.preFixFrames > 0) {
+        parts.push(
+          `FIX ${formatFrameRange(range.startFrame, window.motionStart - 1)}`,
+        );
+      }
+      parts.push(
+        `${motionLabel(motion.from, motion.to)} ${formatFrameRange(window.motionStart, window.motionLast)}`,
+      );
+      if (window.postFixFrames > 0) {
+        parts.push(
+          `FIX ${formatFrameRange(window.motionLast + 1, range.lastFrame)}`,
+        );
+      }
+      hintText = parts.join(" → ");
+    } else {
+      hintText = `${motionLabel(motion.from, motion.to)} / ${formatRange(range)}`;
+    }
   } else {
     hintText = "プリセットから作成し、START / END 枠で調整できます";
   }
@@ -1446,16 +1534,185 @@ function renderMotionEditor() {
     hasMotion: Boolean(motion),
     from: motion?.from ?? null,
     to: motion?.to ?? null,
+    preFixFrames: fixFramesOf(motion).preFixFrames,
+    postFixFrames: fixFramesOf(motion).postFixFrames,
+    fixMessage: motionFixMessage,
     imageUrl: cached?.url ?? "",
     imageWidth: cached?.image?.naturalWidth ?? 0,
     imageHeight: cached?.image?.naturalHeight ?? 0,
   });
 }
 
+function setTimesheetMessage(message) {
+  if (timesheetMessageEl) {
+    timesheetMessageEl.textContent = message ?? "";
+  }
+}
+
+function resetTimesheetMeta() {
+  timesheetEpisode = "";
+  timesheetTitle = "";
+  timesheetPreviewIndex = 0;
+  timesheetPreviewOpen = false;
+  timesheetExporting = false;
+  motionFixMessage = "";
+  motionFixPanelId = null;
+  if (timesheetEpisodeInput) {
+    timesheetEpisodeInput.value = "";
+  }
+  if (timesheetTitleInput) {
+    timesheetTitleInput.value = "";
+  }
+  if (timesheetPreviewWrapEl) {
+    timesheetPreviewWrapEl.hidden = true;
+  }
+  setTimesheetMessage("");
+}
+
+function currentTimesheetModel() {
+  const cut = selectedCutId ? cutStore.getById(selectedCutId) : null;
+  if (!cut) {
+    return { ok: false, message: "Cutを選んでください。" };
+  }
+  return buildTimesheetModel({
+    cut,
+    timeline: timelineStore.getByCutId(cut.id),
+    motions: motionStore.listByCutId(cut.id),
+    episodeNumber: timesheetEpisode,
+    title: timesheetTitle,
+  });
+}
+
+function syncTimesheetInputs() {
+  if (timesheetEpisodeInput && timesheetEpisodeInput.value !== timesheetEpisode) {
+    timesheetEpisodeInput.value = timesheetEpisode;
+  }
+  if (timesheetTitleInput && timesheetTitleInput.value !== timesheetTitle) {
+    timesheetTitleInput.value = timesheetTitle;
+  }
+}
+
+function updateTimesheetUi() {
+  const hasCut = Boolean(selectedCutId && cutStore.getById(selectedCutId));
+  const model = hasCut ? currentTimesheetModel() : { ok: false, message: "Cutを選んでください。" };
+  if (timesheetPreviewButton) {
+    timesheetPreviewButton.disabled = !hasCut || timesheetExporting;
+  }
+  if (timesheetExportButton) {
+    timesheetExportButton.disabled = !hasCut || timesheetExporting;
+  }
+  if (timesheetEpisodeInput) {
+    timesheetEpisodeInput.disabled = !hasCut;
+  }
+  if (timesheetTitleInput) {
+    timesheetTitleInput.disabled = !hasCut;
+  }
+  syncTimesheetInputs();
+  if (!hasCut) {
+    timesheetPreviewOpen = false;
+    if (timesheetPreviewWrapEl) {
+      timesheetPreviewWrapEl.hidden = true;
+    }
+    return;
+  }
+  if (!model.ok) {
+    if (timesheetPreviewOpen) {
+      setTimesheetMessage(model.message);
+      timesheetPreviewOpen = false;
+      if (timesheetPreviewWrapEl) {
+        timesheetPreviewWrapEl.hidden = true;
+      }
+    }
+    return;
+  }
+  if (timesheetPreviewOpen) {
+    paintCurrentTimesheetPreview(model);
+  }
+}
+
+function paintCurrentTimesheetPreview(model) {
+  if (!model?.ok || !timesheetPreviewCanvasEl) {
+    return;
+  }
+  const maxIndex = Math.max(0, model.sheetTotal - 1);
+  timesheetPreviewIndex = Math.min(timesheetPreviewIndex, maxIndex);
+  const view = buildSheetView(model, timesheetPreviewIndex);
+  paintTimesheetOnto(timesheetPreviewCanvasEl, view, 2.2);
+  if (timesheetSheetInfoEl) {
+    timesheetSheetInfoEl.textContent = `sheet ${view.sheetNumber} / ${view.sheetTotal}`;
+  }
+  if (timesheetPrevSheetButton) {
+    timesheetPrevSheetButton.disabled = timesheetPreviewIndex <= 0;
+  }
+  if (timesheetNextSheetButton) {
+    timesheetNextSheetButton.disabled = timesheetPreviewIndex >= maxIndex;
+  }
+  if (timesheetPreviewWrapEl) {
+    timesheetPreviewWrapEl.hidden = false;
+  }
+}
+
+function handleTimesheetPreview() {
+  const model = currentTimesheetModel();
+  if (!model.ok) {
+    setTimesheetMessage(model.message);
+    timesheetPreviewOpen = false;
+    if (timesheetPreviewWrapEl) {
+      timesheetPreviewWrapEl.hidden = true;
+    }
+    return;
+  }
+  setTimesheetMessage("");
+  timesheetPreviewOpen = true;
+  timesheetPreviewIndex = 0;
+  paintCurrentTimesheetPreview(model);
+}
+
+function handleTimesheetSheetStep(delta) {
+  const model = currentTimesheetModel();
+  if (!model.ok || !timesheetPreviewOpen) {
+    return;
+  }
+  timesheetPreviewIndex = Math.min(
+    Math.max(0, timesheetPreviewIndex + delta),
+    model.sheetTotal - 1,
+  );
+  paintCurrentTimesheetPreview(model);
+}
+
+async function handleTimesheetExport() {
+  if (timesheetExporting) {
+    return;
+  }
+  const model = currentTimesheetModel();
+  if (!model.ok) {
+    setTimesheetMessage(model.message);
+    return;
+  }
+  timesheetExporting = true;
+  updateTimesheetUi();
+  setTimesheetMessage("PDFを作成しています…");
+  try {
+    const blob = await buildTimesheetPdf(model);
+    const cut = cutStore.getById(selectedCutId);
+    downloadBlob(blob, timesheetFileName(session?.fileName, cut?.cutNumber));
+    setTimesheetMessage("");
+  } catch (error) {
+    console.error(error);
+    setTimesheetMessage(
+      `タイムシートPDFを作れませんでした。${error?.message ?? ""}`.trim(),
+    );
+  } finally {
+    timesheetExporting = false;
+    updateTimesheetUi();
+  }
+}
+
 function renderTimelineViews() {
   renderTimelineEditor();
   renderCutTimelineStrip();
   renderMotionEditor();
+  updateTimesheetUi();
 }
 
 function maybeInitSinglePanelTimeline(cut) {
@@ -2567,6 +2824,7 @@ function clearSessionData() {
   cutTimelineEditor.clear();
   motionEditor.clear();
   discardRush();
+  resetTimesheetMeta();
 }
 
 function syncPanels() {
@@ -2780,6 +3038,30 @@ timelineRepeatHoldInput?.addEventListener("input", () => {
 });
 timelineRepeatApplyButton?.addEventListener("click", () => {
   applyRepeat();
+});
+timesheetEpisodeInput?.addEventListener("input", () => {
+  timesheetEpisode = timesheetEpisodeInput.value;
+  if (timesheetPreviewOpen) {
+    updateTimesheetUi();
+  }
+});
+timesheetTitleInput?.addEventListener("input", () => {
+  timesheetTitle = timesheetTitleInput.value;
+  if (timesheetPreviewOpen) {
+    updateTimesheetUi();
+  }
+});
+timesheetPreviewButton?.addEventListener("click", () => {
+  handleTimesheetPreview();
+});
+timesheetExportButton?.addEventListener("click", () => {
+  handleTimesheetExport();
+});
+timesheetPrevSheetButton?.addEventListener("click", () => {
+  handleTimesheetSheetStep(-1);
+});
+timesheetNextSheetButton?.addEventListener("click", () => {
+  handleTimesheetSheetStep(1);
 });
 placeModeFrameButton.addEventListener("click", () => {
   setPanelPlaceMode("frame");

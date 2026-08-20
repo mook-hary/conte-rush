@@ -5,7 +5,7 @@ import {
   createExportImageCache,
   motionMaxScaleForPanel,
 } from "./export-image-cache.js";
-import { poseForResolvedFrame } from "./frame-pose.js?v=m8-1";
+import { poseForResolvedFrame } from "./frame-pose.js?v=m9-3";
 import { renderFrame } from "./frame-renderer.js";
 import {
   cutNumberForPanel,

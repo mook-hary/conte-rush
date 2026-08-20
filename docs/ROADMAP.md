@@ -239,6 +239,20 @@ MP4 / WebM / 音声 / ease / 複数 Motion 連結 / 部分区間 Motion / 回転
 
 仕様は [SPEC.md](SPEC.md) の M8 節を正とする。アプリ実装済み。
 
+## M9（実装済み）
+
+完成 Timeline と Motion から、JIS B4 縦の印刷用タイムシート PDF を一方向に出す。
+
+- 1 シート 144f（6 秒 × `FRAMES_PER_SECOND`）。紙面は 1〜144。内部 0f は行 1
+- CELL A 列のみ。`panelIds` 順の自前丸数字。継続は縦線。シート先頭は再番号
+- 出力時だけ同一 panelId 連続 placement を collapse。Store は変えない
+- CAMERA は既存 `motionLabel`。A→線→最終frameだけ矢印head+B。pre/post FIX を FIX 縦線で表す
+- 話数 / タイトルは PDF セッションの UI 状態。Cut には保存しない
+- pdf-lib `1.17.1`。JIS B4 **縦**（257mm × 364mm）。ロゴなし
+- Panel / Cut / Timeline / Motion / Rush / MP4 は変えない
+
+仕様は [SPEC.md](SPEC.md) の M9 節を正とする。
+
 ## 以降（構想）
 
 順序の目安であり、確定した計画ではない。
@@ -247,11 +261,11 @@ MP4 / WebM / 音声 / ease / 複数 Motion 連結 / 部分区間 Motion / 回転
 
 | 候補 | 想定する前進 |
 |---|---|
-| M9 | 最終 placements からタイムシートを出す |
+| M10 | 音声 / タイムシート編集 など |
 
-M9 以降でやり得ることの例（未着手、M8 には入れない）:
+M9 以降でやり得ることの例（未着手、M9 には入れない）:
 
-- タイムシート出力
+- ACTION 自動記入、CELL B〜F、タイムシート import
 - 音声 / BGM / SE / AAC
 - 1080p 選択、bitrate / fps UI
 - WebM / MOV

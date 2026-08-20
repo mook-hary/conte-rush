@@ -6,11 +6,23 @@ function clonePose(pose) {
   };
 }
 
+export function fixFramesOf(motion) {
+  const pre = motion?.preFixFrames;
+  const post = motion?.postFixFrames;
+  return {
+    preFixFrames: Number.isInteger(pre) && pre >= 0 ? pre : 0,
+    postFixFrames: Number.isInteger(post) && post >= 0 ? post : 0,
+  };
+}
+
 function cloneMotion(motion) {
+  const { preFixFrames, postFixFrames } = fixFramesOf(motion);
   return {
     panelId: motion.panelId,
     from: clonePose(motion.from),
     to: clonePose(motion.to),
+    preFixFrames,
+    postFixFrames,
   };
 }
 
@@ -41,6 +53,61 @@ export function validatePose(pose) {
   return { ok: true };
 }
 
+export function parseFixFrames(raw) {
+  const trimmed = String(raw ?? "").trim();
+  if (!trimmed) {
+    return { ok: false, message: "FIXは0以上の整数で入力してください。" };
+  }
+  if (!/^[0-9]+$/.test(trimmed)) {
+    return { ok: false, message: "FIXは0以上の整数で入力してください。" };
+  }
+  const value = Number(trimmed);
+  if (!Number.isInteger(value) || value < 0) {
+    return { ok: false, message: "FIXは0以上の整数で入力してください。" };
+  }
+  return { ok: true, value };
+}
+
+export function deriveMotionWindow(panelStart, panelLast, motion) {
+  const { preFixFrames, postFixFrames } = fixFramesOf(motion);
+  return {
+    panelStart,
+    panelLast,
+    preFixFrames,
+    postFixFrames,
+    motionStart: panelStart + preFixFrames,
+    motionLast: panelLast - postFixFrames,
+  };
+}
+
+export function canFitMotionWindow(panelStart, panelLast, motion) {
+  if (!canSampleMotion(panelStart, panelLast)) {
+    return false;
+  }
+  const { motionStart, motionLast } = deriveMotionWindow(
+    panelStart,
+    panelLast,
+    motion,
+  );
+  return canSampleMotion(motionStart, motionLast);
+}
+
+export function validateMotionWindowForRanges(ranges, motion) {
+  const applicable = (ranges ?? []).filter((range) =>
+    canSampleMotion(range.startFrame, range.lastFrame),
+  );
+  for (const range of applicable) {
+    if (!canFitMotionWindow(range.startFrame, range.lastFrame, motion)) {
+      return {
+        ok: false,
+        message:
+          "Motion本体が2フレーム未満になるため、前FIX/後FIXを保存できません。",
+      };
+    }
+  }
+  return { ok: true };
+}
+
 export function validateMotion(motion) {
   if (!motion?.panelId) {
     return { ok: false, message: "Panelが見つかりません。" };
@@ -53,6 +120,20 @@ export function validateMotion(motion) {
   if (!to.ok) {
     return to;
   }
+  if (
+    motion.preFixFrames !== undefined &&
+    motion.preFixFrames !== null &&
+    !(Number.isInteger(motion.preFixFrames) && motion.preFixFrames >= 0)
+  ) {
+    return { ok: false, message: "前FIXは0以上の整数にしてください。" };
+  }
+  if (
+    motion.postFixFrames !== undefined &&
+    motion.postFixFrames !== null &&
+    !(Number.isInteger(motion.postFixFrames) && motion.postFixFrames >= 0)
+  ) {
+    return { ok: false, message: "後FIXは0以上の整数にしてください。" };
+  }
   return { ok: true };
 }
 
@@ -64,6 +145,21 @@ export function posesEqual(a, b, epsilon = 0.0001) {
     Math.abs(a.x - b.x) <= epsilon &&
     Math.abs(a.y - b.y) <= epsilon &&
     Math.abs(a.scale - b.scale) <= epsilon
+  );
+}
+
+export function motionsEqual(a, b) {
+  if (!a || !b) {
+    return false;
+  }
+  const af = fixFramesOf(a);
+  const bf = fixFramesOf(b);
+  return (
+    a.panelId === b.panelId &&
+    posesEqual(a.from, b.from) &&
+    posesEqual(a.to, b.to) &&
+    af.preFixFrames === bf.preFixFrames &&
+    af.postFixFrames === bf.postFixFrames
   );
 }
 
@@ -116,6 +212,31 @@ export function samplePose(from, to, localFrame, startFrame, lastFrame) {
     y: from.y + (to.y - from.y) * t,
     scale: from.scale + (to.scale - from.scale) * t,
   };
+}
+
+export function sampleMotionOnRange(
+  from,
+  to,
+  localFrame,
+  panelStart,
+  panelLast,
+  motion,
+) {
+  if (!canFitMotionWindow(panelStart, panelLast, motion) || !from || !to) {
+    return null;
+  }
+  const { motionStart, motionLast } = deriveMotionWindow(
+    panelStart,
+    panelLast,
+    motion,
+  );
+  if (localFrame < motionStart) {
+    return clonePose(from);
+  }
+  if (localFrame > motionLast) {
+    return clonePose(to);
+  }
+  return samplePose(from, to, localFrame, motionStart, motionLast);
 }
 
 export function createMotionStore() {

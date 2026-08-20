@@ -681,6 +681,62 @@
 - 採用しなかった案: placement 単位 Motion。resolveFrame の時計変更
 - 結果: M8 では Motion Data のフィールドを増やさない
 
+## D86. タイムシートは正本にしない一方向出力である
+
+- 状態: 採用（M9・実装）
+- 判断: 既存 Cut / Timeline / Motion から Timesheet View Model を作り、プレビューと PDF にだけ使う。Store へ書き戻さない
+- 理由: タイムシートを編集可能にすると placements と二重管理になる。M9 の目的は印刷用の紙面を出すこと
+- 採用しなかった案: タイムシートを新しい正本にする。CELL を Timeline へ逆変換する
+- 結果: `js/timesheet-model.js` は純粋関数。UI 状態の話数 / タイトル以外を保存しない
+
+## D87. JIS B4 縦を pdf-lib 1.17.1 のページサイズで出す
+
+- 状態: 採用（M9・実装）
+- 判断: ライブラリは pdf-lib `1.17.1` を jsDelivr の `+esm` で固定する。ページは **257mm × 364mm**（portrait）を pt（`mm * 72 / 25.4`）にした MediaBox。各シートを Canvas に描き PNG で全面へ貼る。左右 72f の 2 面は維持し、縦紙面へ列幅を再フィットする（Canvas 回転はしない）
+- 理由: 現場のタイムシートは B4 縦。静的 GitHub Pages で複数ページと実寸が扱える。日本語は canvas のシステムフォントで描き、PDF へ fontkit を足さない
+- 採用しなかった案: B4 横、jsPDF、SVG→PDF、背景に実物スキャンを貼る、CDN `@latest`、サーバー変換
+- 結果: 印刷は PDF の実寸 100% を前提とする。`page width < page height`。ロゴは描かない
+
+## D88. Panel 番号は Cut.panelIds 順で、丸数字は自前描画する
+
+- 状態: 採用（M9・実装）
+- 判断: ①相当は `panelIds` の登場順 1, 2, 3…。同じ panelId は何度出ても同じ番号。円と数字を Canvas で描く。21 以上も同じ（桁が増えたら文字を小さくする）
+- 理由: Unicode 丸数字は ⑳ までで、PDF 埋め込みフォントが無いと欠ける。UUID を紙面に出さない
+- 採用しなかった案: placement 順番号、`○21` 文字列、Unicode ①〜⑳ の切替
+- 結果: CELL は A 列だけ。ACTION は枠のみ空白
+
+## D89. 同一 Panel 連続 placement は View Model 生成時だけ collapse する
+
+- 状態: 採用（M9・実装）
+- 判断: `collapseConsecutive` をタイムシート変換でのみ呼ぶ。Timeline Store は触らない
+- 理由: M8 の手動連続配置（0f A, 4f A）は Rush では 2 区間だが、紙面では 1 本の継続として読む。Store を畳むと Repeat 後の手修正と衝突する
+- 採用しなかった案: 保存時 collapse、Rush 側 collapse
+- 結果: A→A→B は CELL で A 継続→B。A→B→A は 3 切替
+
+## D90. CAMERA は各 range に A→線→最終frameの矢印head+B を描く
+
+- 状態: 採用（M9・実装）
+- 判断: ラベルは既存 `motionLabel`。1 フレームと `静止` は描かない。同じ panelId の各表示区間に同じ Motion を描く。矢印head は真の `motionLast` にだけ。シート / 左右ブロック境界では線のみ。FIX は縦線で、ページ先頭の継続では `FIX` を再掲する
+- 理由: 現場のタイムシートでは矢印headがカメラ完了フレームを示す。ページ境界を Motion 終了と誤認させない
+- 採用しなかった案: 分割先の下端ごとに矢印headを付ける。シート2に A を再掲する。type フィールドを足す
+- 結果: Motion がページから消えない。終了の誤認を避ける
+
+## D91. 話数とタイトルは PDF セッションの UI 状態とする
+
+- 状態: 採用（M9・実装）
+- 判断: Cut にフィールドを足さない。同じ PDF を開いているあいだは Cut 切替でも保持し、読み込み成功時に初期化する
+- 理由: 話数 / タイトルは作品共通になりやすい。永続化は M9 の範囲外
+- 採用しなかった案: Cut ごとの保存、localStorage
+- 結果: 未選択 Cut では入力とボタンを disabled。未完成 Timeline ではプレビュー / 書き出しを拒否する
+
+## D92. Motion に preFIX / postFIX の整数 frame を持たせる
+
+- 状態: 採用（M9・実装）
+- 判断: `{ preFixFrames, postFixFrames }` を Motion 要素へ足す。初期 0。未指定は 0。Rush / MP4 / タイムシートは共通の `sampleMotionOnRange`。本体 2 frame 未満は保存拒否。既存レコードは消さない
+- 理由: カメラワークの前後に静止を置くのが制作上普通。秒を保存すると frame と二重の正になる
+- 採用しなかった案: Motion の絶対 start/end を保存する。Rush と PDF で別計算にする
+- 結果: 各 placement range に同じ FIX がかかる。UI は整数入力 + 秒+コマ補助。Undo / Redo 対象
+
 ## 未決
 
 - ライセンス

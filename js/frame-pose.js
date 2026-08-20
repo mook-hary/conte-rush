@@ -1,5 +1,5 @@
 import { deriveRanges } from "./timeline-store.js?v=m8-1";
-import { canSampleMotion, samplePose } from "./motion-store.js";
+import { sampleMotionOnRange } from "./motion-store.js?v=m9-3";
 
 function rangesFromSegment(segment) {
   if (!segment) {
@@ -62,14 +62,15 @@ export function poseForResolvedFrame(snapshot, motions, view) {
     return null;
   }
   const range = rangeForView(rangesFromSegment(segment), view);
-  if (!range || !canSampleMotion(range.startFrame, range.lastFrame)) {
+  if (!range) {
     return null;
   }
-  return samplePose(
+  return sampleMotionOnRange(
     motion.from,
     motion.to,
     view.localFrame,
     range.startFrame,
     range.lastFrame,
+    motion,
   );
 }

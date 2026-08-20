@@ -811,6 +811,125 @@ body[data-state="viewing"] .page-stage {
   color: var(--muted);
 }
 
+.timesheet-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  border-top: 1px solid var(--border);
+  padding: 0.35rem 0.9rem 0.7rem;
+}
+
+.timesheet-editor-head h2 {
+  padding: 0.2rem 0;
+}
+
+.timesheet-editor label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.timesheet-editor input {
+  width: 100%;
+  padding: 0.2rem 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #161616;
+  color: var(--text);
+  font: inherit;
+}
+
+.timesheet-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.timesheet-actions button {
+  padding: 0.15rem 0.45rem;
+  font-size: 0.75rem;
+}
+
+.timesheet-message {
+  margin: 0;
+  min-height: 1.2em;
+  color: var(--danger);
+  font-size: 0.78rem;
+}
+
+.timesheet-preview-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.timesheet-preview-wrap[hidden] {
+  display: none;
+}
+
+.timesheet-preview-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+}
+
+.timesheet-preview-nav button {
+  padding: 0.12rem 0.4rem;
+  font-size: 0.72rem;
+}
+
+.timesheet-preview-canvas {
+  display: block;
+  width: 100%;
+  max-width: 22rem;
+  height: auto;
+  background: #f6e7b8;
+  border: 1px solid var(--border);
+}
+
+.motion-fix {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-top: 0.45rem;
+}
+
+.motion-fix label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.motion-fix-field {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.motion-fix input {
+  width: 3.4rem;
+  padding: 0.15rem 0.3rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #161616;
+  color: var(--text);
+  font: inherit;
+}
+
+.motion-fix-message {
+  margin: 0.2rem 0 0;
+  min-height: 1.1em;
+  color: var(--danger);
+  font-size: 0.75rem;
+}
+
 .motion-status {
   min-height: 1.2em;
 }

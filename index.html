@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>conte-rush</title>
-    <link rel="stylesheet" href="css/style.css?v=m8-1" />
+    <link rel="stylesheet" href="css/style.css?v=m9-3" />
   </head>
   <body data-state="idle">
     <header class="toolbar">
@@ -274,7 +274,64 @@
                       </button>
                     </div>
                     <p data-role="target-status" class="motion-target-status">編集中: START</p>
+                    <div class="motion-fix" data-role="fix-wrap">
+                      <label>
+                        前FIX
+                        <span class="motion-fix-field">
+                          <input
+                            data-role="pre-fix"
+                            type="text"
+                            inputmode="numeric"
+                            autocomplete="off"
+                          />
+                          <span>f</span>
+                          <span data-role="pre-fix-hint" class="timeline-row-hint">= 0+00</span>
+                        </span>
+                      </label>
+                      <label>
+                        後FIX
+                        <span class="motion-fix-field">
+                          <input
+                            data-role="post-fix"
+                            type="text"
+                            inputmode="numeric"
+                            autocomplete="off"
+                          />
+                          <span>f</span>
+                          <span data-role="post-fix-hint" class="timeline-row-hint">= 0+00</span>
+                        </span>
+                      </label>
+                    </div>
+                    <p data-role="fix-message" class="motion-fix-message" role="status"></p>
                     <p data-role="hint" class="motion-hint"></p>
+                  </div>
+                </section>
+                <section id="timesheet-editor" class="timesheet-editor" aria-label="タイムシート">
+                  <div class="timesheet-editor-head">
+                    <h2>タイムシート</h2>
+                  </div>
+                  <label>
+                    話数
+                    <input id="timesheet-episode" type="text" autocomplete="off" />
+                  </label>
+                  <label>
+                    タイトル
+                    <input id="timesheet-title" type="text" autocomplete="off" />
+                  </label>
+                  <div class="timesheet-actions">
+                    <button id="timesheet-preview" type="button">
+                      タイムシートをプレビュー
+                    </button>
+                    <button id="timesheet-export" type="button">PDFを書き出す</button>
+                  </div>
+                  <p id="timesheet-message" class="timesheet-message" role="status"></p>
+                  <div id="timesheet-preview-wrap" class="timesheet-preview-wrap" hidden>
+                    <div class="timesheet-preview-nav">
+                      <button id="timesheet-prev-sheet" type="button">前のシート</button>
+                      <span id="timesheet-sheet-info"></span>
+                      <button id="timesheet-next-sheet" type="button">次のシート</button>
+                    </div>
+                    <canvas id="timesheet-preview-canvas" class="timesheet-preview-canvas"></canvas>
                   </div>
                 </section>
               </div>
@@ -297,6 +354,6 @@
         status.textContent = `起動エラー: ${event.message}`;
       });
     </script>
-    <script type="module" src="js/app.js?v=m8-1"></script>
+    <script type="module" src="js/app.js?v=m9-3"></script>
   </body>
 </html>

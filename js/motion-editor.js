@@ -1,3 +1,5 @@
+import { formatDuration } from "./duration.js?v=m8-1";
+import { parseFixFrames } from "./motion-store.js?v=m9-3";
 import {
   OUTPUT_ASPECT,
   clampPose,
@@ -65,6 +67,11 @@ export function createMotionEditor(rootEl, options) {
   const endEl = rootEl.querySelector("[data-role='end']");
   const hintEl = rootEl.querySelector("[data-role='hint']");
   const targetStatusEl = rootEl.querySelector("[data-role='target-status']");
+  const preFixInput = rootEl.querySelector("[data-role='pre-fix']");
+  const postFixInput = rootEl.querySelector("[data-role='post-fix']");
+  const preFixHintEl = rootEl.querySelector("[data-role='pre-fix-hint']");
+  const postFixHintEl = rootEl.querySelector("[data-role='post-fix-hint']");
+  const fixMessageEl = rootEl.querySelector("[data-role='fix-message']");
   const presetButtons = [...rootEl.querySelectorAll("[data-preset]")];
   const targetButtons = [...rootEl.querySelectorAll("[data-target]")];
 
@@ -159,6 +166,71 @@ export function createMotionEditor(rootEl, options) {
       panelId: view.panelId,
       from,
       to,
+      preFixFrames: view.preFixFrames ?? 0,
+      postFixFrames: view.postFixFrames ?? 0,
+    });
+  }
+
+  function fixHint(value) {
+    return `= ${formatDuration(Number.isInteger(value) ? value : 0)}`;
+  }
+
+  function storedFixValue(key) {
+    return Number.isInteger(view?.[key]) && view[key] >= 0 ? view[key] : 0;
+  }
+
+  function syncFixInputs() {
+    const enabled = Boolean(view?.hasMotion && view.editable && !view.blocked);
+    for (const input of [preFixInput, postFixInput]) {
+      if (!input) {
+        continue;
+      }
+      input.disabled = !enabled;
+    }
+    if (preFixHintEl) {
+      preFixHintEl.textContent = fixHint(storedFixValue("preFixFrames"));
+    }
+    if (postFixHintEl) {
+      postFixHintEl.textContent = fixHint(storedFixValue("postFixFrames"));
+    }
+    if (preFixInput && document.activeElement !== preFixInput) {
+      preFixInput.value = String(storedFixValue("preFixFrames"));
+    }
+    if (postFixInput && document.activeElement !== postFixInput) {
+      postFixInput.value = String(storedFixValue("postFixFrames"));
+    }
+    if (fixMessageEl && document.activeElement !== preFixInput && document.activeElement !== postFixInput) {
+      fixMessageEl.textContent = view?.fixMessage ?? "";
+    }
+  }
+
+  function commitFixFromInputs() {
+    if (!view || view.blocked || !view.editable || !view.hasMotion) {
+      syncFixInputs();
+      return;
+    }
+    const pre = parseFixFrames(preFixInput?.value);
+    const post = parseFixFrames(postFixInput?.value);
+    if (!pre.ok || !post.ok) {
+      if (fixMessageEl) {
+        fixMessageEl.textContent = pre.ok ? post.message : pre.message;
+      }
+      syncFixInputs();
+      return;
+    }
+    if (preFixHintEl) {
+      preFixHintEl.textContent = fixHint(pre.value);
+    }
+    if (postFixHintEl) {
+      postFixHintEl.textContent = fixHint(post.value);
+    }
+    options.onCommit?.({
+      cutId: view.cutId,
+      panelId: view.panelId,
+      from: currentFrom() ?? view.from,
+      to: currentTo() ?? view.to,
+      preFixFrames: pre.value,
+      postFixFrames: post.value,
     });
   }
 
@@ -277,6 +349,7 @@ export function createMotionEditor(rootEl, options) {
       imageEl.removeAttribute("src");
       startEl.hidden = true;
       endEl.hidden = true;
+      syncFixInputs();
       return;
     }
     emptyEl.hidden = true;
@@ -320,6 +393,7 @@ export function createMotionEditor(rootEl, options) {
       delete imageEl.dataset.url;
     }
     updateFrames();
+    syncFixInputs();
   }
 
   startEl.addEventListener("pointerdown", onPointerDown);
@@ -339,6 +413,38 @@ export function createMotionEditor(rootEl, options) {
       setActiveKey(button.dataset.target);
     });
   }
+
+  function onFixInput(input, hintEl) {
+    const parsed = parseFixFrames(input.value);
+    if (hintEl) {
+      hintEl.textContent = parsed.ok ? fixHint(parsed.value) : "= —";
+    }
+  }
+
+  preFixInput?.addEventListener("input", () => {
+    onFixInput(preFixInput, preFixHintEl);
+  });
+  postFixInput?.addEventListener("input", () => {
+    onFixInput(postFixInput, postFixHintEl);
+  });
+  preFixInput?.addEventListener("change", () => {
+    commitFixFromInputs();
+  });
+  postFixInput?.addEventListener("change", () => {
+    commitFixFromInputs();
+  });
+  preFixInput?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      preFixInput.blur();
+    }
+  });
+  postFixInput?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      postFixInput.blur();
+    }
+  });
 
   for (const button of presetButtons) {
     button.addEventListener("click", () => {
@@ -363,6 +469,8 @@ export function createMotionEditor(rootEl, options) {
         panelId: view.panelId,
         from: poses.from,
         to: poses.to,
+        preFixFrames: view.preFixFrames ?? 0,
+        postFixFrames: view.postFixFrames ?? 0,
       });
     });
   }

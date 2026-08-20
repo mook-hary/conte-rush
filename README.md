@@ -26,9 +26,11 @@
 
 **実装済み（M7）** は、同じ Frame Renderer からブラウザ内で 1280×720 / 24fps / 映像のみの H.264 MP4 を書き出すことです。
 
-**実装済み（M8）** は、同一 Panel の複数 Timeline 配置と、所属順 Repeat による placements 生成です。
+**実装済み（M8）** は、同一 Panel の複数 Timeline placement と、Repeat による全置換です。Rush / MP4 は最終 placements だけを見ます。
 
-## 現状できること（M0〜M8・実装済み）
+**実装済み（M9）** は、完成した Timeline と Motion から、JIS B4 縦の印刷用タイムシート PDF を出すことです。
+
+## 現状できること（M0〜M9・実装済み）
 
 - ユーザーの端末上にある PDF を選んで開く
 - 1ページ目をブラウザに描画する
@@ -69,6 +71,8 @@
 - Motion 作成・削除・画角変更を Undo / Redo する
 - Timeline 完成後に 1280×720 / 24fps / H.264 MP4（映像のみ）をブラウザ内で書き出す
 - 書き出し中の進捗表示とキャンセル
+- 完成 Timeline から B4 縦タイムシート PDF をプレビュー / 保存する
+- 話数とタイトルを PDF セッション単位で入力する
 
 ## 現状できないこと
 
@@ -77,7 +81,6 @@
 - Panel の自動検出
 - CUT 番号の OCR / 自動認識
 - 秒+コマ形式による開始フレームの直接入力
-- タイムシート出力
 - 音声 / BGM / SE
 - トランジション
 - AI 解析
@@ -90,7 +93,7 @@ PDF はユーザーのローカルファイルから読み込み、ブラウザ�
 
 PDF.js のライブラリ本体は CDN から取得する想定です。PDF の中身はその通信に含めません。
 
-M7 では Mediabunny 1.51.0 も CDN（jsDelivr）から取得します。PDF と生成 MP4 の中身はその通信に含めません。
+M7 では Mediabunny 1.51.0 も CDN（jsDelivr）から取得します。M9 では pdf-lib 1.17.1 も同様です。PDF と生成ファイルの中身はその通信に含めません。
 
 ## 動作環境
 
@@ -99,8 +102,9 @@ M7 では Mediabunny 1.51.0 も CDN（jsDelivr）から取得します。PDF と
 - ビルド手順は不要
 - PDF.js 4.10.38（CDN）
 - MP4 書き出し: WebCodecs が使えるブラウザ。Mediabunny 1.51.0（CDN）
+- タイムシート PDF: pdf-lib 1.17.1（CDN）
 
-## 使い方（M0〜M8）
+## 使い方（M0〜M9）
 
 1. このフォルダを HTTP で配信する。例:
 
@@ -120,10 +124,11 @@ M7 では Mediabunny 1.51.0 も CDN（jsDelivr）から取得します。PDF と
 11. Cut 詳細の Motion で PAN / TU / TB を付け、START / END 枠を調整する。同じ Panel の各出現区間で同じ Motion が再生される
 12. Undo / Redo で Panel 登録・削除、placement 追加 / 削除 / 移動、Repeat、Motion 変更を戻す
 13. Timeline 完成後、「MP4を書き出す」で 1280×720 の映像のみ MP4 を保存する
+14. Cut 詳細の「タイムシート」で話数・タイトルを入れ、プレビューまたは B4 PDF を保存する
 
 `index.html` を `file://` で直接開くと、ES モジュールと PDF.js の worker が動かないことがあります。
 
-GitHub Pages で公開する場合は、リポジトリのルートを配信元にしてください。PDF.js と Mediabunny の取得に CDN（jsDelivr）へ接続できる必要があります。PDF 自体と生成 MP4 は Pages へ送られません。
+GitHub Pages で公開する場合は、リポジトリのルートを配信元にしてください。PDF.js と Mediabunny、pdf-lib の取得に CDN（jsDelivr）へ接続できる必要があります。PDF 自体と生成ファイルは Pages へ送られません。
 
 ## ドキュメント
 

@@ -337,7 +337,7 @@ M6 のアプリ実装はこの定義に従う。
 | 項目 | 意味 |
 |---|---|
 | `cutId` | 対象 Cut の `id`。Motion 集合のキー |
-| `motions` | 要素は `panelId` と `from` / `to` のみ |
+| `motions` | 要素は `panelId`、`from` / `to`、`preFixFrames` / `postFixFrames`（無いときは 0） |
 
 `from` / `to`:
 
@@ -356,7 +356,9 @@ M6 のアプリ実装はこの定義に従う。
     {
       "panelId": "panel-a",
       "from": { "x": 0.3, "y": 0.5, "scale": 1.0 },
-      "to": { "x": 0.7, "y": 0.5, "scale": 1.4 }
+      "to": { "x": 0.7, "y": 0.5, "scale": 1.4 },
+      "preFixFrames": 0,
+      "postFixFrames": 0
     }
   ]
 }
@@ -374,13 +376,16 @@ M6 のアプリ実装はこの定義に従う。
 - `panelId` はその Cut の `panelIds` に含まれるものに限る
 - 配列なのは、将来 1 Panel に複数区間を足す余地のため
 - `type`、`startFrame`、`endFrameExclusive` は持たない
+- `preFixFrames` / `postFixFrames` は 0 以上の整数。秒や formatted 値は保存しない。未指定は 0
 - PAN / TU / TB は from/to から表示時に導出する
 
 時間（導出のみ。保存しない）:
 
-- 対象 Panel の Timeline 表示区間全体にかかる
-- 区間は既存 `deriveRanges` と同じ（`startFrame` … `lastFrame` inclusive）
-- 先頭 frame が `from`、最終 frame が `to`
+- 対象 Panel の Timeline 表示区間（`startFrame` … `lastFrame` inclusive）に従属する
+- `motionStart = panelStart + preFixFrames`
+- `motionLast = panelLast - postFixFrames`
+- preFIX は `from` で静止。本体は `motionStart`〜`motionLast` を線形補間。postFIX は `to` で静止
+- 本体は最低 2 frame（`motionLast - motionStart + 1 >= 2`）。足りない値は保存しない
 - `lastFrame === startFrame` のときは作成・編集しない。既存レコードは残し、再生では適用しない
 
 `scale` と 16:9:
@@ -709,6 +714,43 @@ Play 時だけ持つ Motion の複製。RushPlayback snapshot の項目ではな
 - Play と同時実行しない
 - ファイルへ保存しない
 
+### TimesheetModel（M9・導出）
+
+完成 Timeline と Motion から、タイムシート 1 枚分を描くための View Model。保存構造ではない。Store ではない。
+
+| 項目 | 意味 |
+|---|---|
+| `durationFrames` | Cut の尺 |
+| `sheetCount` | `ceil(durationFrames / 144)`。144 は `TIMESHEET_SECONDS_PER_SHEET × FRAMES_PER_SECOND` |
+| `panelNumbers` | `Cut.panelIds` 順の 1-based 番号。placement 順ではない |
+| `cellRuns` | collapse 後の range。CELL A 列用 |
+| `cameraRuns` | Motion ありかつ 2 フレーム以上の range。CAMERA 用 |
+| `header.cutNumber` | `cut.cutNumber` |
+| `header.durationLabel` | `formatDuration(durationFrames)` |
+| `header.episodeNumber` / `title` | PDF セッションの UI 入力。Cut には無い |
+
+変換規則:
+
+- `collapseConsecutive(placements)` を View Model 生成時だけ使う。Timeline Store は変えない
+- 内部 cutFrame は 0 始まり。紙面の行は 1〜144。`0f` は sheet 0 の行 1
+- シート境界をまたぐ CELL は、次シート先頭行に同じ番号を再表示する
+- CAMERA のシート分割は、各シートの重なり先頭に Motion 名と A、真の終了があるシートにだけ B
+- UUID は View Model に残してもよいが、PDF へは書かない
+
+### TimesheetSession（M9・UI）
+
+タイムシート出力 UI の状態。Cut Data ではない。
+
+| 項目 | 意味 |
+|---|---|
+| `episodeNumber` | 話数。複数 Cut で共通になり得る |
+| `title` | 作品タイトル |
+| プレビューの sheetIndex | 表示中ページ |
+
+- PDF 再選択成功時に初期化する
+- 同じ PDF セッション内では Cut を切り替えても保持する
+- ファイルへ保存しない
+
 ### 持たないもの（現行）
 
 - 永続化した Rush Data
@@ -727,6 +769,7 @@ Play 時だけ持つ Motion の複製。RushPlayback snapshot の項目ではな
 - Undo / Redo 履歴の永続化
 - 横 Timeline ドラッグ候補の永続化
 - 秒とコマの保存フィールド
+- タイムシート View Model / 話数 / タイトルの永続化
 - Storyboard Data の完全なスキーマ
 
 Panel は後に Storyboard Data へ入り得るが、Storyboard Data 自体は未定義のままとする。
@@ -769,4 +812,6 @@ M6 では Motion を独立構造として足す。Panel / Cut / Timeline の項�
 
 M7 では MP4 書き出しを定義する。ExportSnapshot / ExportImageCache / ExportJob は実行時のみ。Panel / Cut / Timeline / Motion の項目は増やさない。音声トラックとタイムシートはまだ定義しない。
 
-M8 では Timeline placement に `id` を足し、同一 `panelId` の複数配置を許す。Repeat 設定は保存しない。Motion は panelId のまま。タイムシートはまだ定義しない。
+M8 では Timeline placement に `id` を足し、同一 `panelId` の複数配置を許す。Repeat 設定は保存しない。Motion は panelId のまま。
+
+M9 では Timesheet View Model を導出するだけとする。Panel / Cut / Timeline / Motion の項目は増やさない。話数 / タイトルは PDF セッションの UI 状態とする。

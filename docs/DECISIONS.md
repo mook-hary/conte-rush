@@ -737,6 +737,94 @@
 - 採用しなかった案: Motion の絶対 start/end を保存する。Rush と PDF で別計算にする
 - 結果: 各 placement range に同じ FIX がかかる。UI は整数入力 + 秒+コマ補助。Undo / Redo 対象
 
+## D93. `source: "manual"` は PDF 切り出しのまま残し、drawing / upload を足す
+
+- 状態: 採用（M10.0・実装済み）
+- 判断: 現行 `source` は M1 以来「矩形の作り方」で、値は `"manual"` のみ。将来 `"auto"` は PDF 自動検出用に予約されている。M10 では discriminator を `source` に載せ、`"manual"` = PDF crop、`"drawing"`、`"upload"` とする。`"manual"` を `"pdf"` にリネームしない
+- 理由: 永続 JSON は無いが、既存の `add` / `clonePanel` / 履歴スナップショットが `"manual"` を書いている。リネームは差分だけ増える。`"manual"` を手描きの意味に流用すると M1 の意味が壊れる
+- 採用しなかった案: `source` を `"pdf"` に改名する。`imageSource` を別フィールドにして `source` は manual/auto のまま（フィールドが増え、両方見る必要がある）。drawing/upload にも `pageNumber=1, x=0…` のダミー矩形を入れる
+- 結果: `isPdfPanel(panel)` は `source === "manual" || source === "auto"`。PDF 専用フィールドは pdf Panel だけが持つ
+
+## D94. 画像バイトは Panel レコードに載せない
+
+- 状態: 採用（M10.0・実装済み）
+- 判断: D13 を維持する。確定画像は `PanelMediaStore`（キー `panelId`、値は kind + Blob）。Panel は id と source（と pdf なら矩形）だけ
+- 理由: 画像を Panel に載せると clone / 履歴 / 将来の保存と混ざる。サムネと Rush キャッシュも今どおり Panel の外
+- 採用しなかった案: Panel に `imageBlob` を足す。drawing だけ stroke 配列を Panel に持つ
+- 結果: ThumbnailCache / RushImageCache / ExportImageCache は寿命の違うキャッシュのまま。正本 Blob は MediaStore
+
+## D95. 手描きの正本は確定 PNG Blob。編集中だけ stroke
+
+- 状態: 採用（M10.1・実装済み）
+- 判断: エディタオープン中は stroke 列で Undo/Redo する。確定時に 1280×720 の PNG Blob を MediaStore へ書く。再編集は確定 PNG を背景に載せ、新しい stroke を重ねる。確定後の一筆履歴は捨ててよい
+- 理由: 永続保存が無いので stroke を正本にしても再ロードできない。Rush/MP4 は raster が要る。stroke をセッション中ずっと持つとメモリが増える。簡易ラフ用途なら flatten 再編集で足りる
+- 採用しなかった案: stroke を Panel 正本にする。ImageBitmap だけを正本にする（構造化クローンしにくく、履歴に載せにくい）。常時 Canvas を保持する
+- 結果: アプリ全体の `history.js` には「Panel 追加」「再編集確定（旧Blob / 新Blob）」「削除」だけを積む。一筆は editor 内部
+
+## D96. Panel 画像の入口は Provider 1 箇所にする
+
+- 状態: 採用（M10.0・実装済み）
+- 判断: 新規 `js/panel-image-provider.js`。`resolvePanelImage(panel, options)` が CanvasImageSource を返す。`cropPanelImage` は PDF 専用のまま Provider が呼ぶ。Rush / MP4 / Thumbnail / Motion Editor は `cropPanelImage` を直接増殖させない
+- 理由: source 分岐を Rush と Export に書くと M7 の scale 計算が二重になる
+- 採用しなかった案: 各キャッシュが source を if する。全 source に同じ固定解像度だけ返す
+- 結果: `purpose: "thumbnail" | "rush" | "export" | "motion" | "onion"`。export の pdf だけ `motionMaxScale` で pdfScale を変える。drawing/upload は確定画素を返す（再 crop しない）
+
+## D97. Onion の前後は placement 隣接である
+
+- 状態: 採用（M10.2・実装済み）
+- 判断: `placementId` → `deriveRanges` の隣接 range → `panelId` → Provider。透かすのは元 Panel 画像。Motion 適用後の frame は使わない。placement 文脈が無ければ Onion 無効
+- 理由: 同じ Panel が Repeat で複数回出る。panelId や Cut.panelIds、PDF ページ順では「今描いている出現の前後」にならない
+- 採用しなかった案: Cut.panelIds の前後。PDF ページ順。placement 無しのとき Cut 順でフォールバックする
+- 結果: 新規作成直後（未配置）は前後が出ない。曖昧な推定をしない
+
+## D98. PDF 再選択成功は drawing / upload も含め全クリアする
+
+- 状態: 採用（M10.0・実装済み）
+- 判断: 既存 `clearSessionData()` と同じ。「新しい PDF = 新しいセッション」。失敗して旧 PDF 維持なら MediaStore も残す
+- 理由: プロジェクト保存が無い。PDF 由来と非由来を残すと、どのセッションのラフか分からなくなる
+- 採用しなかった案: drawing/upload を PDF 非依存として残す
+- 結果: 手描きだけのワークスペースにはしない。作成は PDF セッション中だけ
+
+## D99. Upload 差し替えは M10.1 に含める
+
+- 状態: 採用（M10.1・実装済み）
+- 判断: 既存 upload Panel の Blob だけ差し替え、id / 所属 / placement / Motion は維持する。drawing 再編集と同じ invalidate
+- 理由: ファイル選択 1 回と MediaStore 更新で足りる。M10.x に送るほど大きくない
+- 採用しなかった案: 差し替えを後回しにして、差し替えたいときは削除して再 Upload する
+- 結果: 差し替え確定はアプリ history に 1 Action（旧Blob / 新Blob）
+
+## D100. 手描き Editor は専用 overlay とする
+
+- 状態: 採用（M10.1・実装済み）
+- 判断: 右カラムに押し込まない。PDF ステージを覆う大きい 16:9 overlay。Pointer Events。PC / ペンタブ優先
+- 理由: modal は狭く、ワークスペース切替は PDF セッション状態を隠して復帰が重い
+- 採用しなかった案: 右サイドバー内 canvas。別ルートへの画面切替。スマホ最適化
+- 結果: Esc / キャンセルで overlay を閉じ、未確定 stroke は捨てる
+
+## D101. 手描きの正本解像度は 1280×720 とする
+
+- 状態: 採用（M10.1・実装済み）
+- 判断: 内部 canvas と確定 PNG は 1280×720。表示は CSS で縮小する。`devicePixelRatio` を正本に掛けない
+- 理由: M7 の MP4 が 1280×720。表示サイズを正本にするとウィンドウで品質が変わる（D74 と同じ）
+- 採用しなかった案: dpr 倍の 2560×1440 を正本にする。表示 CSS ピクセルを正本にする
+- 結果: Motion の TU（scale>1）では drawing 画素が足りず拡大になる。M10 では許容し、リスクに書く
+
+## D102. Timeline / Onion の見分けは絵と番号で、対応は placementId で行う
+
+- 状態: 採用（M10.3・実装済み）
+- 判断: 追加候補と配置済みに ThumbnailCache のサムネと、タイムシートと同じ `Cut.panelIds` 1-based 番号を出す。UUID は出さない。マーカーと配置済み行の選択、Onion の前後は `placementId`。削除は既存の placement 削除だけ
+- 理由: 同じ Panel を複数 placement できる（M8）。panelId で行や前後を結ぶと別出現を誤る。ユーザーは絵と番号で選び、削除したいのは配置であって素材ではない
+- 採用しなかった案: UUID を出す。Timeline 専用の別画像取得。一覧［編集］から Cut.panelIds や PDF 順で Onion を推測する。削除で Panel も消す
+- 結果: 保存構造は変えない。Onion の解決は M10.2 の `onionNeighbors` のまま
+
+## D103. Timeline ＋からの手描き挿入は candidate frame の左右を Onion にする
+
+- 状態: 採用（M10.4・実装済み）
+- 判断: 空白の「＋」から既存 Panel 追加と手描き追加を出す。startFrame は既存 `xToFrame`。前後は `neighborsAroundFrame(startFrame)`。既存編集は `onionNeighbors(placementId)` のまま。手描き確定は Panel / 所属 / placement を 1 Action
+- 理由: 「この2枚の間に絵が欲しい」が Onion 機能名を知らなくても通る。placement が無い新規に `onionNeighbors` を流用すると曖昧になる
+- 採用しなかった案: ＋を hover 専用にして詳細 UI へ飛ばす。Cut.panelIds で前後を推測する。Panel 追加と placement 追加を別 Undo にする
+- 結果: InsertionContext は UI 状態のみ。保存構造は変えない
+
 ## 未決
 
 - ライセンス

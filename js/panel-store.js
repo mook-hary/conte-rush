@@ -1,11 +1,26 @@
-function createPanelId(serial) {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `panel-${serial}`;
+export const PANEL_SOURCE_MANUAL = "manual";
+export const PANEL_SOURCE_DRAWING = "drawing";
+export const PANEL_SOURCE_UPLOAD = "upload";
+
+export function isPdfPanel(panel) {
+  return panel?.source === PANEL_SOURCE_MANUAL || panel?.source === "auto";
 }
 
-function clonePanel(panel) {
+export function isMediaPanel(panel) {
+  return panel?.source === PANEL_SOURCE_DRAWING || panel?.source === PANEL_SOURCE_UPLOAD;
+}
+
+export function clonePanel(panel) {
+  if (!panel?.id) {
+    return null;
+  }
+  const source = panel.source ?? PANEL_SOURCE_MANUAL;
+  if (source === PANEL_SOURCE_DRAWING || source === PANEL_SOURCE_UPLOAD) {
+    return {
+      id: panel.id,
+      source,
+    };
+  }
   return {
     id: panel.id,
     pageNumber: panel.pageNumber,
@@ -13,8 +28,54 @@ function clonePanel(panel) {
     y: panel.y,
     width: panel.width,
     height: panel.height,
-    source: panel.source,
+    source,
   };
+}
+
+export function panelSourceLabel(panel) {
+  if (!panel) {
+    return "";
+  }
+  if (panel.source === PANEL_SOURCE_DRAWING) {
+    return "手描き";
+  }
+  if (panel.source === PANEL_SOURCE_UPLOAD) {
+    return "画像";
+  }
+  if (Number.isFinite(panel.pageNumber)) {
+    return `ページ ${panel.pageNumber}`;
+  }
+  return "Panel";
+}
+
+export function panelShortLabel(panel, fallbackId = "") {
+  if (!panel) {
+    return fallbackId;
+  }
+  if (panel.source === PANEL_SOURCE_DRAWING) {
+    return "手描き";
+  }
+  if (panel.source === PANEL_SOURCE_UPLOAD) {
+    return "画像";
+  }
+  if (Number.isFinite(panel.pageNumber)) {
+    return `p.${panel.pageNumber}`;
+  }
+  return fallbackId || panel.id;
+}
+
+function pageSortKey(panel) {
+  if (isPdfPanel(panel) && Number.isFinite(panel.pageNumber)) {
+    return panel.pageNumber;
+  }
+  return Number.POSITIVE_INFINITY;
+}
+
+function createPanelId(serial) {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `panel-${serial}`;
 }
 
 export function createPanelStore() {
@@ -29,7 +90,20 @@ export function createPanelStore() {
       y,
       width,
       height,
-      source: "manual",
+      source: PANEL_SOURCE_MANUAL,
+    };
+    nextSerial += 1;
+    panels.push(panel);
+    return clonePanel(panel);
+  }
+
+  function addMedia(source) {
+    if (source !== PANEL_SOURCE_DRAWING && source !== PANEL_SOURCE_UPLOAD) {
+      throw new Error(`未対応のPanel source: ${source}`);
+    }
+    const panel = {
+      id: createPanelId(nextSerial),
+      source,
     };
     nextSerial += 1;
     panels.push(panel);
@@ -49,6 +123,9 @@ export function createPanelStore() {
       return existing;
     }
     const copy = clonePanel(panel);
+    if (!copy) {
+      return null;
+    }
     const at =
       Number.isInteger(index) && index >= 0 && index <= panels.length
         ? index
@@ -74,17 +151,23 @@ export function createPanelStore() {
     return panels
       .map((panel, index) => ({ panel, index }))
       .sort((a, b) => {
-        if (a.panel.pageNumber !== b.panel.pageNumber) {
-          return a.panel.pageNumber - b.panel.pageNumber;
+        const pageA = pageSortKey(a.panel);
+        const pageB = pageSortKey(b.panel);
+        if (pageA !== pageB) {
+          return pageA - pageB;
         }
         return a.index - b.index;
       })
       .map(({ panel }) => clonePanel(panel));
   }
 
+  function listInRegistrationOrder() {
+    return panels.map(clonePanel);
+  }
+
   function listByPage(pageNumber) {
     return panels
-      .filter((panel) => panel.pageNumber === pageNumber)
+      .filter((panel) => isPdfPanel(panel) && panel.pageNumber === pageNumber)
       .map(clonePanel);
   }
 
@@ -98,16 +181,20 @@ export function createPanelStore() {
   }
 
   function countByPage(pageNumber) {
-    return panels.filter((panel) => panel.pageNumber === pageNumber).length;
+    return panels.filter(
+      (panel) => isPdfPanel(panel) && panel.pageNumber === pageNumber,
+    ).length;
   }
 
   return {
     add,
+    addMedia,
     restore,
     indexOf,
     remove,
     clear,
     listAll,
+    listInRegistrationOrder,
     listByPage,
     count,
     countByPage,

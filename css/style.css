@@ -258,6 +258,14 @@ body[data-state="viewing"] .page-stage {
   font-size: 0.75rem;
 }
 
+.panel-place-message {
+  flex: 1 0 100%;
+  margin: 0;
+  color: var(--danger);
+  font-size: 0.75rem;
+  min-height: 0;
+}
+
 .place-modes button[aria-pressed="true"] {
   background: #3a4454;
   border-color: var(--frame);
@@ -359,6 +367,13 @@ body[data-state="viewing"] .page-stage {
 
 .panel-page {
   font-size: 0.85rem;
+}
+
+.panel-item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.25rem;
 }
 
 .panel-item button {
@@ -704,11 +719,19 @@ body[data-state="viewing"] .page-stage {
   object-fit: contain;
 }
 
+.timeline-row-number,
 .timeline-row-label,
 .timeline-row-start,
 .timeline-row-range,
 .timeline-row-edit {
   grid-column: 2;
+}
+
+.timeline-row-number {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+  line-height: 1.15;
 }
 
 .timeline-row-label {
@@ -768,6 +791,10 @@ body[data-state="viewing"] .page-stage {
 .timeline-row-edit button {
   padding: 0.12rem 0.4rem;
   font-size: 0.72rem;
+}
+
+.timeline-row-delete {
+  font-weight: 700;
 }
 
 .timeline-ranges {
@@ -1108,6 +1135,7 @@ body[data-state="viewing"] .page-stage {
 }
 
 .cut-timeline-strip {
+  position: relative;
   flex: 0 0 auto;
   flex-shrink: 0;
   padding: 0.4rem 0.75rem 0.5rem;
@@ -1182,18 +1210,117 @@ body[data-state="viewing"] .page-stage {
 .cut-timeline-place-preview {
   position: absolute;
   top: 0.15rem;
-  z-index: 2;
+  z-index: 3;
   width: 2px;
   height: 4.9rem;
+  padding: 0;
+  border: 0;
   background: #f0c36a;
+  color: #f0c36a;
+  font: inherit;
   transform: translateX(-1px);
+  cursor: pointer;
+}
+
+.cut-timeline-place-preview::before {
+  content: "＋";
+  position: absolute;
+  top: 0.05rem;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 0.95rem;
+  line-height: 1;
   pointer-events: none;
+}
+
+.cut-timeline-place-preview::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -0.7rem;
+  width: 1.4rem;
+}
+
+.cut-timeline-place-preview.is-open {
+  color: #ffe08a;
+}
+
+.cut-timeline-insert-menu {
+  position: absolute;
+  z-index: 6;
+  min-width: 12.5rem;
+  max-width: 16rem;
+  padding: 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #1c1c1c;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  transform: translateX(-50%);
+}
+
+.cut-timeline-insert-frame {
+  margin: 0 0 0.35rem;
+  color: var(--text);
+  font-family: ui-monospace, monospace;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.cut-timeline-insert-menu > button {
+  display: block;
+  width: 100%;
+  margin: 0.2rem 0 0;
+  padding: 0.3rem 0.45rem;
+  text-align: left;
+  font-size: 0.78rem;
+}
+
+.cut-timeline-insert-panels {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 14rem;
+  overflow: auto;
+}
+
+.cut-timeline-insert-empty {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.cut-timeline-insert-panel {
+  display: grid;
+  grid-template-columns: 2.6rem auto 1fr;
+  gap: 0.3rem;
+  align-items: center;
+  width: 100%;
+  margin: 0.15rem 0 0;
+  padding: 0.2rem;
+  text-align: left;
+}
+
+.cut-timeline-insert-panel .timeline-row-thumb {
+  min-height: 1.8rem;
+}
+
+.cut-timeline-insert-panel .timeline-row-thumb img {
+  height: 1.8rem;
+}
+
+.cut-timeline-insert-number {
+  font-weight: 700;
+}
+
+.cut-timeline-insert-kind {
+  color: var(--muted);
+  font-size: 0.75rem;
 }
 
 .cut-timeline-marker {
   position: absolute;
   top: 0.2rem;
-  z-index: 1;
+  z-index: 4;
   display: flex;
   align-items: stretch;
   height: 4.8rem;
@@ -1439,4 +1566,210 @@ button:hover:not(:disabled) {
 
 button:disabled {
   opacity: 0.45;
+}
+
+body.drawing-editor-open {
+  overflow: hidden;
+}
+
+.drawing-editor-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+  padding: 0.75rem;
+  background: rgba(8, 8, 8, 0.72);
+}
+
+.drawing-editor-overlay[hidden] {
+  display: none;
+}
+
+.drawing-editor {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: #1a1a1a;
+  border: 1px solid var(--border);
+}
+
+.drawing-editor-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.drawing-editor-heading {
+  display: grid;
+  gap: 0.1rem;
+  margin-right: 0.5rem;
+}
+
+.drawing-editor-title {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.drawing-editor-caption {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.drawing-editor-tools,
+.drawing-editor-sizes,
+.drawing-editor-history,
+.drawing-editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.drawing-editor-toolbar button {
+  padding: 0.25rem 0.65rem;
+  font-size: 0.8rem;
+}
+
+.drawing-editor-toolbar button[aria-pressed="true"] {
+  background: #3a4454;
+  border-color: var(--frame);
+}
+
+.drawing-editor-onion {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  background: #181818;
+}
+
+.drawing-editor-onion-copy {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.drawing-editor-onion-title {
+  margin: 0;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.drawing-editor-onion-lead,
+.drawing-editor-onion-hint,
+.drawing-editor-onion-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.drawing-editor-onion-sides {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.65rem 1rem;
+}
+
+.drawing-editor-onion-side {
+  display: grid;
+  grid-template-columns: 3.4rem 1fr;
+  gap: 0.2rem 0.5rem;
+  align-items: start;
+}
+
+.drawing-editor-onion-side-title {
+  grid-column: 2;
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.drawing-editor-onion-thumb {
+  grid-column: 1;
+  grid-row: 1 / span 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.6rem;
+  background: #111;
+}
+
+.drawing-editor-onion-thumb img {
+  display: block;
+  width: 100%;
+  height: 2.6rem;
+  object-fit: contain;
+}
+
+.drawing-editor-onion-empty {
+  grid-column: 1 / -1;
+}
+
+.drawing-editor-onion-controls {
+  grid-column: 2;
+  display: grid;
+  gap: 0.2rem;
+}
+
+.drawing-editor-onion-controls label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.drawing-editor-onion-controls input[type="range"] {
+  width: 6.5rem;
+}
+
+.drawing-editor-onion-side.is-empty .drawing-editor-onion-thumb,
+.drawing-editor-onion-side.is-empty .drawing-editor-onion-controls {
+  display: none;
+}
+
+.drawing-editor-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.75rem;
+}
+
+.drawing-editor-stack {
+  position: relative;
+  width: min(100%, calc((100vh - 10.5rem) * 16 / 9));
+  max-height: 100%;
+  aspect-ratio: 16 / 9;
+  background: #fff;
+  box-shadow: 0 0 0 1px #333;
+  touch-action: none;
+}
+
+.drawing-editor-stack canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.drawing-editor-paper,
+.drawing-editor-reference {
+  pointer-events: none;
+}
+
+.drawing-editor-layer {
+  touch-action: none;
+  cursor: crosshair;
 }

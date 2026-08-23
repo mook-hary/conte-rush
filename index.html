@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>conte-rush</title>
-    <link rel="stylesheet" href="css/style.css?v=m9-4" />
+    <link rel="stylesheet" href="css/style.css?v=m10-4-1" />
   </head>
   <body data-state="idle">
     <header class="toolbar">
@@ -47,10 +47,13 @@
                 16:9を維持
               </label>
               <button id="capture-panel" type="button">画像取得</button>
+              <button id="open-drawing" type="button">手描きPanel</button>
+              <button id="upload-panel" type="button">画像Upload</button>
               <div class="history-actions">
                 <button id="undo" type="button" disabled>Undo</button>
                 <button id="redo" type="button" disabled>Redo</button>
               </div>
+              <p id="panel-place-message" class="panel-place-message" role="status"></p>
             </div>
           </section>
 
@@ -354,6 +357,6 @@
         status.textContent = `起動エラー: ${event.message}`;
       });
     </script>
-    <script type="module" src="js/app.js?v=m9-5"></script>
+    <script type="module" src="js/app.js?v=m10-4-1"></script>
   </body>
 </html>

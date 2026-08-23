@@ -36,6 +36,8 @@ export function createTimelineEditor(rootEl, options) {
   let drag = null;
   let trackGesture = null;
   let placePreviewEl = null;
+  let insertFrame = null;
+  let insertLocked = false;
 
   function isDragging() {
     return Boolean(drag?.moved);
@@ -151,9 +153,54 @@ export function createTimelineEditor(rootEl, options) {
   }
 
   function clearPlacePreview() {
+    if (insertLocked) {
+      return;
+    }
+    insertFrame = null;
     if (placePreviewEl) {
-      placePreviewEl.remove();
-      placePreviewEl = null;
+      placePreviewEl.hidden = true;
+      placePreviewEl.classList.remove("is-open");
+    }
+  }
+
+  function ensurePlacePreview() {
+    if (placePreviewEl) {
+      return placePreviewEl;
+    }
+    placePreviewEl = document.createElement("button");
+    placePreviewEl.type = "button";
+    placePreviewEl.className = "cut-timeline-place-preview";
+    placePreviewEl.hidden = true;
+    placePreviewEl.setAttribute("aria-label", "この位置へPanelを追加");
+    placePreviewEl.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    placePreviewEl.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!view || !Number.isInteger(insertFrame)) {
+        return;
+      }
+      insertLocked = true;
+      placePreviewEl.classList.add("is-open");
+      options.onInsertPlus?.({ frame: insertFrame });
+    });
+    return placePreviewEl;
+  }
+
+  function attachPlacePreview() {
+    if (!placePreviewEl) {
+      return;
+    }
+    if (placePreviewEl.parentNode !== trackEl) {
+      trackEl.append(placePreviewEl);
+    }
+    if (insertLocked && view && Number.isInteger(insertFrame)) {
+      placePreviewEl.hidden = false;
+      placePreviewEl.style.left = markerLeft(insertFrame, view.durationFrames);
+      placePreviewEl.dataset.frame = String(insertFrame);
+      placePreviewEl.classList.add("is-open");
     }
   }
 
@@ -162,13 +209,30 @@ export function createTimelineEditor(rootEl, options) {
       clearPlacePreview();
       return;
     }
-    if (!placePreviewEl) {
-      placePreviewEl = document.createElement("div");
-      placePreviewEl.className = "cut-timeline-place-preview";
-      trackEl.append(placePreviewEl);
+    if (insertLocked) {
+      return;
     }
-    placePreviewEl.style.left = markerLeft(frame, view.durationFrames);
-    placePreviewEl.dataset.frame = String(frame);
+    insertFrame = frame;
+    const preview = ensurePlacePreview();
+    if (preview.parentNode !== trackEl) {
+      trackEl.append(preview);
+    }
+    preview.hidden = false;
+    preview.classList.remove("is-open");
+    preview.style.left = markerLeft(frame, view.durationFrames);
+    preview.dataset.frame = String(frame);
+  }
+
+  function unlockInsert() {
+    insertLocked = false;
+    clearPlacePreview();
+  }
+
+  function getInsertPlusRect() {
+    if (!placePreviewEl || placePreviewEl.hidden) {
+      return null;
+    }
+    return placePreviewEl.getBoundingClientRect();
   }
 
   function applySelectedClass() {
@@ -308,7 +372,12 @@ export function createTimelineEditor(rootEl, options) {
       statusEl.textContent = "";
       startEl?.replaceChildren();
       endEl?.replaceChildren();
-      clearPlacePreview();
+      insertLocked = false;
+      insertFrame = null;
+      if (placePreviewEl) {
+        placePreviewEl.hidden = true;
+        placePreviewEl.classList.remove("is-open");
+      }
       return;
     }
 
@@ -326,6 +395,7 @@ export function createTimelineEditor(rootEl, options) {
     for (const marker of view.markers) {
       trackEl.append(createMarkerEl(marker));
     }
+    attachPlacePreview();
     applySelectedClass();
 
     rangesEl.replaceChildren();
@@ -357,6 +427,15 @@ export function createTimelineEditor(rootEl, options) {
     if (event.target.closest(".cut-timeline-marker")) {
       return;
     }
+    if (event.target.closest(".cut-timeline-place-preview")) {
+      return;
+    }
+    if (insertLocked) {
+      insertLocked = false;
+      clearPlacePreview();
+      options.onInsertCancel?.();
+      return;
+    }
     trackGesture = {
       pointerId: event.pointerId,
       startX: event.clientX,
@@ -369,12 +448,38 @@ export function createTimelineEditor(rootEl, options) {
   });
 
   trackEl.addEventListener("pointermove", (event) => {
-    if (!trackGesture || event.pointerId !== trackGesture.pointerId || !view) {
+    if (!view) {
       return;
     }
-    const frame = clientXToFrame(event.clientX);
-    setPlacePreview(frame);
-    options.onTrackPreview?.({ frame });
+    if (trackGesture && event.pointerId === trackGesture.pointerId) {
+      const frame = clientXToFrame(event.clientX);
+      setPlacePreview(frame);
+      options.onTrackPreview?.({ frame });
+      return;
+    }
+    if (drag || insertLocked || event.buttons !== 0) {
+      return;
+    }
+    if (event.target.closest(".cut-timeline-marker")) {
+      if (!insertLocked && !trackGesture) {
+        clearPlacePreview();
+      }
+      return;
+    }
+    if (event.target.closest(".cut-timeline-place-preview")) {
+      return;
+    }
+    setPlacePreview(clientXToFrame(event.clientX));
+  });
+
+  trackEl.addEventListener("pointerleave", (event) => {
+    if (insertLocked || trackGesture || drag) {
+      return;
+    }
+    if (event.relatedTarget && trackEl.contains(event.relatedTarget)) {
+      return;
+    }
+    clearPlacePreview();
   });
 
   trackEl.addEventListener("pointerup", (event) => {
@@ -418,6 +523,13 @@ export function createTimelineEditor(rootEl, options) {
         event.preventDefault();
         trackGesture = null;
         clearPlacePreview();
+        return;
+      }
+      if (insertLocked) {
+        event.preventDefault();
+        insertLocked = false;
+        clearPlacePreview();
+        options.onInsertCancel?.();
       }
     },
     true,
@@ -432,5 +544,7 @@ export function createTimelineEditor(rootEl, options) {
     frameAtClientX: clientXToFrame,
     isPointOnTrack,
     setPlacePreview,
+    unlockInsert,
+    getInsertPlusRect,
   };
 }

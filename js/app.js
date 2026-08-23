@@ -8,18 +8,35 @@ import {
   formatFrameTimeLabel,
   parseDurationInput,
 } from "./duration.js?v=m8-1";
-import { canvasToObjectUrl, cropPanelImage, PREVIEW_SCALE } from "./panel-image.js";
+import {
+  PREVIEW_SCALE,
+  renderableToObjectUrl,
+} from "./panel-image.js?v=m10-1";
 import { createHistory } from "./history.js?v=m6-2";
 import { createPdfViewer } from "./pdf-viewer.js";
 import { createPanelOverlay } from "./panel-overlay.js?v=m6-2";
-import { createTimelineEditor } from "./timeline-editor.js?v=m8-1";
-import { createPanelStore } from "./panel-store.js?v=m6-2";
+import { createTimelineEditor } from "./timeline-editor.js?v=m10-4-1";
+import {
+  clonePanel,
+  createPanelStore,
+  isPdfPanel,
+  PANEL_SOURCE_DRAWING,
+  PANEL_SOURCE_UPLOAD,
+  panelShortLabel,
+  panelSourceLabel,
+} from "./panel-store.js?v=m10-1";
+import { createPanelMediaStore } from "./panel-media-store.js?v=m10-0";
+import { createPanelImageProvider } from "./panel-image-provider.js?v=m10-2";
+import { createDrawingEditor } from "./drawing-editor.js?v=m10-4";
+import { decodeUploadedFile } from "./upload-image.js?v=m10-1";
 import { createThumbnailCache } from "./thumbnail-cache.js";
 import {
   createTimelineStore,
   evenPlacements,
+  neighborsAroundFrame,
+  onionNeighbors,
   parseStartFrameInput,
-} from "./timeline-store.js?v=m8-1";
+} from "./timeline-store.js?v=m10-4";
 import {
   expandRepeat,
   parseHoldFrames,
@@ -44,10 +61,11 @@ import {
   ExportError,
   exportFileName,
   exportMp4,
-} from "./mp4-exporter.js?v=m9-3";
+} from "./mp4-exporter.js?v=m10-0";
 import {
   buildTimesheetModel,
   buildSheetView,
+  panelNumberMap,
 } from "./timesheet-model.js?v=m9-3";
 import { paintTimesheetOnto } from "./timesheet-renderer.js?v=m9-5";
 import {
@@ -137,6 +155,9 @@ const placeModeFrameButton = document.querySelector("#place-mode-frame");
 const placeModeDragButton = document.querySelector("#place-mode-drag");
 const aspectLockInput = document.querySelector("#aspect-lock");
 const capturePanelButton = document.querySelector("#capture-panel");
+const openDrawingButton = document.querySelector("#open-drawing");
+const uploadPanelButton = document.querySelector("#upload-panel");
+const panelPlaceMessageEl = document.querySelector("#panel-place-message");
 const undoButton = document.querySelector("#undo");
 const redoButton = document.querySelector("#redo");
 
@@ -151,6 +172,7 @@ let timelineCutId = null;
 let panelPlaceMode = "frame";
 let selectedTimelinePanelId = null;
 let selectedPlacementId = null;
+let insertMenuState = null;
 let unplacedPlaceDrag = null;
 let repeatHoldRaw = "4";
 let rushPrepToken = 0;
@@ -178,12 +200,18 @@ const timelineAddDrafts = new Map();
 
 const viewer = createPdfViewer(canvas, viewerEl);
 const panelStore = createPanelStore();
+const panelMediaStore = createPanelMediaStore();
+const panelImageProvider = createPanelImageProvider({
+  getPdfDocument: () => session?.document ?? null,
+  mediaStore: panelMediaStore,
+});
 const cutStore = createCutStore();
 const timelineStore = createTimelineStore();
 const motionStore = createMotionStore();
 const thumbnailCache = createThumbnailCache();
 const rushImageCache = createRushImageCache();
 const history = createHistory();
+const drawingEditor = createDrawingEditor();
 const overlay = createPanelOverlay(overlayEl, {
   isEnabled: () => document.body.dataset.state === "viewing" && Boolean(session),
   getPageNumber: () => session?.currentPage ?? null,
@@ -191,6 +219,11 @@ const overlay = createPanelOverlay(overlayEl, {
     registerPanel(rect, { returnToFrame: true });
   },
 });
+const insertMenuEl = document.createElement("div");
+insertMenuEl.className = "cut-timeline-insert-menu";
+insertMenuEl.hidden = true;
+cutTimelineStripEl.append(insertMenuEl);
+
 const cutTimelineEditor = createTimelineEditor(cutTimelineStripEl, {
   onPreview({ placementId, candidateFrame }) {
     previewStartFrameInput(placementId, candidateFrame);
@@ -202,6 +235,7 @@ const cutTimelineEditor = createTimelineEditor(cutTimelineStripEl, {
     restoreStartFrameInput(placementId, savedFrame);
   },
   onSelect({ placementId, panelId }) {
+    closeInsertMenu();
     selectTimelinePlacement({ placementId, panelId });
   },
   onTrackPreview({ frame }) {
@@ -209,6 +243,12 @@ const cutTimelineEditor = createTimelineEditor(cutTimelineStripEl, {
   },
   onTrackPlace({ frame }) {
     placeSelectedMemberAtFrame(frame);
+  },
+  onInsertPlus({ frame }) {
+    openInsertMenu(frame);
+  },
+  onInsertCancel() {
+    closeInsertMenu({ unlock: false });
   },
 });
 const motionEditor = createMotionEditor(motionEditorEl, {
@@ -265,9 +305,22 @@ function updatePlaceUi() {
   );
   const frame = overlay.getFrame();
   aspectLockInput.checked = frame?.aspectLocked ?? true;
-  capturePanelButton.disabled =
-    document.body.dataset.state !== "viewing" || !session || !frame;
+  const canUseSession =
+    document.body.dataset.state === "viewing" && Boolean(session);
+  capturePanelButton.disabled = !canUseSession || !frame;
+  if (openDrawingButton) {
+    openDrawingButton.disabled = !canUseSession;
+  }
+  if (uploadPanelButton) {
+    uploadPanelButton.disabled = !canUseSession;
+  }
   updateHistoryButtons();
+}
+
+function setPanelPlaceMessage(message) {
+  if (panelPlaceMessageEl) {
+    panelPlaceMessageEl.textContent = message ?? "";
+  }
 }
 
 function setPanelPlaceMode(nextMode) {
@@ -290,15 +343,7 @@ function initSelectionFrame() {
 }
 
 function clonePanelData(panel) {
-  return {
-    id: panel.id,
-    pageNumber: panel.pageNumber,
-    x: panel.x,
-    y: panel.y,
-    width: panel.width,
-    height: panel.height,
-    source: panel.source,
-  };
+  return clonePanel(panel);
 }
 
 function clonePlacementData(placement) {
@@ -326,6 +371,7 @@ function capturePanelSnapshot(panelId) {
   );
   return {
     panel: clonePanelData(panel),
+    media: panelMediaStore.get(panelId),
     index: panelStore.indexOf(panelId),
     cutId: cut?.id ?? null,
     panelIdsIndex: cut ? cut.panelIds.indexOf(panelId) : -1,
@@ -351,6 +397,11 @@ function restorePanelSnapshot(snapshot) {
     return;
   }
   panelStore.restore(snapshot.panel, snapshot.index);
+  if (snapshot.media) {
+    panelMediaStore.set(snapshot.panel.id, snapshot.media);
+  } else {
+    panelMediaStore.delete(snapshot.panel.id);
+  }
   if (snapshot.cutId) {
     insertPanelIdAt(snapshot.cutId, snapshot.panel.id, snapshot.panelIdsIndex);
     const cut = cutStore.getById(snapshot.cutId);
@@ -400,6 +451,7 @@ function removePanelInternal(panelId) {
     }
   }
   panelStore.remove(panelId);
+  panelMediaStore.delete(panelId);
   cancelQueuedThumbnail(panelId);
   thumbnailCache.delete(panelId);
   rushImageCache.delete(panelId);
@@ -440,6 +492,269 @@ function registerPanel(rect, { returnToFrame = false } = {}) {
   return panel;
 }
 
+function invalidatePanelImages(panelId) {
+  cancelQueuedThumbnail(panelId);
+  thumbnailCache.delete(panelId);
+  rushImageCache.delete(panelId);
+  failedThumbnailIds.delete(panelId);
+}
+
+function applyPanelMedia(panelId, media) {
+  if (media) {
+    panelMediaStore.set(panelId, media);
+  } else {
+    panelMediaStore.delete(panelId);
+  }
+  invalidatePanelImages(panelId);
+  const panel = panelStore.getById(panelId);
+  if (panel) {
+    requestThumbnail(panel);
+  }
+  markRushDirty();
+  syncPanels();
+}
+
+function registerMediaPanel(source, media, label) {
+  const panel = panelStore.addMedia(source);
+  panelMediaStore.set(panel.id, media);
+  const snapshot = capturePanelSnapshot(panel.id);
+  history.push({
+    label,
+    undo() {
+      removePanelInternal(panel.id);
+    },
+    redo() {
+      restorePanelSnapshot(snapshot);
+    },
+  });
+  markRushDirty();
+  requestThumbnail(panel);
+  syncPanels();
+  updateHistoryButtons();
+  return panel;
+}
+
+function replacePanelMedia(panelId, nextMedia, label) {
+  const previous = panelMediaStore.get(panelId);
+  if (!previous) {
+    return false;
+  }
+  applyPanelMedia(panelId, nextMedia);
+  history.push({
+    label,
+    undo() {
+      applyPanelMedia(panelId, previous);
+    },
+    redo() {
+      applyPanelMedia(panelId, nextMedia);
+    },
+  });
+  updateHistoryButtons();
+  return true;
+}
+
+function pickLocalImageFile() {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/png,image/jpeg,image/webp";
+    input.addEventListener(
+      "change",
+      () => {
+        resolve(input.files?.[0] ?? null);
+      },
+      { once: true },
+    );
+    input.click();
+  });
+}
+
+async function handleCreateDrawing() {
+  if (!session || document.body.dataset.state !== "viewing" || drawingEditor.isOpen()) {
+    return;
+  }
+  setPanelPlaceMessage("");
+  const result = await drawingEditor.open({ mode: "create" });
+  if (!result?.blob) {
+    return;
+  }
+  registerMediaPanel(
+    PANEL_SOURCE_DRAWING,
+    {
+      kind: "drawing",
+      blob: result.blob,
+      mimeType: result.mimeType,
+      width: result.width,
+      height: result.height,
+    },
+    "手描きPanelを追加",
+  );
+}
+
+function onionSideView(cut, neighbor) {
+  if (!neighbor?.panelId) {
+    return null;
+  }
+  const panel = panelStore.getById(neighbor.panelId);
+  const number = cutPanelNumber(cut, neighbor.panelId);
+  return {
+    panelId: neighbor.panelId,
+    number,
+    numberLabel: formatPanelNumberMark(number),
+    kindLabel: panelSourceLabel(panel),
+    thumbUrl: thumbnailCache.get(neighbor.panelId)?.url ?? "",
+  };
+}
+
+async function loadOnionNeighborImage(neighborPanelId) {
+  const neighbor = panelStore.getById(neighborPanelId);
+  if (!neighbor) {
+    throw new Error("参照Panelがありません。");
+  }
+  const rendered = await panelImageProvider.getRenderable(neighbor, {
+    purpose: "onion",
+    pdfDocument: session?.document,
+  });
+  return rendered.image;
+}
+
+function onionOptionFromNeighbors(cut, neighbors) {
+  return {
+    prevPanelId: neighbors?.prev?.panelId ?? null,
+    nextPanelId: neighbors?.next?.panelId ?? null,
+    prevView: onionSideView(cut, neighbors?.prev),
+    nextView: onionSideView(cut, neighbors?.next),
+    loadImage: loadOnionNeighborImage,
+  };
+}
+
+function resolveOnionOption(panelId, { cutId = null, placementId = null } = {}) {
+  if (!cutId || !placementId || !panelId) {
+    return null;
+  }
+  const cut = cutStore.getById(cutId);
+  const timeline = timelineStore.getByCutId(cutId);
+  const placement = timelineStore.getPlacementById(cutId, placementId);
+  if (!cut || !timeline || !placement || placement.panelId !== panelId) {
+    return null;
+  }
+  return onionOptionFromNeighbors(cut, onionNeighbors(cut, timeline, placementId));
+}
+
+function resolveInsertOnionOption(cutId, startFrame) {
+  const cut = cutStore.getById(cutId);
+  const timeline = timelineStore.getByCutId(cutId);
+  if (!cut) {
+    return null;
+  }
+  return onionOptionFromNeighbors(
+    cut,
+    neighborsAroundFrame(cut, timeline, startFrame),
+  );
+}
+
+function insertStartFrameTaken(cutId, startFrame) {
+  const timeline = timelineStore.getByCutId(cutId);
+  return (timeline?.placements ?? []).some(
+    (item) => item.startFrame === startFrame,
+  );
+}
+
+async function handleEditDrawing(panelId, context = {}) {
+  const panel = panelStore.getById(panelId);
+  const media = panelMediaStore.get(panelId);
+  if (!panel || panel.source !== PANEL_SOURCE_DRAWING || !media?.blob) {
+    return;
+  }
+  if (drawingEditor.isOpen()) {
+    drawingEditor.close();
+  }
+  setPanelPlaceMessage("");
+  let result;
+  try {
+    result = await drawingEditor.open({
+      mode: "reedit",
+      backgroundBlob: media.blob,
+      onion: resolveOnionOption(panelId, context),
+    });
+  } catch (error) {
+    console.error(error);
+    setPanelPlaceMessage(error.message || "手描き画像を開けませんでした。");
+    return;
+  }
+  if (!result?.blob) {
+    return;
+  }
+  replacePanelMedia(
+    panelId,
+    {
+      kind: "drawing",
+      blob: result.blob,
+      mimeType: result.mimeType,
+      width: result.width,
+      height: result.height,
+    },
+    "手描きPanelを編集",
+  );
+}
+
+async function handleUploadPanel() {
+  if (!session || document.body.dataset.state !== "viewing") {
+    return;
+  }
+  setPanelPlaceMessage("");
+  const file = await pickLocalImageFile();
+  if (!file) {
+    return;
+  }
+  try {
+    const decoded = await decodeUploadedFile(file);
+    registerMediaPanel(
+      PANEL_SOURCE_UPLOAD,
+      {
+        kind: "upload",
+        blob: decoded.blob,
+        mimeType: decoded.mimeType,
+        width: decoded.width,
+        height: decoded.height,
+      },
+      "画像Panelを追加",
+    );
+  } catch (error) {
+    console.error(error);
+    setPanelPlaceMessage(error.message || "画像を読み込めませんでした。");
+  }
+}
+
+async function handleReplaceUpload(panelId) {
+  const panel = panelStore.getById(panelId);
+  if (!panel || panel.source !== PANEL_SOURCE_UPLOAD) {
+    return;
+  }
+  setPanelPlaceMessage("");
+  const file = await pickLocalImageFile();
+  if (!file) {
+    return;
+  }
+  try {
+    const decoded = await decodeUploadedFile(file);
+    replacePanelMedia(
+      panelId,
+      {
+        kind: "upload",
+        blob: decoded.blob,
+        mimeType: decoded.mimeType,
+        width: decoded.width,
+        height: decoded.height,
+      },
+      "画像Panelを差し替え",
+    );
+  } catch (error) {
+    console.error(error);
+    setPanelPlaceMessage(error.message || "画像を読み込めませんでした。");
+  }
+}
+
 function captureCurrentFrame() {
   if (!session) {
     return;
@@ -470,6 +785,9 @@ function isTextEditingTarget(target) {
 }
 
 function handleUndo() {
+  if (drawingEditor.isOpen()) {
+    return;
+  }
   if (!history.canUndo()) {
     return;
   }
@@ -479,6 +797,9 @@ function handleUndo() {
 }
 
 function handleRedo() {
+  if (drawingEditor.isOpen()) {
+    return;
+  }
   if (!history.canRedo()) {
     return;
   }
@@ -692,6 +1013,7 @@ async function handleExportMp4() {
       motions,
       panels,
       pdfDocument,
+      getRenderable: (panel, options) => panelImageProvider.getRenderable(panel, options),
       shouldCancel: () => exportCancelRequested,
       onProgress(progress) {
         setExportMessage(formatExportProgress(progress));
@@ -833,19 +1155,21 @@ async function prepareRushImages(snapshot, token) {
     }
     const panel = panelStore.getById(panelId);
     const cutNumber = cutNumberForPanel(snapshot, panelId);
-    if (!session?.document || !panel) {
+    if (!panel || (isPdfPanel(panel) && !session?.document)) {
       return { ok: false, panelId, cutNumber };
     }
     try {
-      const cropped = await enqueuePanelCrop(() =>
-        cropPanelImage(session.document, panel, {
+      const rendered = await enqueuePanelCrop(() =>
+        panelImageProvider.getRenderable(panel, {
+          purpose: "rush",
           scale: RUSH_SCALE,
+          pdfDocument: session?.document,
         }),
       );
       if (token !== rushPrepToken) {
         return { ok: false, cancelled: true };
       }
-      const url = await canvasToObjectUrl(cropped);
+      const url = await renderableToObjectUrl(rendered);
       if (token !== rushPrepToken) {
         URL.revokeObjectURL(url);
         return { ok: false, cancelled: true };
@@ -991,9 +1315,44 @@ function stopRushKeepData() {
   renderRush();
 }
 
+function cachedPanelPreview(panelId) {
+  return thumbnailCache.get(panelId) ?? rushImageCache.get(panelId);
+}
+
 function panelLabel(panelId) {
-  const panel = panelStore.getById(panelId);
-  return panel ? `p.${panel.pageNumber}` : panelId;
+  return panelShortLabel(panelStore.getById(panelId), panelId);
+}
+
+function cutPanelNumber(cut, panelId) {
+  return panelNumberMap(cut?.panelIds).get(panelId) ?? 0;
+}
+
+function formatPanelNumberMark(number) {
+  const value = Number(number);
+  if (!Number.isInteger(value) || value < 1) {
+    return "";
+  }
+  if (value <= 20) {
+    return String.fromCodePoint(0x2460 + value - 1);
+  }
+  return String(value);
+}
+
+function panelDisplayLabel(cut, panelId) {
+  const mark = formatPanelNumberMark(cutPanelNumber(cut, panelId));
+  const kind = panelSourceLabel(panelStore.getById(panelId));
+  if (mark && kind) {
+    return `${mark} ${kind}`;
+  }
+  return mark || kind;
+}
+
+function formatStartDisplay(frame) {
+  return formatFrameTimeLabel(frame);
+}
+
+function formatPlacementRange(range) {
+  return range ? `区間 ${formatRange(range)}` : "区間 —";
 }
 
 function formatRange(range) {
@@ -1026,7 +1385,7 @@ function syncStartFrameDisplay(placementId, raw) {
     const parsed = parseStartFrameInput(raw);
     startLabel.textContent =
       parsed.ok && parsed.startFrame >= 0
-        ? formatFrameTimeLabel(parsed.startFrame)
+        ? formatStartDisplay(parsed.startFrame)
         : "";
   }
 }
@@ -1184,6 +1543,215 @@ function placeSelectedMemberAtFrame(frame) {
   placeMemberPanelAtFrame(selectedTimelinePanelId, frame);
 }
 
+function closeInsertMenu({ unlock = true } = {}) {
+  insertMenuState = null;
+  insertMenuEl.hidden = true;
+  insertMenuEl.replaceChildren();
+  if (unlock) {
+    cutTimelineEditor.unlockInsert();
+  }
+}
+
+function openInsertMenu(frame) {
+  if (!selectedCutId || !Number.isInteger(frame)) {
+    return;
+  }
+  insertMenuState = {
+    cutId: selectedCutId,
+    startFrame: frame,
+    step: "root",
+  };
+  renderInsertMenu();
+}
+
+function positionInsertMenu() {
+  const anchor = cutTimelineEditor.getInsertPlusRect();
+  const strip = cutTimelineStripEl.getBoundingClientRect();
+  if (!anchor) {
+    return;
+  }
+  const left = anchor.left + anchor.width / 2 - strip.left;
+  const top = anchor.bottom - strip.top + 4;
+  insertMenuEl.style.left = `${Math.max(8, left)}px`;
+  insertMenuEl.style.top = `${Math.max(0, top)}px`;
+}
+
+function renderInsertMenu() {
+  if (!insertMenuState) {
+    insertMenuEl.hidden = true;
+    insertMenuEl.replaceChildren();
+    return;
+  }
+  const cut = cutStore.getById(insertMenuState.cutId);
+  if (!cut) {
+    closeInsertMenu();
+    return;
+  }
+  insertMenuEl.hidden = false;
+  insertMenuEl.replaceChildren();
+  const frameLabel = document.createElement("p");
+  frameLabel.className = "cut-timeline-insert-frame";
+  frameLabel.textContent = `追加位置 ${formatFrameTimeLabel(insertMenuState.startFrame)}`;
+  insertMenuEl.append(frameLabel);
+
+  if (insertMenuState.step === "pick") {
+    const list = document.createElement("ul");
+    list.className = "cut-timeline-insert-panels";
+    if (cut.panelIds.length === 0) {
+      const empty = document.createElement("li");
+      empty.className = "cut-timeline-insert-empty";
+      empty.textContent = "所属Panelがありません";
+      list.append(empty);
+    } else {
+      for (const panelId of cut.panelIds) {
+        list.append(createInsertPanelPickEl(cut, panelId));
+      }
+    }
+    insertMenuEl.append(list);
+    positionInsertMenu();
+    return;
+  }
+
+  const existingButton = document.createElement("button");
+  existingButton.type = "button";
+  existingButton.textContent = "既存Panelを追加";
+  existingButton.addEventListener("click", () => {
+    insertMenuState.step = "pick";
+    renderInsertMenu();
+  });
+  const drawingButton = document.createElement("button");
+  drawingButton.type = "button";
+  drawingButton.textContent = "手描きPanelを追加";
+  drawingButton.addEventListener("click", () => {
+    handleInsertDrawing(insertMenuState.cutId, insertMenuState.startFrame);
+  });
+  insertMenuEl.append(existingButton, drawingButton);
+  positionInsertMenu();
+}
+
+function createInsertPanelPickEl(cut, panelId) {
+  const item = document.createElement("li");
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "cut-timeline-insert-panel";
+  const numberEl = document.createElement("span");
+  numberEl.className = "cut-timeline-insert-number";
+  numberEl.textContent = formatPanelNumberMark(cutPanelNumber(cut, panelId));
+  const label = document.createElement("span");
+  label.className = "cut-timeline-insert-kind";
+  label.textContent = panelSourceLabel(panelStore.getById(panelId));
+  button.append(createTimelineThumbEl(panelId), numberEl, label);
+  button.addEventListener("click", () => {
+    addExistingPanelAtInsert(cut.id, panelId, insertMenuState.startFrame);
+  });
+  item.append(button);
+  return item;
+}
+
+function addExistingPanelAtInsert(cutId, panelId, startFrame) {
+  const cut = cutStore.getById(cutId);
+  if (!cut) {
+    closeInsertMenu();
+    return;
+  }
+  const added = addPlacementWithHistory(cut, { panelId, startFrame });
+  closeInsertMenu();
+  if (!added) {
+    return;
+  }
+}
+
+async function handleInsertDrawing(cutId, startFrame) {
+  if (!session || document.body.dataset.state !== "viewing" || drawingEditor.isOpen()) {
+    return;
+  }
+  const cut = cutStore.getById(cutId);
+  if (!cut) {
+    closeInsertMenu();
+    return;
+  }
+  if (insertStartFrameTaken(cutId, startFrame)) {
+    setTimelineMessage(`開始フレーム ${startFrame}f は他の配置と同じです。`);
+    closeInsertMenu();
+    return;
+  }
+  closeInsertMenu();
+  setPanelPlaceMessage("");
+  let result;
+  try {
+    result = await drawingEditor.open({
+      mode: "create",
+      onion: resolveInsertOnionOption(cutId, startFrame),
+      caption: `Timeline ${formatFrameTimeLabel(startFrame)}へ手描きPanelを追加`,
+    });
+  } catch (error) {
+    console.error(error);
+    setPanelPlaceMessage(error.message || "手描き画像を開けませんでした。");
+    return;
+  }
+  if (!result?.blob) {
+    return;
+  }
+  commitInsertDrawing(cutId, startFrame, result);
+}
+
+function commitInsertDrawing(cutId, startFrame, result) {
+  const cut = cutStore.getById(cutId);
+  if (!cut) {
+    setTimelineMessage("Cutが見つかりません。");
+    return;
+  }
+  const panel = panelStore.addMedia(PANEL_SOURCE_DRAWING);
+  panelMediaStore.set(panel.id, {
+    kind: "drawing",
+    blob: result.blob,
+    mimeType: result.mimeType,
+    width: result.width,
+    height: result.height,
+  });
+  cutStore.appendPanel(cutId, panel.id);
+  const nextCut = cutStore.getById(cutId);
+  const added = timelineStore.addPlacement(
+    cutId,
+    { panelId: panel.id, startFrame },
+    nextCut,
+  );
+  if (!added.ok) {
+    cutStore.removePanel(cutId, panel.id);
+    removePanelInternal(panel.id);
+    setTimelineMessage(added.message);
+    refreshTimelineUi();
+    updateHistoryButtons();
+    return;
+  }
+  const snapshot = capturePanelSnapshot(panel.id);
+  timelineDrafts.set(added.placement.id, String(added.placement.startFrame));
+  timelineAddDrafts.set(panel.id, String(added.placement.startFrame));
+  requestThumbnail(panel);
+  selectTimelinePlacement({
+    placementId: added.placement.id,
+    panelId: panel.id,
+  });
+  setTimelineMessage("");
+  refreshTimelineUi();
+  history.push({
+    label: "手描きPanelをTimelineへ追加",
+    undo() {
+      removePanelInternal(panel.id);
+      refreshTimelineUi();
+    },
+    redo() {
+      restorePanelSnapshot(snapshot);
+      selectTimelinePlacement({
+        placementId: added.placement.id,
+        panelId: panel.id,
+      });
+      refreshTimelineUi();
+    },
+  });
+  updateHistoryButtons();
+}
+
 function nudgeSelectedTimelinePanel(delta) {
   const cut = selectedCutId ? cutStore.getById(selectedCutId) : null;
   if (!cut || !selectedPlacementId) {
@@ -1281,6 +1849,9 @@ function revertTimelineStartFrame(cutId, placementId, startFrame) {
 }
 
 function renderCutTimelineStrip() {
+  if (insertMenuState && insertMenuState.cutId !== selectedCutId) {
+    closeInsertMenu();
+  }
   if (cutTimelineEditor.isBusy()) {
     return;
   }
@@ -1305,12 +1876,12 @@ function renderCutTimelineStrip() {
         placementId: placement.id,
         panelId: placement.panelId,
         startFrame: placement.startFrame,
-        label: panelLabel(placement.panelId),
+        label: formatPanelNumberMark(cutPanelNumber(cut, placement.panelId)),
         thumbUrl: cached?.url ?? "",
       };
     }),
     ranges: ranges.map((range) => ({
-      text: `${panelLabel(range.panelId)} ${formatRange(range)}`,
+      text: `${panelDisplayLabel(cut, range.panelId)} ${formatRange(range)}`,
     })),
     selectedPlacementId,
     placing: isMemberInSelectedCut(selectedTimelinePanelId),
@@ -1519,9 +2090,7 @@ function renderMotionEditor() {
     hintText = "プリセットから作成し、START / END 枠で調整できます";
   }
 
-  const cached = panelId
-    ? thumbnailCache.get(panelId) ?? rushImageCache.get(panelId)
-    : null;
+  const cached = panelId ? cachedPanelPreview(panelId) : null;
 
   motionEditor.render({
     cutId: cut.id,
@@ -1780,7 +2349,7 @@ function createTimelineThumbEl(panelId) {
   const cached = thumbnailCache.get(panelId);
   if (cached?.url) {
     const image = document.createElement("img");
-    image.alt = "所属 Panel のプレビュー";
+    image.alt = "Panel のプレビュー";
     image.src = cached.url;
     wrap.append(image);
   }
@@ -1818,7 +2387,7 @@ function renderTimelineEditor() {
   const placedIds = new Set((timeline?.placements ?? []).map((item) => item.panelId));
   const unused = cut.panelIds
     .filter((panelId) => !placedIds.has(panelId))
-    .map((panelId) => panelLabel(panelId));
+    .map((panelId) => panelDisplayLabel(cut, panelId));
 
   timelineMetaEl.replaceChildren();
 
@@ -1835,7 +2404,7 @@ function renderTimelineEditor() {
   if (timelineRepeatSequenceEl) {
     timelineRepeatSequenceEl.textContent =
       cut.panelIds.length > 0
-        ? `列: ${cut.panelIds.map((panelId) => panelLabel(panelId)).join(" ")}`
+        ? `列: ${cut.panelIds.map((panelId) => panelDisplayLabel(cut, panelId)).join(" ")}`
         : "列: （所属Panelなし）";
   }
   if (timelineRepeatHoldInput) {
@@ -1848,12 +2417,12 @@ function renderTimelineEditor() {
   }
 
   timelineRowsEl.replaceChildren();
-  appendTimelineSection("所属 Panel（素材）", () => {
+  appendTimelineSection("追加するPanel", () => {
     for (const panelId of cut.panelIds) {
       timelineRowsEl.append(createMaterialRowEl(cut, panelId));
     }
   });
-  appendTimelineSection("配置", () => {
+  appendTimelineSection("配置済み", () => {
     const placements = timeline?.placements ?? [];
     if (placements.length === 0) {
       const empty = document.createElement("li");
@@ -1879,7 +2448,7 @@ function renderTimelineEditor() {
     for (const range of ranges) {
       const item = document.createElement("li");
       item.className = "timeline-range-item";
-      item.textContent = `${panelLabel(range.panelId)}  ${formatRange(range)}`;
+      item.textContent = `${panelDisplayLabel(cut, range.panelId)}  ${formatRange(range)}`;
       timelineRangesEl.append(item);
     }
   }
@@ -1902,10 +2471,13 @@ function createMaterialRowEl(cut, panelId) {
     item.classList.add("is-selected");
   }
 
+  const numberEl = document.createElement("p");
+  numberEl.className = "timeline-row-number";
+  numberEl.textContent = formatPanelNumberMark(cutPanelNumber(cut, panelId));
+
   const label = document.createElement("p");
   label.className = "timeline-row-label";
-  label.textContent = panelLabel(panelId);
-  label.title = panelId;
+  label.textContent = panelSourceLabel(panelStore.getById(panelId));
 
   const edit = document.createElement("div");
   edit.className = "timeline-row-edit";
@@ -1940,7 +2512,7 @@ function createMaterialRowEl(cut, panelId) {
   });
   edit.append(field, addButton);
 
-  item.append(createTimelineThumbEl(panelId), label, edit);
+  item.append(createTimelineThumbEl(panelId), numberEl, label, edit);
   item.addEventListener("click", (event) => {
     if (event.target.closest("button, input")) {
       return;
@@ -1967,19 +2539,20 @@ function createPlacementRowEl(cut, placement, range) {
     item.classList.add("is-selected");
   }
 
-  const label = document.createElement("p");
-  label.className = "timeline-row-label";
-  label.textContent = panelLabel(placement.panelId);
-  label.title = placement.panelId;
+  const numberEl = document.createElement("p");
+  numberEl.className = "timeline-row-number";
+  numberEl.textContent = formatPanelNumberMark(
+    cutPanelNumber(cut, placement.panelId),
+  );
 
   const startLabel = document.createElement("p");
   startLabel.className = "timeline-row-start";
   startLabel.dataset.role = "start-label";
-  startLabel.textContent = formatFrameTimeLabel(placement.startFrame);
+  startLabel.textContent = formatStartDisplay(placement.startFrame);
 
   const rangeEl = document.createElement("p");
   rangeEl.className = "timeline-row-range";
-  rangeEl.textContent = range ? formatRange(range) : "—";
+  rangeEl.textContent = formatPlacementRange(range);
 
   const edit = document.createElement("div");
   edit.className = "timeline-row-edit";
@@ -2006,7 +2579,7 @@ function createPlacementRowEl(cut, placement, range) {
     const parsed = parseStartFrameInput(input.value);
     startLabel.textContent =
       parsed.ok && parsed.startFrame >= 0
-        ? formatFrameTimeLabel(parsed.startFrame)
+        ? formatStartDisplay(parsed.startFrame)
         : "";
   });
   field.append(input, unit, hint);
@@ -2017,18 +2590,34 @@ function createPlacementRowEl(cut, placement, range) {
   saveButton.addEventListener("click", () => {
     updateTimelinePlacement(cut.id, placement.id, input.value);
   });
+  edit.append(field, saveButton);
+
+  const drawingPanel = panelStore.getById(placement.panelId);
+  if (drawingPanel?.source === PANEL_SOURCE_DRAWING) {
+    const drawEditButton = document.createElement("button");
+    drawEditButton.type = "button";
+    drawEditButton.textContent = "絵を編集";
+    drawEditButton.addEventListener("click", () => {
+      handleEditDrawing(placement.panelId, {
+        cutId: cut.id,
+        placementId: placement.id,
+      });
+    });
+    edit.append(drawEditButton);
+  }
 
   const deleteButton = document.createElement("button");
   deleteButton.type = "button";
+  deleteButton.className = "timeline-row-delete";
   deleteButton.textContent = "削除";
   deleteButton.addEventListener("click", () => {
     deleteTimelinePlacement(cut.id, placement.id);
   });
-  edit.append(field, saveButton, deleteButton);
+  edit.append(deleteButton);
 
   item.append(
     createTimelineThumbEl(placement.panelId),
-    label,
+    numberEl,
     startLabel,
     rangeEl,
     edit,
@@ -2320,7 +2909,7 @@ function createThumbnailEl(panel) {
 
   if (cached?.url) {
     const image = document.createElement("img");
-    image.alt = `ページ ${panel.pageNumber} の Panel プレビュー`;
+    image.alt = `${panelSourceLabel(panel)} の Panel プレビュー`;
     image.src = cached.url;
     wrap.append(image);
     return wrap;
@@ -2360,7 +2949,7 @@ function renderPanelList() {
   for (const panel of panels) {
     const item = document.createElement("li");
     item.className = "panel-item";
-    if (panel.pageNumber === currentPage) {
+    if (isPdfPanel(panel) && panel.pageNumber === currentPage) {
       item.classList.add("is-current-page");
     }
 
@@ -2384,7 +2973,29 @@ function renderPanelList() {
 
     const pageEl = document.createElement("span");
     pageEl.className = "panel-page";
-    pageEl.textContent = `ページ ${panel.pageNumber}`;
+    pageEl.textContent = panelSourceLabel(panel);
+
+    const actions = document.createElement("div");
+    actions.className = "panel-item-actions";
+
+    if (panel.source === PANEL_SOURCE_DRAWING) {
+      const editButton = document.createElement("button");
+      editButton.type = "button";
+      editButton.textContent = "編集";
+      editButton.addEventListener("click", () => {
+        handleEditDrawing(panel.id);
+      });
+      actions.append(editButton);
+    }
+    if (panel.source === PANEL_SOURCE_UPLOAD) {
+      const replaceButton = document.createElement("button");
+      replaceButton.type = "button";
+      replaceButton.textContent = "差し替え";
+      replaceButton.addEventListener("click", () => {
+        handleReplaceUpload(panel.id);
+      });
+      actions.append(replaceButton);
+    }
 
     const deleteButton = document.createElement("button");
     deleteButton.type = "button";
@@ -2392,8 +3003,9 @@ function renderPanelList() {
     deleteButton.addEventListener("click", () => {
       deletePanel(panel.id);
     });
+    actions.append(deleteButton);
 
-    item.append(select, pageEl, deleteButton, idEl, createThumbnailEl(panel));
+    item.append(select, pageEl, actions, idEl, createThumbnailEl(panel));
     panelListEl.append(item);
   }
 }
@@ -2413,7 +3025,7 @@ function createCutMemberEl(cutId, panelId) {
 
   const idEl = document.createElement("span");
   idEl.className = "cut-member-id";
-  idEl.textContent = panel ? `p.${panel.pageNumber}` : panelId;
+  idEl.textContent = panelShortLabel(panel, panelId);
   idEl.title = panelId;
   item.append(idEl);
 
@@ -2700,7 +3312,10 @@ function cancelQueuedThumbnail(panelId) {
 }
 
 function requestThumbnail(panel) {
-  if (!session?.document || !panel) {
+  if (!panel) {
+    return;
+  }
+  if (isPdfPanel(panel) && !session?.document) {
     return;
   }
   if (thumbnailCache.has(panel.id)) {
@@ -2739,15 +3354,17 @@ async function drainThumbnailQueue() {
     renderPanelList();
 
     try {
-      const cropped = await enqueuePanelCrop(() =>
-        cropPanelImage(job.pdfDocument, job.panel, {
+      const rendered = await enqueuePanelCrop(() =>
+        panelImageProvider.getRenderable(job.panel, {
+          purpose: "thumbnail",
           scale: PREVIEW_SCALE,
+          pdfDocument: job.pdfDocument,
         }),
       );
       if (job.generation !== thumbnailToken || !panelExists(job.panel.id)) {
         continue;
       }
-      const url = await canvasToObjectUrl(cropped);
+      const url = await renderableToObjectUrl(rendered);
       if (job.generation !== thumbnailToken || !panelExists(job.panel.id)) {
         URL.revokeObjectURL(url);
         continue;
@@ -2801,8 +3418,11 @@ function resetThumbnails() {
 }
 
 function clearSessionData() {
+  drawingEditor.close();
+  setPanelPlaceMessage("");
   resetThumbnails();
   panelStore.clear();
+  panelMediaStore.clear();
   cutStore.clear();
   timelineStore.clear();
   motionStore.clear();
@@ -3076,6 +3696,29 @@ aspectLockInput.addEventListener("change", () => {
 capturePanelButton.addEventListener("click", () => {
   captureCurrentFrame();
 });
+openDrawingButton?.addEventListener("click", () => {
+  handleCreateDrawing();
+});
+document.addEventListener("pointerdown", (event) => {
+  if (!insertMenuState) {
+    return;
+  }
+  if (event.target.closest(".cut-timeline-insert-menu")) {
+    return;
+  }
+  if (event.target.closest(".cut-timeline-place-preview")) {
+    return;
+  }
+  closeInsertMenu();
+});
+window.addEventListener("resize", () => {
+  if (insertMenuState) {
+    positionInsertMenu();
+  }
+});
+uploadPanelButton?.addEventListener("click", () => {
+  handleUploadPanel();
+});
 undoButton.addEventListener("click", () => {
   handleUndo();
 });
@@ -3083,6 +3726,9 @@ redoButton.addEventListener("click", () => {
   handleRedo();
 });
 window.addEventListener("keydown", (event) => {
+  if (drawingEditor.isOpen()) {
+    return;
+  }
   if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
     if (isTextEditingTarget(event.target)) {
       return;

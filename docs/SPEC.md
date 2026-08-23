@@ -1,6 +1,6 @@
 # 仕様
 
-この文書は、実装済みとして扱う仕様と、扱わない範囲を分けて書きます。将来構想は「将来」節に限ります。
+この文書は、実装済みとして扱う仕様と、扱わない範囲を分けて書きます。M10.0 / M10.1 / M10.2 / M10.3 / M10.4 は実装済みです。将来構想は「将来」節に限ります。
 
 対象マイルストーン:
 
@@ -18,6 +18,7 @@
 - **M7**: 実装済み
 - **M8**: 実装済み
 - **M9**: 実装済み
+- **M10**: M10.0 / M10.1 / M10.2 / M10.3 / M10.4 実装済み
 
 ## 目的
 
@@ -35,10 +36,11 @@
 - M7: M6 と同じ Frame Renderer の結果を、ブラウザ内で 16:9 / 24fps / 映像のみの H.264 MP4 として書き出す。音声は扱わない
 - M8: 同一 Panel を Cut 内で複数 placement できるようにし、所属順の Repeat 展開を編集コマンドとして Timeline へ書き込む。再生モードは増やさない
 - M9: 最終 Timeline と Motion から、印刷用の B4 縦タイムシート PDF を一方向に出力する。タイムシートは正本にしない
+- M10: PDF 以外（手描き / ローカル画像）からも Panel 素材を足す。お絵描きソフトにはしない。実装は M10.0 / M10.1 / M10.2 / M10.3 / M10.4
 
 責務の境界:
 
-- Panel = PDF 上のコンテ画像領域
+- Panel = ラッシュに使える 1 枚のコンテ画像（PDF crop / 手描き / Upload）
 - Cut = CUT 番号、総尺、所属 Panel
 - Timeline = Cut 内で各 Panel がいつ始まるか
 - Motion = ある Panel 表示区間内で、出力フレームへどこを crop して出すか
@@ -111,6 +113,10 @@ M7 の MP4 は実行時の書き出しである。Panel / Cut / Timeline / Motio
 - M7 では Panel / Cut / Timeline / Motion の保存フィールドを増やさない
 - M8 では Timeline placement に `id` を足す。Cut / Panel / Motion の保存フィールドは増やさない。同一 `panelId` の複数 placement を許す。一意性は `startFrame` とする
 - M8 の Repeat は placements を生成する編集コマンドである。Rush / MP4 に Repeat 状態を持たせない
+- M10: Panel 画像は Provider 経由だけ取得する。`cropPanelImage` を Rush / MP4 / Motion へ増殖させない
+- M10: drawing / upload に PDF 矩形のダミー値を入れない。`"manual"` は PDF crop のまま
+- M10: 手描きの正本解像度は 1280×720。CSS サイズと `devicePixelRatio` を正本にしない
+- M10: お絵描きソフト化しない（色、レイヤー、図形、テキスト、筆圧なし）
 
 ## M0 で実装する機能（実装済み）
 
@@ -2230,6 +2236,217 @@ Motion Data へ `preFixFrames` / `postFixFrames`（0 以上の整数、初期 0�
 
 ACTION 自動記入、CELL B〜F、原画/撮影の自動、タイムシート上の編集、Excel/CSV/import、音声、任意 fps
 
+## M10（実装済み）
+
+PDF 以外からも Panel を足す。conte-rush をお絵描きソフトにはしない。「ラッシュに 1 枚足したい」「中間のラフを描きたい」用途の簡易作成である。
+
+M10.0（Provider / source 拡張）、M10.1（手描き・Upload UI）、M10.2（Onion Skin）、M10.3（Timeline / Onion の見え方）、M10.4（Timeline ＋挿入）は実装済み。
+
+### 1. 現行経路（実装済み・調査結果）
+
+M9 までの画像はすべて PDF crop である。
+
+| 用途 | 入口 | 倍率 |
+|---|---|---|
+| Thumbnail | `app.requestThumbnail` → `cropPanelImage(pdf, panel, PREVIEW_SCALE=1.5)` → Blob URL → `ThumbnailCache` | 1.5 |
+| Rush | `prepareRushImages` → `cropPanelImage(..., RUSH_SCALE=2)` → img → `RushImageCache` | 2 |
+| MP4 | `export-image-cache.prepare` → `computeExportPdfScale`（Motion 最大 scale × 1280）→ `cropPanelImage` | 最大 8 |
+| Motion Editor | ThumbnailCache の URL。無ければ RushImageCache | キャッシュ依存 |
+| タイムシート | Panel 画像は使わない。`panelIds` と placements と Motion だけ | — |
+
+`panel-store.add` は常に `source: "manual"` と PDF 矩形を書く。`clonePanel` / 削除 Undo もその 6 フィールドだけ。`listAll` は `pageNumber` でソートする。overlay は `listByPage`。
+
+Timeline / Repeat / Motion / タイムシート番号は `panelId` だけを見る。`source` は見ない。
+
+### 2. PDF 前提のまま drawing / upload を足すと壊れる箇所
+
+- `cropPanelImage` / `pdfDocument.getPage(panel.pageNumber)` — pageNumber が無いと throw
+- `requestThumbnail` — `session.document` 必須。PDF crop 固定
+- `prepareRushImages` — 同じく PDF crop。失敗すると再生拒否
+- `computeExportPdfScale` / `ExportImageCache.prepare` — getPage + 相対座標
+- `freezeExportPanels` + `clonePanelData` — 矩形だけコピー
+- `listAll` の `pageNumber` 比較 — `undefined` で NaN ソート
+- 一覧 / Cut 所属の `ページ n` / `p.${pageNumber}`
+- overlay `listByPage` — 出ない（これは正しい。PDF 枠ではない）
+- 削除 Undo の `clonePanelData` — Blob が戻らない
+- `clearSessionData` — Media を別 Store にした場合、そこも消す必要がある
+
+Timeline / Repeat / Motion の補間式 / タイムシート CELL 番号は、id さえあれば壊れない。
+
+### 3. Panel Data
+
+discriminated union。`"manual"` は改名しない。
+
+```
+PdfPanel:     { id, source: "manual", pageNumber, x, y, width, height }
+DrawingPanel: { id, source: "drawing" }
+UploadPanel:  { id, source: "upload" }
+```
+
+比較した別案:
+
+| 案 | 採用しない理由 |
+|---|---|
+| `"manual"` を `"pdf"` に改名 | 既存 add/clone/履歴の書き換えだけ増える。永続 JSON は無いが互換の意味が薄い |
+| drawing にも pageNumber=1 等のダミー | 偽の PDF 位置になり、overlay / crop / 一覧が誤動作する |
+| `imageSource` を別フィールド | source と二重管理 |
+
+`"auto"` は予約のまま。M10 では作らない。
+
+画像バイトは Panel に載せない。`PanelMediaStore`（`panelId` → `{ kind, blob, mimeType, width, height }`）。
+
+作成は開いている PDF セッション中だけ。手描き専用ワークスペースは置かない。
+
+### 4. 共通 Panel Image Provider（M10.0・実装済み）
+
+`js/panel-image-provider.js` の `createPanelImageProvider({ getPdfDocument, mediaStore }).getRenderable(panel, options)`
+
+```
+options: {
+  purpose: "thumbnail" | "rush" | "export" | "motion" | "onion",
+  scale?,
+  pdfDocument?,
+}
+→ { image, canvas?, width, height }
+```
+
+- `"manual"` / `"auto"`: `cropPanelImage`。`scale` を渡す。export の pdfScale は `computeExportPdfScale` が先に決めて Provider へ渡す
+- `"drawing"` / `"upload"`: MediaStore の Blob を decode。scale では再 raster しない
+- 責務外: Timeline、Motion 補間、Rush 時計、MP4 encode、Cut
+
+ThumbnailCache / RushImageCache / ExportImageCache は寿命の違うキャッシュのまま。作る処理だけ Provider を呼ぶ。
+
+M7 を壊さない: PDF だけ requested scale を変える。drawing/upload を「全部同じ固定解像度」に寄せて PDF の再 crop を消さない。
+
+一覧 `listAll` は PDF を pageNumber 昇順（従来）。pageNumber が無い Panel は NaN にせず末尾へ。`listInRegistrationOrder` は登録順。Cut.panelIds は作成時の一覧順（従来どおり `listAll`）。
+
+### 5. 手描き Panel（M10.1・実装済み）
+
+「手描きPanel」から overlay を開く。
+
+- 内部 1280×720、表示は CSS 縮小。白背景、黒ペン、消しゴム、サイズ 3 段階
+- Pointer Events（マウス / ペンタブ / タッチ / Apple Pencil）。筆圧なし
+- 編集中 Undo / Redo / 全消去は editor 内部。`history.js` には一筆を積まない
+- 確定で Panel 追加 + MediaStore に PNG。キャンセルは捨てる
+- 再編集: 同じ id。所属 / placements / Motion / タイムシート番号は変えない。サムネ更新、Rush cache 破棄、dirty。確定は history 1 Action（旧Blob / 新Blob）
+- 色、レイヤー、塗り、選択、図形、テキストは置かない
+
+正本: 確定 PNG Blob。編集中だけ stroke。再編集は flatten 画像の上に描く。
+
+### 6. Upload Panel（M10.1・実装済み）
+
+- 受け付ける: PNG / JPEG / WebP。それ以外は拒否して理由を出す
+- 16:9 でなくても拒否しない。Motion なし Rush は現行 contain。Motion ありは現行 crop
+- decode は `createImageBitmap(blob, { imageOrientation: "from-image" })` を第一とする。無い環境は実装時にフォールバックを決める。EXIF 回転を無視して横倒しにしない
+- サーバーへ送らない。ローカルファイルをブラウザ内で読むだけ
+- 差し替え: 既存 upload の Blob だけ交換。id 維持。M10.1 に含める
+
+### 7. Onion Skin（M10.2・実装済み）
+
+手描き編集中のみ。
+
+- 前 / 次を独立 ON/OFF。opacity 初期約 0.35。stroke より背面。確定 PNG に焼かない
+- 前後 = 対象 `placementId` の Timeline 隣接 range。`deriveRanges` の startFrame 順
+- Repeat で同じ panelId が複数あっても、隣接は placement 単位
+- 透かす画像は Provider の元 Panel。Motion 適用後の画は使わない
+- `placementId` が無い新規作成では **無効**。Cut.panelIds フォールバックはしない
+
+### 7.1 Timeline / Onion の見え方（M10.3・実装済み）
+
+保存構造は変えない。新しい Store も作らない。
+
+追加候補（所属 Panel）:
+
+- 既存 ThumbnailCache のサムネイル
+- `Cut.panelIds` 内の順番を基準にした 1-based 番号（タイムシートの `panelNumberMap` と同じ。初出位置）
+- 種別: PDF は「ページ n」、drawing は「手描き」、upload は「画像」
+- startFrame 入力、秒+コマ補助、［追加］
+- UUID はユーザー向けに出さない
+
+配置済み:
+
+- サムネイル、同じ Panel 番号、start の秒+コマと frame、導出区間
+- ［削除］は既存の placement 削除。Panel / `Cut.panelIds` / MediaStore / Motion は消さない
+- drawing だけ ［絵を編集］。渡す context は `{ cutId, placementId, panelId }`
+
+選択:
+
+- 横 Timeline マーカーと配置済み行は `placementId` で対応する
+- 同じ `panelId` の別 placement をまとめて選ばない
+
+Onion Skin 表示:
+
+- 「前後の絵を透かして表示（Onion Skin）」と、Timeline 前後をガイドにする説明
+- 各側: 小さいサムネ、前の絵 / 次の絵、Panel 番号、表示 ON/OFF、opacity と %
+- 先頭は「前の絵はありません」、末尾は「次の絵はありません」
+- Panel 一覧の［編集］（placement 無し）は前後を推測せず、「前後の絵を表示するには、Timelineの［絵を編集］から開いてください」
+- 前後の解決は M10.2 のまま（`placementId` → `deriveRanges` / startFrame 順）
+- 画像取得は ThumbnailCache（UI サムネ）と Provider `purpose: "onion"`（reference canvas）。焼き込みしない
+
+### 7.2 Timeline ＋挿入（M10.4・実装済み）
+
+保存構造は変えない。InsertionContext は UI 状態のみ。
+
+横 Timeline の空白:
+
+- 既存 `xToFrame` で候補 startFrame（0 … durationFrames-1）
+- 既存のカーソル追従プレビュー（黄線＋「＋」）をクリック可能にする。別描画の常設＋は置かない
+- そのプレビューをクリックしたときだけメニューを開き、その瞬間の frame を固定
+- 追加位置を `formatFrameTimeLabel` で表示（例: `1+16（40f）`）
+- ［既存Panelを追加］［手描きPanelを追加］
+- メニューは外クリック / Esc / 操作完了で閉じる
+- marker 上は選択 / drag。空白は＋。既存 drag は壊さない
+
+既存 Panel:
+
+- 所属素材を M10.3 と同じサムネ / 番号 / 種別で選ぶ
+- 候補 frame へ新しい placement。同じ Panel の再配置可（M8）
+- 既存 `addPlacement` + history 1 Action。素材は消さない
+
+手描き:
+
+- まだ Store へ確定しない挿入 context `{ mode: "insert", cutId, startFrame }`
+- 前後は `neighborsAroundFrame(cut, timeline, startFrame)`。既存編集の `onionNeighbors(placementId)` とは別
+- 前/次があれば初期 ON / 35%。先頭は次だけ、末尾は前だけ
+- Editor に「Timeline 1+16（40f）へ手描きPanelを追加」と前後サムネ
+- キャンセルで何も残さない
+- 確定: drawing Panel → MediaStore → Cut.panelIds 末尾 → placement。history は「手描きPanelをTimelineへ追加」1 Action
+- Onion は reference のみ。保存 PNG / Thumbnail / Rush / MP4 に焼かない
+
+同じ startFrame の既存 placement があるときは、UI に＋は出してよいが、確定は `validatePlacement` で拒否する。
+
+詳細側の追加 UI は残す。どちらも同じ placement Store API。
+
+### 8. 削除・Undo・PDF 再選択
+
+削除は現行どおり: Cut 所属、全 placement、Motion、サムネ / Rush cache、dirty。加えて MediaStore。
+
+Undo は同じ id、Store 位置、所属位置、placement id/startFrame、Motion、**Blob** を戻す。ImageBitmap は履歴に持たず、復元後に decode する。1280×720 PNG は 1 枚数百 KB〜1MB 程度を想定。履歴に数十枚乗ってもセッション用途では許容する。
+
+PDF 再選択成功: drawing / upload も含め `clearSessionData`。失敗維持: すべて残す。
+
+### 9. タイムシート
+
+`Cut.panelIds` 順の番号のまま。drawing / upload も ①②③…。source は印字しない。画像は使わない。renderer の変更は不要な想定。
+
+### 10. UI
+
+既存の「画像取得」「ドラッグ」は残す。隣へ「手描きPanel」「画像Upload」。PDF 未読み込みでは disabled。
+
+手描きは PDF ステージを覆う大きい overlay（D100）。右カラムには置かない。
+
+### 11. 完成条件
+
+- M10.0: Provider 経由で現行 PDF Panel の Thumbnail / Rush / Motion / MP4 が M9 と同じ
+- M10.1: 手描きと Upload を Cut に入れ、Repeat / Motion / Rush / MP4 / タイムシート番号が通常 Panel と同じ。再編集と Upload 差し替え。PDF 再選択で全消去
+- M10.2: placement 付き手描き編集で前後 Onion。未配置では出ない。焼き込みなし
+- M10.3: 追加候補と配置済みを絵と番号で見分け、placement だけ削除でき、Onion の前後が分かること。保存構造は変えない
+- M10.4: 横 Timeline の＋から既存 / 手描きを候補 frame へ挿入できる。手描きは左右 Onion が最初から見える。保存構造は変えない
+
+### 12. M10 では実装しない
+
+AI 検出、OCR、自動中割、レイヤー作画、色塗り、筆圧、音声、S 欄入力、プロジェクト保存、クラウド、サーバー Upload、手描き専用モード（PDF なし）
+
 ## UI 要件
 
 
@@ -2349,9 +2566,39 @@ ACTION 自動記入、CELL B〜F、原画/撮影の自動、タイムシート�
 - B4 縦タイムシート PDF の書き出し
 - Motion の前FIX / 後FIX（整数 frame、秒+コマ補助）
 
+### M10.0 / M10.1（実装済み）
+
+- 「手描きPanel」「画像Upload」（画像取得 / ドラッグの隣）
+- 手描き overlay（16:9、ペン / 消しゴム、サイズ、Undo / Redo / 全消去 / 確定 / キャンセル）
+- drawing の再編集
+- upload の差し替え
+- 一覧の「手描き」「画像」ラベル
+
+### M10.2（実装済み）
+
+- Timeline 手描き placement からの [編集]
+- Onion の前/次 ON/OFF と opacity
+- Panel 一覧からの編集では Onion 無効
+
+### M10.3（実装済み）
+
+- 追加候補のサムネ / Panel 番号 / 種別 / start / ［追加］
+- 配置済みのサムネ / 番号 / 秒+コマ / 区間 / ［削除］ / drawing の［絵を編集］
+- マーカーと配置済み行の `placementId` 選択同期
+- Onion の説明、前後サムネと番号、無い側の理由表示
+- 一覧［編集］では Timeline の［絵を編集］へ案内
+
+### M10.4（実装済み）
+
+- 横 Timeline 空白のカーソル追従プレビュー（＋）と挿入メニュー。別＋は置かない
+- 追加位置の秒+コマ表示
+- 既存 Panel を候補 frame へ placement 追加
+- ＋から手描き追加（左右 Onion 初期 ON、確定で Panel+所属+placement）
+- 詳細側の従来追加 UI は残す
+
 ## 非対象
 
-次は M9 でも実装しない。UI もデータも作らない。
+次は M10 でも実装しない。UI もデータも作らない。
 
 - ファイルをウィンドウへドロップして開くこと
 - ズーム、回転、フィット表示の切替
@@ -2418,6 +2665,17 @@ ACTION 自動記入、CELL B〜F、原画/撮影の自動、タイムシート�
 - 回転を含むカメラ
 - ffmpeg.wasm による書き出し
 - `mp4-muxer`
+- お絵描きソフト化（色、レイヤー、塗りつぶし、選択範囲、図形、テキスト、筆圧）
+- AI 自動 Panel 認識
+- 自動中割
+- 手描き Canvas を CSS 表示サイズや dpr のまま正本にすること
+- drawing / upload への PDF 矩形ダミー
+- Onion を Cut.panelIds 順や PDF ページ順で推定すること
+- Onion に Motion 適用後の画を使うこと
+- Onion を確定画像へ焼き込むこと
+- プロジェクトファイル保存、クラウド同期、画像のサーバー Upload
+- タイムシート S 欄への文字入力
+- PDF なしの手描き専用ワークスペース
 
 ## 将来
 
@@ -2450,3 +2708,5 @@ M7 の MP4 は Frame Renderer を共用する書き出しである。保存構�
 M8 の複数 placement と Repeat は Timeline 編集である。Rush / MP4 は最終 placements だけを見る。
 
 M9 のタイムシートは最終 placements と Motion からの一方向出力である。Store には保存しない。
+
+M10 は Panel 素材の入口を PDF 以外へ広げる予定である。Timeline / Motion / Rush / MP4 / タイムシートの正本関係は変えない。実装は未着手。

@@ -4,7 +4,7 @@ import {
   EXPORT_WIDTH,
   createExportImageCache,
   motionMaxScaleForPanel,
-} from "./export-image-cache.js";
+} from "./export-image-cache.js?v=m10-0";
 import { poseForResolvedFrame } from "./frame-pose.js?v=m9-3";
 import { renderFrame } from "./frame-renderer.js";
 import {
@@ -211,6 +211,7 @@ export async function exportMp4({
   motions,
   panels,
   pdfDocument,
+  getRenderable,
   onProgress,
   shouldCancel,
 } = {}) {
@@ -224,7 +225,7 @@ export async function exportMp4({
   await checkExportSupport();
   throwIfCancelled(shouldCancel);
 
-  const cache = createExportImageCache();
+  const cache = createExportImageCache({ getRenderable });
   const canvas = createExportCanvas();
   let output = null;
 

@@ -1,4 +1,16 @@
 export const PREVIEW_SCALE = 1.5;
+export const ONION_TARGET_SIZE = 1280;
+export const ONION_PDF_SCALE_CAP = 3;
+
+export async function computeOnionPdfScale(pdfDocument, panel) {
+  const page = await pdfDocument.getPage(panel.pageNumber);
+  const viewport = page.getViewport({ scale: 1 });
+  const panelWidth = Math.max(1, panel.width * viewport.width);
+  const panelHeight = Math.max(1, panel.height * viewport.height);
+  const longest = Math.max(panelWidth, panelHeight);
+  const needed = ONION_TARGET_SIZE / longest;
+  return Math.min(ONION_PDF_SCALE_CAP, Math.max(1, needed));
+}
 
 function toCropPixels(x, y, width, height, canvasWidth, canvasHeight) {
   let sx = Math.floor(x * canvasWidth);
@@ -75,4 +87,32 @@ export function canvasToObjectUrl(canvas) {
       resolve(URL.createObjectURL(blob));
     }, "image/png");
   });
+}
+
+export async function renderableToObjectUrl(renderable) {
+  const source = renderable?.canvas ?? renderable?.image;
+  if (source instanceof HTMLCanvasElement) {
+    return canvasToObjectUrl(source);
+  }
+  if (!source) {
+    throw new Error("プレビュー画像を作れませんでした。");
+  }
+  const width = Math.max(
+    1,
+    renderable.width || source.width || source.naturalWidth || 1,
+  );
+  const height = Math.max(
+    1,
+    renderable.height || source.height || source.naturalHeight || 1,
+  );
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  canvas.getContext("2d").drawImage(source, 0, 0);
+  try {
+    return await canvasToObjectUrl(canvas);
+  } finally {
+    canvas.width = 0;
+    canvas.height = 0;
+  }
 }

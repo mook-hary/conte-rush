@@ -150,6 +150,62 @@ export function validatePlacements(cut, placements) {
   return { ok: true, placements: sortPlacements(normalized) };
 }
 
+export function neighborsAroundFrame(cut, timeline, frame) {
+  if (!cut || !Number.isInteger(frame)) {
+    return { prev: null, next: null };
+  }
+  const sorted = sortPlacements(timeline?.placements ?? []);
+  let previous = null;
+  let following = null;
+  for (const placement of sorted) {
+    if (placement.startFrame < frame) {
+      previous = placement;
+      continue;
+    }
+    if (placement.startFrame > frame) {
+      following = placement;
+      break;
+    }
+  }
+  return {
+    prev: previous
+      ? {
+          placementId: previous.id,
+          panelId: previous.panelId,
+          startFrame: previous.startFrame,
+        }
+      : null,
+    next: following
+      ? {
+          placementId: following.id,
+          panelId: following.panelId,
+          startFrame: following.startFrame,
+        }
+      : null,
+  };
+}
+
+export function onionNeighbors(cut, timeline, placementId) {
+  if (!placementId) {
+    return { prev: null, next: null };
+  }
+  const ranges = deriveRanges(cut, timeline);
+  const index = ranges.findIndex((item) => item.id === placementId);
+  if (index < 0) {
+    return { prev: null, next: null };
+  }
+  const previous = ranges[index - 1] ?? null;
+  const following = ranges[index + 1] ?? null;
+  return {
+    prev: previous
+      ? { placementId: previous.id, panelId: previous.panelId }
+      : null,
+    next: following
+      ? { placementId: following.id, panelId: following.panelId }
+      : null,
+  };
+}
+
 export function deriveRanges(cut, timeline) {
   if (!cut || !timeline) {
     return [];

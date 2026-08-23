@@ -8,7 +8,7 @@
 
 責務の境界:
 
-- Panel = PDF 上のコンテ画像領域
+- Panel = ラッシュに使える 1 枚のコンテ画像。PDF crop / 手描き / ローカル画像
 - Cut = CUT 番号、総尺、所属 Panel
 - Timeline = Cut 内で各 Panel をいつ表示するか（開始フレーム）
 - Motion = ある Panel 表示区間内で、16:9 出力へどこを crop するか（M6）
@@ -62,9 +62,10 @@ M1 のアプリ実装は、この定義に従う。M2・M3・M5.1・M5.3 でも�
 
 `source`:
 
-- M1 の登録値は `"manual"` のみ
-- 将来 `"auto"` を足せる余地は残すが、現行では使わない
+- M1〜M9 の登録値は `"manual"` のみ（PDF 上の手動矩形）
+- 将来 `"auto"` を足せる余地は残すが、現行では使わない。M10 でも使わない
 - `confidence` は項目に含めない
+- `"drawing"` / `"upload"` は次節。PDF 矩形は持たない
 
 持たないもの:
 
@@ -117,6 +118,127 @@ M2 のアプリ実装は、この境界に従う。
 - ファイルへ保存しない
 
 M2 のプレビューは OCR 用画像ではない。解析が必要になったら、切り出し処理を別倍率で呼び出す。キャッシュ済みプレビューを解析入力とはしない。Rush 表示にも使わない。
+
+### Panel（M10.0 / M10.1・実装済み）
+
+M1 の 6 フィールドは **PDF Panel だけ**維持する。drawing / upload に `pageNumber` / `x` / `y` / `width` / `height` のダミーは置かない。
+
+| `source` | 意味 | 追加フィールド |
+|---|---|---|
+| `"manual"` | PDF から切った Panel（現行） | `pageNumber`, `x`, `y`, `width`, `height` |
+| `"auto"` | 予約。M10 では作らない | 上記と同じ予定 |
+| `"drawing"` | 手描きで確定した Panel | なし（画素は MediaStore） |
+| `"upload"` | ローカル画像から作った Panel | なし（画素は MediaStore） |
+
+`"manual"` を `"pdf"` に改名しない。手描きの意味にも使わない。
+
+`id` の規則は M1 のまま。Cut / Timeline / Motion はこれまでどおり `panelId` だけを見る。
+
+一覧:
+
+- 表示ラベル: PDF は `ページ n`、drawing は `手描き`、upload は `画像`
+- 並び: `listAll` は PDF を `pageNumber` 昇順、同一ページは登録順。drawing / upload は PDF 群の後ろ、登録順。pageNumber が無くても NaN ソートしない
+- 登録順が必要なときは `listInRegistrationOrder`
+- PDF overlay（`listByPage`）は pdf Panel だけ。drawing / upload はページ枠を出さない
+
+持たないもの（M1 に加え）:
+
+- Panel 上の `image` / `blob` / `strokes`
+- `kind` と `source` の二重フィールド
+
+### PanelMediaStore（M10.0 / M10.1・実装済み）
+
+確定した非 PDF 画像。Panel の一部ではない。ThumbnailCache でも RushImageCache でもない。
+
+| 項目 | 意味 |
+|---|---|
+| キー | Panel の `id` |
+| `kind` | `"drawing"` または `"upload"` |
+| `blob` | 正本。drawing は PNG。upload は読み込んだファイル（または同等の画像 Blob） |
+| `mimeType` | `image/png` / `image/jpeg` / `image/webp` |
+| `width` / `height` | デコード後の画素 |
+
+補足:
+
+- 実行時に ImageBitmap をキャッシュしてよい。正本は Blob
+- drawing の正本画素は 1280×720
+- upload は元画像の画素。16:9 にリサンプルしない
+- ファイルへ保存しない
+
+寿命:
+
+- その Panel を削除したら破棄する。Undo 用に history Action が Blob を保持する
+- 新しい PDF の読み込み成功時にすべて破棄する
+- 読み込み失敗で直前の PDF を維持する場合は残す
+
+### PanelImageProvider（M10.0・実装済み）
+
+`panelId` または Panel から描画可能画像を返す実行時 API。Store ではない。
+
+入力: Panel、`purpose`（`thumbnail` / `rush` / `export` / `motion` / `onion`）、pdf のときだけ `pdfDocument` と任意の `motionMaxScale`
+
+出力: `CanvasImageSource` と画素幅高さ。必要なら object URL
+
+分岐はここだけ。Rush / MP4 / Motion Editor は source を直接切らない。
+
+### DrawingEditorState（M10.1・実装済み）
+
+手描き overlay が開いているあいだだけの UI 状態。Panel Data ではない。`js/drawing-editor.js` が持つ。
+
+| 項目 | 意味 |
+|---|---|
+| `mode` | `create` または `reedit` |
+| `tool` | `pen` / `eraser` |
+| `size` | 3 段階（4 / 10 / 20 px） |
+| `commands` | 確定前の一筆 / 全消去。editor 内 Undo/Redo。上限 40 |
+| `baseline` | 上限超過分を焼き込んだ drawing layer。新規 stroke 用 |
+| `backgroundBlob` | 再編集開始時に paper へ載せる確定 PNG。Panel には残さない |
+
+- 一筆 Undo は `history.js` に積まない
+- キャンセルでこの状態を捨てる
+- ファイルへ保存しない
+- 表示: paper（白 + 再編集時の確定 PNG） / reference（Onion） / drawing（新規 stroke）
+- 確定 PNG は paper + drawing だけ。reference（Onion）は焼かない
+
+### OnionSkinView（M10.2・実装済み）
+
+手描き編集中の表示状態。保存しない。焼き込まない。
+
+| 項目 | 意味 |
+|---|---|
+| `prevEnabled` / `nextEnabled` | 前後の ON/OFF |
+| `prevOpacity` / `nextOpacity` | 0〜1。初期は約 0.35 |
+| `prevPanelId` / `nextPanelId` | `placementId` の隣接 range から導出。無ければ null |
+| `cutId` / `placementId` | Timeline から開いたときだけ。一覧編集では無し |
+
+前後は Timeline の隣接 placement であり、PDF ページ順でも `Cut.panelIds` 順でもない。Panel / MediaStore へ保存しない。ON/OFF と opacity は history 対象外。
+
+M10.3 の前後サムネ・Panel 番号・説明文もこの UI 状態だけである。番号は表示用に `Cut.panelIds` の 1-based を読むだけで、前後の解決には使わない。
+
+### M10.3（実装済み）
+
+**M10.3で保存構造変更なし。**
+
+Panel / Cut / Timeline / placement / Motion / PanelMediaStore のフィールドは増やさない。`placementId` の意味も変えない。Timeline 追加候補・配置済み行・Onion 説明は描画時の見え方だけとする。
+
+### InsertionContext（M10.4・UI状態のみ）
+
+横 Timeline の「＋」から新規手描きを開いているあいだだけの一時状態。永続しない。Store に書かない。
+
+| 項目 | 意味 |
+|---|---|
+| `mode` | `"insert"`。既存 placement 編集の `{ cutId, placementId, panelId }` とは別 |
+| `cutId` | 挿入先 Cut |
+| `startFrame` | メニューを開いたときに固定した候補 frame |
+| `previousPlacementId` / `nextPlacementId` | `neighborsAroundFrame` の結果。無くてよい |
+
+確定するまで Panel / placement は作らない。キャンセルで捨てる。
+
+### M10.4（実装済み）
+
+**M10.4で永続構造変更なし。InsertionContextはUI状態のみ。**
+
+Panel / Cut / Timeline / placement / Motion / PanelMediaStore のフィールドは増やさない。`placementId` は保存後に初めて付く。
 
 ### Cut（M3）
 
@@ -514,7 +636,7 @@ Rush 表示用の Panel 画像だけを、メモリ上に持つ。M2 の Thumbna
 - 読み込み失敗で直前の PDF を維持する場合は残す
 - ファイルへ保存しない
 
-### UI 状態（M5.1 / M5.2 / M5.3 / M5.4 / M6 / M7）
+### UI 状態（M5.1 / M5.2 / M5.3 / M5.4 / M6 / M7 / M10）
 
 Panel / Cut / Timeline / Rush の保存構造ではない。メモリ上の操作状態だけとする。ファイルへ保存しない。`localStorage` にも入れない。
 
@@ -574,7 +696,7 @@ Undo / Redo のメモリ上スタック。Store ではない。ファイルへ�
 | `canUndo` / `canRedo` | ボタンの有効状態 |
 | `clear` | 両方空にする |
 
-必須対象: Panel 登録、Panel 削除、Timeline の `startFrame` 確定、M6 の Motion 作成 / 削除 / from-to 確定。M8 では加えて placement 追加 / 削除、Repeat による Timeline 全置換。
+必須対象: Panel 登録、Panel 削除、Timeline の `startFrame` 確定、M6 の Motion 作成 / 削除 / from-to 確定。M8 では加えて placement 追加 / 削除、Repeat による Timeline 全置換。M10.1: drawing / upload の追加、drawing 再編集確定、upload 差し替え。一筆ごとの Undo は対象外。
 
 Panel 削除の 1 Action が保持するもの:
 
@@ -583,6 +705,7 @@ Panel 削除の 1 Action が保持するもの:
 - 所属していた Cut と、その `panelIds` 内位置
 - Timeline にその Panel の placement があった場合、その全件（`id` と `startFrame`。M8）
 - その Panel に付いていた Motion（M6）
+- drawing / upload なら MediaStore の Blob（ImageBitmap は持たない）
 
 新しい PDF の読み込み成功時に `clear` する。失敗維持時は残す。
 
@@ -667,7 +790,7 @@ Play 時だけ持つ Motion の複製。RushPlayback snapshot の項目ではな
 
 - `buildSnapshot` と同じ Cut 登録順セグメント（`totalFrames` を含む）
 - Motion 全件の複製（Play 時の freeze と同じ）
-- 参照 Panel の矩形（`id` / `pageNumber` / `x` / `y` / `width` / `height`）
+- 参照 Panel の複製（PDF は矩形、drawing / upload は source + MediaStore）
 - その時点の `pdfDocument` 参照
 - PDF ファイル名（保存名の元）
 
@@ -756,7 +879,7 @@ Play 時だけ持つ Motion の複製。RushPlayback snapshot の項目ではな
 - 永続化した Rush Data
 - MP4 / 音声の永続保存
 - 自動検出結果
-- `source: "auto"`
+- `source: "auto"`（予約のまま。M10 でも作らない）
 - `confidence`
 - Panel に埋め込んだ画像、CUT 番号、尺、`cutId`、`startFrame`
 - Cut に埋め込んだ `placements` / `startFrame` / global 区間
@@ -815,3 +938,5 @@ M7 では MP4 書き出しを定義する。ExportSnapshot / ExportImageCache / 
 M8 では Timeline placement に `id` を足し、同一 `panelId` の複数配置を許す。Repeat 設定は保存しない。Motion は panelId のまま。
 
 M9 では Timesheet View Model を導出するだけとする。Panel / Cut / Timeline / Motion の項目は増やさない。話数 / タイトルは PDF セッションの UI 状態とする。
+
+M10 では Panel の `source` に `"drawing"` / `"upload"` を足す。画像バイトは PanelMediaStore。Timeline / Motion / Rush / タイムシートの保存項目は増やさない。Onion（M10.2）は UI 状態だけとする。M10.3で保存構造変更なし。M10.4で永続構造変更なし。InsertionContextはUI状態のみ。

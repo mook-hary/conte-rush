@@ -253,6 +253,65 @@ MP4 / WebM / 音声 / ease / 複数 Motion 連結 / 部分区間 Motion / 回転
 
 仕様は [SPEC.md](SPEC.md) の M9 節を正とする。
 
+## M10（実装済み）
+
+PDF 以外からも Panel 素材を足せるようにする。お絵描きソフトにはしない。「ラッシュに 1 枚足したい」「中間のラフを描きたい」ための簡易 Panel 作成である。
+
+実装は次の 5 段に分ける。ユーザーから見ると一つの機能群である。
+
+### M10.0 Panel Image Provider と source 拡張（実装済み）
+
+- Panel を discriminated union にする。`source: "manual"` は PDF 切り出しのまま。`"drawing"` / `"upload"` を足す
+- PDF 矩形（`pageNumber` / `x` / `y` / `width` / `height`）を drawing / upload へダミーで入れない
+- 画像バイトは Panel レコードに埋め込まない。`PanelMediaStore` が Blob を持つ
+- `js/panel-image-provider.js` が `panelId` → 描画可能画像の唯一の入口になる
+- Thumbnail / Rush / Export は Provider 経由。Motion Editor は Provider が埋めた既存 cache を読む
+- `cropPanelImage` は PDF 実装詳細に残す
+- Export の Motion 連動 pdfScale（M7）を壊さない
+- UI から drawing / upload はまだ作れない。一覧順は PDF を pageNumber 順のまま（pageNumber 無しは後ろへ）
+
+### M10.1 Drawing Panel と Upload Panel（実装済み）
+
+- 手描き: 16:9、白地、黒ペン / 消しゴム、サイズ 3 段階、編集中 Undo/Redo、全消去、確定 / キャンセル、再編集
+- Pointer Events。筆圧・色・レイヤー・図形・テキストは持たない
+- 正本解像度は 1280×720。CSS 表示サイズや `devicePixelRatio` を正本にしない
+- Upload: PNG / JPEG / WebP。16:9 でなくても拒否しない
+- 既存 upload の画像差し替え（Panel id 維持）
+- Cut / placement / Repeat / Motion / Rush / MP4 / タイムシート番号は通常 Panel と同じ
+- PDF 再選択成功時は drawing / upload も含め全 Panel を clear
+
+### M10.2 Onion Skin（実装済み）
+
+- 手描き編集中に、Timeline placement 上の前後 Panel を半透明表示する
+- ON/OFF と opacity。stroke より背面。保存画像には焼かない
+- 前後は `placementId` → 隣接 range → `panelId` → Provider。Cut.panelIds 順でも PDF ページ順でもない
+- placement 文脈が無ければ Onion は無効
+- 透かすのは元 Panel 画像。Motion crop 後の画は使わない
+
+### M10.3 Timeline / Onion の見え方（実装済み）
+
+- 保存構造は変えない。新しい Store も作らない
+- 追加候補: サムネイル / `Cut.panelIds` の 1-based 番号 / 種別 / startFrame / 秒+コマ / ［追加］
+- 配置済み: サムネイル / 番号 / start の秒+コマと frame / 導出区間 / ［削除］。drawing だけ ［絵を編集］
+- 横 Timeline マーカーと配置済み行の選択は `placementId`。同じ `panelId` の別 placement は独立
+- ［削除］は placement だけ。Panel / `Cut.panelIds` / MediaStore / Motion は残す
+- Onion に説明と前後サムネ・番号を出す。先頭 / 末尾は「前の絵はありません」「次の絵はありません」
+- Panel 一覧の［編集］では前後を推測せず、Timeline の［絵を編集］へ案内する
+- 画像は既存 ThumbnailCache / Panel Image Provider。Onion は reference のみ
+
+### M10.4 Timeline ＋挿入（実装済み）
+
+- 横 Timeline の空白へ pointer を置くと、既存のカーソル追従プレビュー（＋）が出る。別描画の常設＋は置かない
+- ＋クリックで挿入メニュー。追加位置（秒+コマ+frame）、［既存Panelを追加］［手描きPanelを追加］
+- 候補 startFrame は既存の `xToFrame`。メニューを開いた瞬間に固定
+- 既存 Panel は所属素材から選び、同じ `addPlacement` へ置く。同じ Panel の再配置可
+- 手描きは未確定の挿入 context で Editor を開き、`neighborsAroundFrame` の左右を Onion にする。キャンセルで何も残さない
+- 確定は Panel + MediaStore + Cut 所属 + placement を 1 Action「手描きPanelをTimelineへ追加」
+- 既存編集の Onion 解決（`onionNeighbors`）は変えない
+- 詳細側の Panel 追加 UI は残す
+
+仕様は [SPEC.md](SPEC.md) の M10 節を正とする。
+
 ## 以降（構想）
 
 順序の目安であり、確定した計画ではない。
@@ -261,9 +320,9 @@ MP4 / WebM / 音声 / ease / 複数 Motion 連結 / 部分区間 Motion / 回転
 
 | 候補 | 想定する前進 |
 |---|---|
-| M10 | 音声 / タイムシート編集 など |
+| M11 以降 | 音声、タイムシート編集、プロジェクト保存 など |
 
-M9 以降でやり得ることの例（未着手、M9 には入れない）:
+M10 以降でやり得ることの例（未着手、M10 には入れない）:
 
 - ACTION 自動記入、CELL B〜F、タイムシート import
 - 音声 / BGM / SE / AAC

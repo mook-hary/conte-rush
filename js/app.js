@@ -182,6 +182,9 @@ let rushView = null;
 let rushMotionFreeze = null;
 let exportRunning = false;
 let exportCancelRequested = false;
+let exportJobPromise = null;
+let appActive = false;
+let appListenersBound = false;
 let timesheetEpisode = "";
 let timesheetTitle = "";
 let timesheetPreviewIndex = 0;
@@ -967,7 +970,7 @@ function downloadBlob(blob, fileName) {
 }
 
 async function handleExportMp4() {
-  if (exportRunning || rushPreparing) {
+  if (!appActive || exportRunning || rushPreparing) {
     return;
   }
   if (!session?.document) {
@@ -1007,37 +1010,47 @@ async function handleExportMp4() {
   updateExportUi();
   renderRush();
 
+  const job = (async () => {
+    try {
+      const blob = await exportMp4({
+        snapshot,
+        motions,
+        panels,
+        pdfDocument,
+        getRenderable: (panel, options) => panelImageProvider.getRenderable(panel, options),
+        shouldCancel: () => exportCancelRequested,
+        onProgress(progress) {
+          setExportMessage(formatExportProgress(progress));
+        },
+      });
+      if (exportCancelRequested) {
+        setExportMessage("書き出しをキャンセルしました");
+        return;
+      }
+      downloadBlob(blob, fileName);
+      setExportMessage("書き出し完了");
+    } catch (error) {
+      if (error instanceof ExportError && error.code === "cancelled") {
+        setExportMessage("書き出しをキャンセルしました");
+        return;
+      }
+      console.error(error);
+      setExportMessage(formatExportError(error), true);
+    } finally {
+      exportRunning = false;
+      exportCancelRequested = false;
+      setPdfInputLocked(false);
+      updateExportUi();
+      renderRush();
+    }
+  })();
+  exportJobPromise = job;
   try {
-    const blob = await exportMp4({
-      snapshot,
-      motions,
-      panels,
-      pdfDocument,
-      getRenderable: (panel, options) => panelImageProvider.getRenderable(panel, options),
-      shouldCancel: () => exportCancelRequested,
-      onProgress(progress) {
-        setExportMessage(formatExportProgress(progress));
-      },
-    });
-    if (exportCancelRequested) {
-      setExportMessage("書き出しをキャンセルしました");
-      return;
-    }
-    downloadBlob(blob, fileName);
-    setExportMessage("書き出し完了");
-  } catch (error) {
-    if (error instanceof ExportError && error.code === "cancelled") {
-      setExportMessage("書き出しをキャンセルしました");
-      return;
-    }
-    console.error(error);
-    setExportMessage(formatExportError(error), true);
+    await job;
   } finally {
-    exportRunning = false;
-    exportCancelRequested = false;
-    setPdfInputLocked(false);
-    updateExportUi();
-    renderRush();
+    if (exportJobPromise === job) {
+      exportJobPromise = null;
+    }
   }
 }
 
@@ -1199,7 +1212,7 @@ async function prepareRushImages(snapshot, token) {
 }
 
 async function handleRushPlay() {
-  if (!session || rushPreparing || rushPlayer.isPlaying() || exportRunning) {
+  if (!appActive || !session || rushPreparing || rushPlayer.isPlaying() || exportRunning) {
     return;
   }
   if (
@@ -3495,6 +3508,10 @@ async function replaceSession(nextSession) {
 }
 
 async function handleFileChange(event) {
+  if (!appActive) {
+    event.target.value = "";
+    return;
+  }
   if (exportRunning) {
     event.target.value = "";
     setExportMessage("書き出し中はPDFを差し替えできません", true);
@@ -3612,7 +3629,7 @@ async function goToPage(pageNumber) {
 }
 
 function scheduleRefit() {
-  if (!session || document.body.dataset.state !== "viewing") {
+  if (!appActive || !session || document.body.dataset.state !== "viewing") {
     return;
   }
   window.clearTimeout(resizeTimer);
@@ -3626,175 +3643,216 @@ function scheduleRefit() {
   }, 100);
 }
 
-cutForm.addEventListener("submit", handleCutFormSubmit);
-cutDetailForm.addEventListener("submit", saveSelectedCut);
-cutNumberClear.addEventListener("click", () => {
-  cutNumberInput.value = "";
-  cutNumberInput.focus();
-});
-cutDurationClear.addEventListener("click", () => {
-  cutDurationInput.value = "";
-  cutDurationInput.focus();
-});
-detailCutNumberClear.addEventListener("click", () => {
-  detailCutNumberInput.value = "";
-  detailCutNumberInput.focus();
-});
-detailCutDurationClear.addEventListener("click", () => {
-  detailCutDurationInput.value = "";
-  detailCutDurationInput.focus();
-});
-cutAddSelectedButton.addEventListener("click", () => {
-  if (selectedCutId) {
-    addSelectedPanelsToCut(selectedCutId);
-  }
-});
-cutDeleteButton.addEventListener("click", () => {
-  deleteSelectedCut();
-});
-timelineRepeatHoldInput?.addEventListener("input", () => {
-  repeatHoldRaw = timelineRepeatHoldInput.value;
-  syncRepeatHoldHint();
-});
-timelineRepeatApplyButton?.addEventListener("click", () => {
-  applyRepeat();
-});
-timesheetEpisodeInput?.addEventListener("input", () => {
-  timesheetEpisode = timesheetEpisodeInput.value;
-  if (timesheetPreviewOpen) {
-    updateTimesheetUi();
-  }
-});
-timesheetTitleInput?.addEventListener("input", () => {
-  timesheetTitle = timesheetTitleInput.value;
-  if (timesheetPreviewOpen) {
-    updateTimesheetUi();
-  }
-});
-timesheetPreviewButton?.addEventListener("click", () => {
-  handleTimesheetPreview();
-});
-timesheetExportButton?.addEventListener("click", () => {
-  handleTimesheetExport();
-});
-timesheetPrevSheetButton?.addEventListener("click", () => {
-  handleTimesheetSheetStep(-1);
-});
-timesheetNextSheetButton?.addEventListener("click", () => {
-  handleTimesheetSheetStep(1);
-});
-placeModeFrameButton.addEventListener("click", () => {
-  setPanelPlaceMode("frame");
-});
-placeModeDragButton.addEventListener("click", () => {
-  setPanelPlaceMode("drag");
-});
-aspectLockInput.addEventListener("change", () => {
-  overlay.setAspectLocked(aspectLockInput.checked);
-  updatePlaceUi();
-});
-capturePanelButton.addEventListener("click", () => {
-  captureCurrentFrame();
-});
-openDrawingButton?.addEventListener("click", () => {
-  handleCreateDrawing();
-});
-document.addEventListener("pointerdown", (event) => {
-  if (!insertMenuState) {
+function bindAppListenersOnce() {
+  if (appListenersBound) {
     return;
   }
-  if (event.target.closest(".cut-timeline-insert-menu")) {
-    return;
-  }
-  if (event.target.closest(".cut-timeline-place-preview")) {
-    return;
-  }
-  closeInsertMenu();
-});
-window.addEventListener("resize", () => {
-  if (insertMenuState) {
-    positionInsertMenu();
-  }
-});
-uploadPanelButton?.addEventListener("click", () => {
-  handleUploadPanel();
-});
-undoButton.addEventListener("click", () => {
-  handleUndo();
-});
-redoButton.addEventListener("click", () => {
-  handleRedo();
-});
-window.addEventListener("keydown", (event) => {
-  if (drawingEditor.isOpen()) {
-    return;
-  }
-  if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+  appListenersBound = true;
+
+  cutForm.addEventListener("submit", handleCutFormSubmit);
+  cutDetailForm.addEventListener("submit", saveSelectedCut);
+  cutNumberClear.addEventListener("click", () => {
+    cutNumberInput.value = "";
+    cutNumberInput.focus();
+  });
+  cutDurationClear.addEventListener("click", () => {
+    cutDurationInput.value = "";
+    cutDurationInput.focus();
+  });
+  detailCutNumberClear.addEventListener("click", () => {
+    detailCutNumberInput.value = "";
+    detailCutNumberInput.focus();
+  });
+  detailCutDurationClear.addEventListener("click", () => {
+    detailCutDurationInput.value = "";
+    detailCutDurationInput.focus();
+  });
+  cutAddSelectedButton.addEventListener("click", () => {
+    if (selectedCutId) {
+      addSelectedPanelsToCut(selectedCutId);
+    }
+  });
+  cutDeleteButton.addEventListener("click", () => {
+    deleteSelectedCut();
+  });
+  timelineRepeatHoldInput?.addEventListener("input", () => {
+    repeatHoldRaw = timelineRepeatHoldInput.value;
+    syncRepeatHoldHint();
+  });
+  timelineRepeatApplyButton?.addEventListener("click", () => {
+    applyRepeat();
+  });
+  timesheetEpisodeInput?.addEventListener("input", () => {
+    timesheetEpisode = timesheetEpisodeInput.value;
+    if (timesheetPreviewOpen) {
+      updateTimesheetUi();
+    }
+  });
+  timesheetTitleInput?.addEventListener("input", () => {
+    timesheetTitle = timesheetTitleInput.value;
+    if (timesheetPreviewOpen) {
+      updateTimesheetUi();
+    }
+  });
+  timesheetPreviewButton?.addEventListener("click", () => {
+    handleTimesheetPreview();
+  });
+  timesheetExportButton?.addEventListener("click", () => {
+    handleTimesheetExport();
+  });
+  timesheetPrevSheetButton?.addEventListener("click", () => {
+    handleTimesheetSheetStep(-1);
+  });
+  timesheetNextSheetButton?.addEventListener("click", () => {
+    handleTimesheetSheetStep(1);
+  });
+  placeModeFrameButton.addEventListener("click", () => {
+    setPanelPlaceMode("frame");
+  });
+  placeModeDragButton.addEventListener("click", () => {
+    setPanelPlaceMode("drag");
+  });
+  aspectLockInput.addEventListener("change", () => {
+    overlay.setAspectLocked(aspectLockInput.checked);
+    updatePlaceUi();
+  });
+  capturePanelButton.addEventListener("click", () => {
+    captureCurrentFrame();
+  });
+  openDrawingButton?.addEventListener("click", () => {
+    handleCreateDrawing();
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (!appActive || !insertMenuState) {
+      return;
+    }
+    if (event.target.closest(".cut-timeline-insert-menu")) {
+      return;
+    }
+    if (event.target.closest(".cut-timeline-place-preview")) {
+      return;
+    }
+    closeInsertMenu();
+  });
+  window.addEventListener("resize", () => {
+    if (insertMenuState) {
+      positionInsertMenu();
+    }
+  });
+  uploadPanelButton?.addEventListener("click", () => {
+    handleUploadPanel();
+  });
+  undoButton.addEventListener("click", () => {
+    handleUndo();
+  });
+  redoButton.addEventListener("click", () => {
+    handleRedo();
+  });
+  window.addEventListener("keydown", (event) => {
+    if (!appActive) {
+      return;
+    }
+    if (drawingEditor.isOpen()) {
+      return;
+    }
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      if (isTextEditingTarget(event.target)) {
+        return;
+      }
+      if (cutTimelineEditor.isBusy()) {
+        return;
+      }
+      const step = event.shiftKey ? 5 : 1;
+      const delta = event.key === "ArrowLeft" ? -step : step;
+      if (nudgeSelectedTimelinePanel(delta)) {
+        event.preventDefault();
+      }
+      return;
+    }
+    const key = event.key.toLowerCase();
+    if (key !== "z") {
+      return;
+    }
+    const modifier = event.metaKey || event.ctrlKey;
+    if (!modifier) {
+      return;
+    }
     if (isTextEditingTarget(event.target)) {
       return;
     }
-    if (cutTimelineEditor.isBusy()) {
+    event.preventDefault();
+    if (event.shiftKey) {
+      handleRedo();
       return;
     }
-    const step = event.shiftKey ? 5 : 1;
-    const delta = event.key === "ArrowLeft" ? -step : step;
-    if (nudgeSelectedTimelinePanel(delta)) {
-      event.preventDefault();
+    handleUndo();
+  });
+  rushPlayButton.addEventListener("click", () => {
+    handleRushPlay();
+  });
+  rushPauseButton.addEventListener("click", () => {
+    handleRushPause();
+  });
+  rushResetButton.addEventListener("click", () => {
+    handleRushReset();
+  });
+  exportButton?.addEventListener("click", () => {
+    handleExportMp4();
+  });
+  exportCancelButton?.addEventListener("click", () => {
+    handleExportCancel();
+  });
+  pdfInput.addEventListener("change", handleFileChange);
+  prevButton.addEventListener("click", () => {
+    if (session) {
+      goToPage(session.currentPage - 1);
     }
-    return;
-  }
-  const key = event.key.toLowerCase();
-  if (key !== "z") {
-    return;
-  }
-  const modifier = event.metaKey || event.ctrlKey;
-  if (!modifier) {
-    return;
-  }
-  if (isTextEditingTarget(event.target)) {
-    return;
-  }
-  event.preventDefault();
-  if (event.shiftKey) {
-    handleRedo();
-    return;
-  }
-  handleUndo();
-});
-rushPlayButton.addEventListener("click", () => {
-  handleRushPlay();
-});
-rushPauseButton.addEventListener("click", () => {
-  handleRushPause();
-});
-rushResetButton.addEventListener("click", () => {
-  handleRushReset();
-});
-exportButton?.addEventListener("click", () => {
-  handleExportMp4();
-});
-exportCancelButton?.addEventListener("click", () => {
-  handleExportCancel();
-});
-pdfInput.addEventListener("change", handleFileChange);
-prevButton.addEventListener("click", () => {
-  if (session) {
-    goToPage(session.currentPage - 1);
-  }
-});
-nextButton.addEventListener("click", () => {
-  if (session) {
-    goToPage(session.currentPage + 1);
-  }
-});
-window.addEventListener("resize", scheduleRefit);
-
-try {
-  showIdle();
-} catch (error) {
-  console.error(error);
-  if (statusEl) {
-    statusEl.textContent = `起動エラー: ${error.message}`;
-  }
-  throw error;
+  });
+  nextButton.addEventListener("click", () => {
+    if (session) {
+      goToPage(session.currentPage + 1);
+    }
+  });
+  window.addEventListener("resize", scheduleRefit);
 }
+
+export function initializeConteRush() {
+  bindAppListenersOnce();
+  if (appActive) {
+    return;
+  }
+  appActive = true;
+  try {
+    showIdle();
+  } catch (error) {
+    console.error(error);
+    if (statusEl) {
+      statusEl.textContent = `起動エラー: ${error.message}`;
+    }
+    throw error;
+  }
+}
+
+export async function resetConteRushSession() {
+  appActive = false;
+  handleExportCancel();
+  if (exportJobPromise) {
+    try {
+      await exportJobPromise;
+    } catch {
+      // Cancelled or failed export; session clear continues.
+    }
+  }
+  discardRush();
+  clearSessionData();
+  await replaceSession(null);
+  if (pdfInput) {
+    pdfInput.value = "";
+  }
+  try {
+    showIdle();
+  } catch (error) {
+    console.error(error);
+  }
+}
+

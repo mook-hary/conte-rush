@@ -825,7 +825,145 @@
 - 採用しなかった案: ＋を hover 専用にして詳細 UI へ飛ばす。Cut.panelIds で前後を推測する。Panel 追加と placement 追加を別 Undo にする
 - 結果: InsertionContext は UI 状態のみ。保存構造は変えない
 
+## D104. Auth / 利用権だけ外部サービスを使い、制作素材は送らない
+
+- 状態: 採用（M11.0・実装済み）
+- 判断: ログインと利用権の正は Supabase に置く。PDF / Panel 画像 / Drawing / Upload / Rush / MP4 / Timesheet は従来どおりブラウザ内だけとし、Supabase Storage にも送らない
+- 理由: 一般公開と月額課金には identity と entitlement が要る。絵コンテは未公開制作物であることが多く、D2 を崩さない
+- 採用しなかった案: 独自バックエンドを先に作る。制作データをクラウド保存してから課金する。GitHub repository を M11.0 で private にする
+- 結果: D1 の「静的配信でアプリ本体を動かす」は維持する。変わるのは Auth と利用権の確認だけである。M11.0 では Cloudflare Functions も必須にしない
+
+## D105. 利用権の正は access_type 1 カラムにしない
+
+- 状態: 採用（M11.0・実装済み）
+- 判断: `internal_users` と `subscriptions` を分けて持ち、`effectiveAccess(userId)` で `internal` / `paid` / `none` を導出する。ユーザー行に `access_type` を正本として保存しない
+- 理由: Stripe の契約状態と社内無料権限を 1 カラムへ混ぜると、webhook 更新と管理者の enable/disable が衝突する。導出なら M11.1 の allowlist と M11.3 の subscription 反映を独立に足せる
+- 採用しなかった案: `profiles.access_type = "internal" | "paid" | "none"` だけを正にする。JWT `app_metadata` を正本にする
+- 結果: internal が有効なら `internal`。そうでなく subscription が paid 条件を満たせば `paid`。それ以外は `none`。両方あるときは `internal` を返す
+
+## D106. M11.0 の Login は Email OTP とする
+
+- 状態: 採用（M11.0）。Auth UI の暫定実装は D119
+- 判断: 最初の方式は Email + ワンタイムコード（OTP）とする。パスワードも Google OAuth も M11.0 では入れない
+- 理由: 毎日ログインする層とは限らず、パスワードを覚えさせたくない。Magic Link は GitHub Pages / localhost の redirect と、メール内リンクが別ブラウザで開く事故が増える。OTP は同じ画面に留まれる
+- 採用しなかった案: Email + Password（忘却とリセットが先に要る）。Magic Link を第一にする。Google Login
+- 結果: 目標は `signInWithOtp` → 同じ画面で `verifyOtp`。セッションは supabase-js の既定でリロード後も残してよい。OTP メールが不通なら、スキーマを変えず Magic Link へ切り替えられる（D119）
+
+## D107. profiles テーブルは作らない
+
+- 状態: 採用（M11.0・実装済み）
+- 判断: 表示名やアバター用の `profiles` は置かない。Account UI のメールは `auth.users` / session から読む
+- 理由: M11.0 が必要なのは identity と利用権だけである。profiles を足すと「誰が正か」が増える
+- 採用しなかった案: 全ユーザーに profiles を作り `access_type` を置く
+- 結果: Access DB は `internal_users` と `subscriptions` のみ
+
+## D108. 社内権限の正は user_id であり、email 文字列だけにしない
+
+- 状態: 採用（M11.0・実装済み）
+- 判断: `internal_users.user_id`（`auth.users.id`）と `enabled` を正とする。メールアドレス文字列の一致だけを権限判定の唯一の正にしない
+- 理由: メールは変更され得る。将来の管理者 UI は「指定ユーザーを追加/解除」できればよい。email はユーザー検索の手がかりに留める
+- 採用しなかった案: `allowlist_emails` の完全一致だけを正にする。クライアントの email 表示を信じる
+- 結果: M11.1 の運用は「先に Magic Link で Auth ユーザーを作る → SQL Editor で `auth.users.email` から `id` を引いて `internal_users` へ入れる」。UID の手コピーはしない。未サインアップ向けの invite テーブルは作らない
+
+## D109. subscription status はアプリ用に正規化する
+
+- 状態: 採用（M11.0・実装済み）
+- 判断: `subscriptions.status` は Stripe 生値をそのまま正本にせず、アプリ enum にする。`provider` で Stripe 由来か fixture かを分ける
+- 理由: webhook（M11.3）が Stripe → enum へ写せば、ゲートは provider を知らなくてよい。生値を UI 判定に使うと M11.4 の past_due / 解約が Stripe 語彙に縛られる
+- 採用しなかった案: Stripe の status 文字列を無変換で保存し、クライアントが Stripe 仕様を知る。クライアントから `status='active'` を upsert する
+- 結果: M11.0 の paid テストは dashboard / SQL（service role）で `provider='manual_fixture'` の行を入れる。ブラウザの anon クライアントからは INSERT/UPDATE できない
+
+## D110. クライアントは自分の利用権を読むだけとする
+
+- 状態: 採用（M11.0・実装済み）
+- 判断: RLS は `authenticated` の SELECT（`user_id = auth.uid()`）のみ。INSERT / UPDATE / DELETE は anon / authenticated に付けない。変更は service role（将来の管理者処理と Stripe webhook）だけ
+- 理由: DevTools から `internal=true` / `paid=true` をテーブルへ書けてはならない。静的アプリではゲート自体を改変できるが、正のデータは書き換えさせない
+- 採用しなかった案: クライアントから profiles を upsert して利用権を付ける。RLS 無し
+- 結果: fail-closed。読めない・不明は allowed にしない。ただし通信失敗は `none` と表示しない（D114）
+
+## D111. anon key は公開前提。service role はリポジトリにも Pages にも置かない
+
+- 状態: 採用（M11.0・実装済み）
+- 判断: Supabase URL と anon/public key は `js/runtime-config.js` に書いてよい。service role、Stripe secret、webhook secret は M11.0 では導入せず、導入後もブラウザへ出さない
+- 理由: anon key は RLS 前提の公開鍵である。service role は RLS を迂回する。GitHub が public のままでも、秘密鍵が無ければ漏洩して困る資格情報は増えない
+- 採用しなかった案: service role を GitHub Pages の JS に埋め、クライアントから利用権を書く。`.env` に秘密鍵を置いて Pages へ載せる
+- 結果: M11.0 で秘密鍵ファイルは作らない。repo private 化は後工程
+
+## D112. Auth Gate を app.js の外に置く
+
+- 状態: 採用（M11.0・実装済み）
+- 判断: 起動は Auth 初期化 → session → access 確認 → allowed のときだけ既存 `initialize`。Supabase 呼び出しは `js/auth-client.js` と `js/access-gate.js` に置く。`app.js` に Auth SQL を散らさない
+- 理由: conte-rush 本体と公開基盤を混ぜると、M11.2 以降の Checkout / webhook が app に染みる
+- 採用しなかった案: `app.js` 先頭で Supabase を直接扱う。社内用と公開用で別リポジトリにする
+- 結果: 未ログインと denied では既存の PDF / Panel / Timeline を初期化しない（隠すか操作不能）
+
+## D113. 社内版と公開版で機能分岐しない
+
+- 状態: 採用（M11.0・実装済み）
+- 判断: `effectiveAccess` が `internal` でも `paid` でも、同じ conte-rush 機能を出す。M11 では「社内だけ」「公開だけ」の機能フラグを作らない
+- 理由: コードベースを分けない。違いは料金と利用権の付け方だけである
+- 採用しなかった案: internal 専用 UI を常時大きく出す。public ビルドと internal ビルドを分ける
+- 結果: Account に「利用権: 社内」または「利用権: 契約中」を小さく出す程度で足りる
+
+## D114. ログアウトは制作セッションを破棄してから Auth Gate へ戻る
+
+- 状態: 採用（M11.0・実装済み）
+- 判断: ログアウト時は既存 `clearSessionData()` に加え、開いている PDF document の破棄と idle UI 復帰を行い、そのあと Supabase signOut する
+- 理由: 制作データはメモリ上だけなので、別ユーザーが同じタブを使うと前の PDF / Panel が見える。D98 の「新しいセッションは全クリア」と同じ事故を防ぐ
+- 採用しなかった案: ログアウト後も PDF を残す。Auth だけ切って制作データは残す
+- 結果: `clearSessionData` は MediaStore / Cut / Timeline / Motion / Rush / 履歴を既に消す。PDF session 破棄は呼び出し側が足す
+
+## D115. access は永久キャッシュせず、通信失敗と none を分けない
+
+- 状態: 採用（M11.0・実装済み）
+- 判断: 起動時と Auth session 変化時に利用権を再読込する。確認結果を localStorage の正にしない。Supabase へ届かないときは `network_error` とし、`denied`（未契約）に落とさない
+- 理由: 将来の契約失効（M11.4）をログイン 1 回の永久許可にすると、解約後も使える。一方、障害時に none 扱いすると契約者を Checkout へ誤誘導する
+- 採用しなかった案: ログイン成功時の access を永続化する。通信失敗を `none` にする。fail-open でアプリを開く
+- 結果: アプリ利用は fail-closed。表示は `network_error` と `denied` を分ける。再フォーカス時の再確認は M11.3 / M11.4 の余地として残す
+
+## D116. Auth session の localStorage は制作データの永続化ではない
+
+- 状態: 採用（M11.0・実装済み）
+- 判断: supabase-js が Auth session をブラウザ storage に置くことは許可する。Panel / Cut / Timeline / 画像を localStorage や IndexedDB に置くことは、従来どおり禁止する
+- 理由: リロード後に毎回ログインさせると、OTP のたびにメール待ちになる。D11 が禁じているのは制作データの永続化である
+- 採用しなかった案: 毎回必ずログイン画面へ戻す。制作データを Auth に紐づけて保存する
+- 結果: リロード → 既存 session → access 再確認 → allowed ならアプリへ進む
+
+## D117. supabase-js は 2.112.3 を jsDelivr ESM で固定する
+
+- 状態: 採用（M11.0・実装済み）
+- 判断: `https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.3/+esm`。`@latest` は使わない。ビルド手順は増やさない
+- 理由: PDF.js / Mediabunny と同じく version を URL に書く。最新追従 URL は再現できない
+- 採用しなかった案: npm バンドル。CDN `@latest`。UMD を index.html に直書きする
+- 結果: `js/auth-client.js` だけが supabase-js を import する。`app.js` は import しない
+
+## D118. paid 判定は status を正とし、クライアント時計で切らない
+
+- 状態: 採用（M11.0・実装済み）
+- 判断: M11.0 の paid は `status` が `active` または `trialing` のときだけ。`current_period_end` は補助列として保持するが、ブラウザの現在時刻と比較して利用不可にはしない
+- 理由: クライアント時計はユーザーがずらせる。期間終了の正は将来の webhook が書く `status` とする
+- 採用しなかった案: `current_period_end < Date.now()` なら none にする
+- 結果: `past_due` は利用不可のまま。期限切れの反映は M11.3 / M11.4
+
+## D119. Auth UI は default SMTP 制約のため暫定 Magic Link とする
+
+- 状態: 採用（M11.0・暫定）
+- 判断: Auth Gate のログイン UI はメールアドレス入力と「ログインリンクを送る」だけにする。コード入力と `verifyOtp` UI は出さない。送信は従来どおり `signInWithOtp()`。`emailRedirectTo` は `location.origin + pathname`。戻ってきたあとの session 検出は `detectSessionInUrl: true`
+- 理由: 新規 Supabase Free project + default SMTP では email template を編集できず、`{{ .Token }}` を入れた OTP メールへ変更できない。default テンプレートは Magic Link 向けである
+- 採用しなかった案: コード入力 UI を残したまま届かない OTP メールを待つ。Auth / DB / RLS / access check を Magic Link 専用に作り替える
+- 結果: 変更は Auth UI と redirect 検出だけ。`verifyEmailOtp` と `normalizeOtp` は残す。custom SMTP 導入後は D106 の数字 OTP UI へ戻せる。access check / internal / paid / denied / network_error、DB、RLS、`runtime-config.js`、`clearSessionData` は変えない。これは default SMTP 制約上の暫定措置である
+
+## D120. 社内利用権は管理画面なし、SQL Editor の email 参照で付ける
+
+- 状態: 採用（M11.1・運用確定）
+- 判断: 社内 5〜6 人は専用管理画面を作らない。本人が先に Magic Link で一度ログインし、管理者が Dashboard SQL Editor（service role）で `auth.users.email` から `id` を引いて `internal_users` へ入れる。解除は `enabled = false`（行削除でも可）
+- 理由: 人数が少なく、ブラウザへ書き込み権限を出す必要がない。email は検索の手がかりであり、権限の正は従来どおり `user_id` + `enabled`（D108）。UID の手コピーは誤りやすい
+- 採用しなかった案: 管理 UI。`allowlist_emails` を正本にする。authenticated に INSERT/UPDATE を付ける。service_role をフロントへ置く。未ログイン向け invite 表
+- 結果: 手順は [supabase-m11-1-internal.sql](supabase-m11-1-internal.sql)。M11.0 の Auth Gate / RLS / 表定義は変えない
+
 ## 未決
 
 - ライセンス
 - GitHub Pages の公開 URL / リポジトリ公開範囲
+- Stripe 本番モードへの切替時期（M11.5 のあと。M11.0 では決済しない）
+- 正式有料公開時の Supabase Pro 移行時期（Free pause は運用リスク。保証はしない）

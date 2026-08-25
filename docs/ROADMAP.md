@@ -312,17 +312,73 @@ PDF 以外からも Panel 素材を足せるようにする。お絵描きソフ
 
 仕様は [SPEC.md](SPEC.md) の M10 節を正とする。
 
+## M11（公開基盤）
+
+conte-rush を SNS 等で一般公開するための認証・利用権基盤。制作素材はブラウザ内のまま。社内ユーザーは無料、一般ユーザーは月額約 100 円を後続マイルストーンで足す。
+
+同じコードベースを使う。`internal` と `paid` で機能を分けない。
+
+### M11.0 Supabase Auth + 利用権基盤（実装済み）
+
+- Supabase Auth（目標: Email OTP。暫定 UI は Magic Link。D119）
+- `internal_users` と `subscriptions` から `effectiveAccess` を導出する
+- RLS: 自分の利用権の SELECT のみ。クライアントから internal / paid を書けない
+- Auth Gate を既存アプリ初期化の前に置く
+- GitHub Pages の静的配信 + Supabase Auth で動く構造。Cloudflare 移行は必須にしない
+- Stripe / Checkout / webhook / 管理画面 / OAuth / クラウド素材保存は入れない
+- セットアップ SQL は [supabase-m11.sql](supabase-m11.sql)
+- 仕様は [SPEC.md](SPEC.md) の M11.0 節を正とする
+- 実接続確認: Magic Link 送信・復帰・session 取得、利用権なしは `denied`、`internal_users.enabled=true` のあと本体へ入れること
+
+### M11.1 社内ユーザー allowlist / internal 権限（実装済み・運用）
+
+- 専用管理画面は作らない
+- 本人が Magic Link で一度ログインしたあと、管理者が SQL Editor で email から `internal_users` へ付与する
+- 正は `user_id` + `enabled`。email は検索の手がかりだけ（D108 / D120）
+- 付与・解除 SQL は [supabase-m11-1-internal.sql](supabase-m11-1-internal.sql)
+- Auth / Gate / RLS は変更しない。ブラウザから internal_users を書けない
+- 仕様は [SPEC.md](SPEC.md) の M11.1 節を正とする
+
+### M11.2 Stripe Test Mode・月額 100 円 Checkout（未着手）
+
+- Test Mode の Checkout
+- `none` 画面へ「月額 100 円で利用する」を足す
+- クライアントに Stripe secret を置かない
+
+### M11.3 Stripe webhook → Supabase subscription 反映（未着手）
+
+- webhook は service role だけで `subscriptions` を更新する
+- サーバー処理が必要になった時点で Cloudflare Functions 等を使う
+- ブラウザへ webhook secret を置かない
+
+### M11.4 解約 / 支払い失敗 / 再ログイン（未着手）
+
+- `past_due` / `canceled` と再確認タイミング（再フォーカス、一定時間）
+- Billing Portal はここで検討する
+- ログイン 1 回の永久キャッシュはしない（M11.0 で禁止済み）
+
+### M11.5 Cloudflare Pages 公開（未着手）
+
+- 静的アプリの公開先を Cloudflare Pages へ移す検討
+- GitHub Pages を M11.0〜M11.4 の開発中も使ってよい
+
+### M11 の後工程
+
+- GitHub repository の private 化
+- Stripe 本番モード
+- 正式有料公開で Auth の安定が必要になった段階で、Supabase Free から Pro への移行を検討する。Free の pause は運用リスクとして残る。「時々使えば絶対 pause しない」とはしない
+
 ## 以降（構想）
 
-順序の目安であり、確定した計画ではない。
+順序の目安であり、確定した計画ではない。M11 の公開基盤とは別候補である。
 
 データ境界との対応は [DATA_MODEL.md](DATA_MODEL.md) の将来節を参照する。
 
 | 候補 | 想定する前進 |
 |---|---|
-| M11 以降 | 音声、タイムシート編集、プロジェクト保存 など |
+| M12 以降 | 音声、タイムシート編集、プロジェクト保存 など |
 
-M10 以降でやり得ることの例（未着手、M10 には入れない）:
+M10 / M11 に入れない例（未着手）:
 
 - ACTION 自動記入、CELL B〜F、タイムシート import
 - 音声 / BGM / SE / AAC

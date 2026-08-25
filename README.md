@@ -40,7 +40,11 @@
 
 **実装済み（M10.4）** は、横 Timeline の「＋」から既存 Panel または手描き Panel を候補 frame へ挿入し、手描きでは左右を Onion Skin として最初から見せることです。保存構造は変えません。
 
-## 現状できること（M0〜M10.4・実装済み）
+**実装済み（M11.0）** は、Supabase Auth と利用権（internal / paid / none）を制作アプリの外側に置くことです。Stripe 決済と制作素材のクラウド保存は含みません。
+
+**実装済み（M11.1）** は、社内 5〜6 人を管理画面なしで `internal_users` へ登録する運用です。本人が Magic Link で一度ログインしたあと、管理者が SQL Editor でメールアドレスから利用権を付けます。
+
+## 現状できること（M0〜M11.1・実装済み）
 
 - ユーザーの端末上にある PDF を選んで開く
 - 1ページ目をブラウザに描画する
@@ -93,11 +97,17 @@
 - Onion Skin で前後の絵のサムネ・番号・有無を確認する。一覧の［編集］では前後を推測しない
 - 横 Timeline の空白で「＋」を押し、既存 Panel または手描き Panel をその frame へ挿入する
 - ＋から手描きを足すと、左右の絵が Onion Skin として最初から見える
+- メールのログインリンクでログインする（暫定 Magic Link。Supabase 設定後）
+- 利用権が internal または paid のときだけ本体を操作する
+- Account からログアウトすると、ブラウザ内の制作データを破棄する
+- 社内利用者は、一度ログインしたあと管理者が SQL で利用権を付ける（管理画面なし）
 
 ## 現状できないこと
 
 次は構想または仕様のみであり、実装していません。
 
+- ログイン / 利用権ゲート（M11.0 は実装済み。Supabase プロジェクト設定が必要）
+- 社内ユーザー管理画面（M11.1 は SQL Editor 運用。UI は作らない）
 - Panel の自動検出
 - CUT 番号の OCR / 自動認識
 - 秒+コマ形式による開始フレームの直接入力
@@ -107,6 +117,8 @@
 - カメラワークの自動解析
 - ラッシュの自動生成
 - プロジェクト保存
+- Stripe 決済 / 月額課金
+- 制作データのクラウド保存
 
 ## プライバシー
 
@@ -116,6 +128,8 @@ PDF.js のライブラリ本体は CDN から取得する想定です。PDF の�
 
 M7 では Mediabunny 1.51.0 も CDN（jsDelivr）から取得します。M9 では pdf-lib 1.17.1 も同様です。PDF と生成ファイルの中身はその通信に含めません。
 
+M11.0 では、ログインと利用権の確認だけ Supabase を使います。PDF / Panel / Drawing / Rush / MP4 / Timesheet は Supabase へ送りません。anon key は公開前提です。service role はブラウザに置きません。
+
 ## 動作環境
 
 - GitHub Pages で配信できる静的 Web アプリ
@@ -124,8 +138,11 @@ M7 では Mediabunny 1.51.0 も CDN（jsDelivr）から取得します。M9 で�
 - PDF.js 4.10.38（CDN）
 - MP4 書き出し: WebCodecs が使えるブラウザ。Mediabunny 1.51.0（CDN）
 - タイムシート PDF: pdf-lib 1.17.1（CDN）
+- 現行は GitHub Pages の静的配信。M11.0 でログインする場合は Supabase プロジェクトが必要
+- セットアップ SQL: [docs/supabase-m11.sql](docs/supabase-m11.sql)
+- 社内利用権の付与 / 解除: [docs/supabase-m11-1-internal.sql](docs/supabase-m11-1-internal.sql)
 
-## 使い方（M0〜M9）
+## 使い方（M0〜M11.1）
 
 1. このフォルダを HTTP で配信する。例:
 
@@ -134,18 +151,20 @@ M7 では Mediabunny 1.51.0 も CDN（jsDelivr）から取得します。M9 で�
    ```
 
 2. ブラウザで `http://localhost:8080/` を開く
-3. 「PDFを選択」からローカルの PDF を選ぶ
-4. 「前へ」「次へ」でページを移動する
-5. 常設の選択フレームを動かして「画像取得」する。別サイズは「ドラッグ」
-6. 右側の一覧で切り出し画像を確認し、誤登録を削除する
-7. Panel を選び、CUT 番号と尺（例: `3+12`）を入れて Cut を作成する
-8. Cut の「Timeline」で追加候補のサムネと番号を見て start を指定して追加する。同じ Panel を何度でも置ける。横 Timeline の空白の「＋」からも、既存 Panel または手描きをその位置へ挿入できる。手描きは左右が Onion として最初から見える。配置済みはサムネ・番号・区間と「削除」で確認する。配置後はドラッグと矢印キーで個別に調整する。開始位置は `1+18（42f）` のように秒+コマと frame で確認する
-9. 必要なら hold を入れて「Repeatで置き換え」する。既存 Timeline があるときは確認が出る
-10. 配置完了後、「Play」で Rush を再生する
-11. Cut 詳細の Motion で PAN / TU / TB を付け、START / END 枠を調整する。同じ Panel の各出現区間で同じ Motion が再生される
-12. Undo / Redo で Panel 登録・削除、placement 追加 / 削除 / 移動、Repeat、Motion 変更を戻す
-13. Timeline 完成後、「MP4を書き出す」で 1280×720 の映像のみ MP4 を保存する
-14. Cut 詳細の「タイムシート」で話数・タイトルを入れ、プレビューまたは B4 PDF を保存する
+3. `js/runtime-config.js` に Supabase の URL と anon key が入っていれば、メールアドレスへログインリンクを送る。メール内のリンクを開くとこの画面に戻る。未設定なら「Supabase設定が未完了です」と出る。Dashboard の Redirect URLs に、今開いている origin（例: `http://localhost:8080/`）と GitHub Pages の URL を入れる。これは default SMTP では OTP テンプレートを編集できないための暫定措置である（D119）
+4. 社内利用は、本人が一度ログインしたあと、管理者が [docs/supabase-m11-1-internal.sql](docs/supabase-m11-1-internal.sql) のメールアドレスを書き換えて SQL Editor で実行する。利用権が付くと本体を操作できる。UID の手コピーは不要
+5. 利用権がある場合だけ「PDFを選択」からローカルの PDF を選ぶ
+6. 「前へ」「次へ」でページを移動する
+7. 常設の選択フレームを動かして「画像取得」する。別サイズは「ドラッグ」
+8. 右側の一覧で切り出し画像を確認し、誤登録を削除する
+9. Panel を選び、CUT 番号と尺（例: `3+12`）を入れて Cut を作成する
+10. Cut の「Timeline」で追加候補のサムネと番号を見て start を指定して追加する。同じ Panel を何度でも置ける。横 Timeline の空白の「＋」からも、既存 Panel または手描きをその位置へ挿入できる。手描きは左右が Onion として最初から見える。配置済みはサムネ・番号・区間と「削除」で確認する。配置後はドラッグと矢印キーで個別に調整する。開始位置は `1+18（42f）` のように秒+コマと frame で確認する
+11. 必要なら hold を入れて「Repeatで置き換え」する。既存 Timeline があるときは確認が出る
+12. 配置完了後、「Play」で Rush を再生する
+13. Cut 詳細の Motion で PAN / TU / TB を付け、START / END 枠を調整する。同じ Panel の各出現区間で同じ Motion が再生される
+14. Undo / Redo で Panel 登録・削除、placement 追加 / 削除 / 移動、Repeat、Motion 変更を戻す
+15. Timeline 完成後、「MP4を書き出す」で 1280×720 の映像のみ MP4 を保存する
+16. Cut 詳細の「タイムシート」で話数・タイトルを入れ、プレビューまたは B4 PDF を保存する
 
 `index.html` を `file://` で直接開くと、ES モジュールと PDF.js の worker が動かないことがあります。
 
@@ -159,6 +178,8 @@ GitHub Pages で公開する場合は、リポジトリのルートを配信元�
 | [docs/DATA_MODEL.md](docs/DATA_MODEL.md) | 実行時データと、将来のデータ境界 |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | マイルストーン |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | 設計判断 |
+| [docs/supabase-m11.sql](docs/supabase-m11.sql) | M11.0 の Access DB / RLS |
+| [docs/supabase-m11-1-internal.sql](docs/supabase-m11-1-internal.sql) | 社内利用権の付与 / 解除（SQL Editor） |
 
 ## ライセンス
 

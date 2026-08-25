@@ -4,7 +4,9 @@
 
 ## 現行
 
-アプリはサーバーを持たない。状態はブラウザのメモリ上にだけ存在する。リロードすると消える。
+制作データはサーバーを持たない。Panel / Cut / Timeline / Motion / Rush / 画像 / MP4 / Timesheet はブラウザのメモリ上にだけ存在する。リロードすると消える。
+
+M11.0 で足す Auth / 利用権は Supabase 側の最小データである。制作素材とは別境界とする。M11.0 は実装済み。
 
 責務の境界:
 
@@ -894,8 +896,112 @@ Play 時だけ持つ Motion の複製。RushPlayback snapshot の項目ではな
 - 秒とコマの保存フィールド
 - タイムシート View Model / 話数 / タイトルの永続化
 - Storyboard Data の完全なスキーマ
+- 制作データの localStorage / IndexedDB（Auth session の保持は M11。制作データではない）
+- PDF / Panel / Cut / Timeline / Motion / Drawing / Upload / Rush / MP4 / Timesheet の Supabase 保存
 
 Panel は後に Storyboard Data へ入り得るが、Storyboard Data 自体は未定義のままとする。
+
+### AuthUser（M11.0・実装済み）
+
+Supabase Auth が持つ identity。conte-rush が `profiles` を複製して正本にしない。
+
+| 項目 | 意味 |
+|---|---|
+| `id` | `auth.users.id`。利用権行の外部キー |
+| `email` | ログインに使ったメール。Account 表示用。権限の唯一の正ではない |
+
+保持:
+
+- セッションは supabase-js の既定 storage（通常は localStorage）に残してよい
+- リロード後も session があれば access を再確認してからアプリへ進む
+- 制作 Store とは寿命が違う。ログアウト時は制作データを先に破棄する
+
+### internal_users（M11.0・実装済み）
+
+社内無料利用の権限。スキーマは M11.0。行の載せ方は M11.1 の SQL Editor 運用。
+
+| 項目 | 意味 |
+|---|---|
+| `user_id` | `auth.users.id`。主キー |
+| `enabled` | `true` のときだけ内部権限が有効 |
+| `created_at` | 追加時刻 |
+| `updated_at` | 更新時刻 |
+
+制約:
+
+- email 文字列は持たない。検索は Auth 側の email を使う
+- クライアントは自分の行を SELECT できるだけとする
+- 追加 / 解除 / `enabled` 変更は service role（SQL Editor。M11.1）だけ
+- M11.1 の運用: 本人が Magic Link で一度ログイン → 管理者が email から `id` を引いて登録。UID 手コピーと管理画面はしない。SQL は [supabase-m11-1-internal.sql](supabase-m11-1-internal.sql)
+
+### subscriptions（M11.0・実装済み）
+
+有料契約の記録。M11.0 では Stripe を動かさない。M11.3 の webhook が同じ表を更新できる形にする。
+
+| 項目 | 意味 |
+|---|---|
+| `user_id` | `auth.users.id`。主キー（1 ユーザー 1 行） |
+| `provider` | `"stripe"` または `"manual_fixture"` |
+| `status` | アプリ用 enum（Stripe 生値ではない） |
+| `current_period_end` | 現在期間の終了。fixture では未来日時でよい |
+| `customer_id` | 外部 customer id（Stripe なら `cus_...`）。fixture は空でよい |
+| `subscription_id` | 外部 subscription id（Stripe なら `sub_...`）。fixture は空でよい |
+| `created_at` | 作成時刻 |
+| `updated_at` | 更新時刻 |
+
+`status` の値:
+
+`active` / `trialing` / `past_due` / `canceled` / `unpaid` / `incomplete` / `paused`
+
+M11.0 の paid 条件（導出）:
+
+- `status` が `active` または `trialing`
+- `current_period_end` は補助。クライアント時計を権限の正にしない
+
+`past_due` の猶予は M11.4 で決める。M11.0 では paid にしない。
+
+クライアントは自分の行を SELECT できるだけとする。書き込みは service role（fixture SQL または将来の webhook）。
+
+### effectiveAccess（導出・保存しない）
+
+テーブルにも JWT にも正本として持たない。読むたびに導出する。
+
+```
+internal_users に行があり enabled === true
+  → "internal"
+そうでなく subscriptions が paid 条件を満たす
+  → "paid"
+それ以外
+  → "none"
+```
+
+両方満たすときは `"internal"`。Account 表示もこの値に従う。
+
+### AccessGateState（M11.0・UI）
+
+Auth Gate の状態機械。利用権の正ではない。
+
+| 値 | 意味 |
+|---|---|
+| `unconfigured` | runtime-config 未入力。アプリを開かない |
+| `loading` | Auth クライアント初期化、既存 session の読み取り |
+| `unauthenticated` | session なし。ログイン UI（暫定 Magic Link。D119） |
+| `checking_access` | session あり。internal / subscription を取得中 |
+| `allowed` | `internal` または `paid`。既存 conte-rush を初期化してよい |
+| `denied` | ログイン済みかつ `none`。利用権なし UI |
+| `network_error` | Auth または利用権の確認に失敗。未契約とは出さない |
+
+- `allowed` になるまで既存アプリ（PDF 選択 / Panel / Timeline 等）は初期化しない
+- `network_error` を `denied` に落とさない
+- アプリ本体へ進むのは `allowed` だけ（fail-closed）
+
+### 持たないもの（M11.0）
+
+- `profiles`
+- ユーザー行の `access_type` 正本カラム
+- クライアント Store に置いた利用権の正
+- PDF / Panel Data / Cut / Timeline / Motion / Drawing PNG / Upload 画像 / Rush / MP4 / Timesheet のクラウド保存
+- Stripe customer を Auth と混ぜた単一テーブル
 
 ---
 
@@ -940,3 +1046,5 @@ M8 では Timeline placement に `id` を足し、同一 `panelId` の複数配�
 M9 では Timesheet View Model を導出するだけとする。Panel / Cut / Timeline / Motion の項目は増やさない。話数 / タイトルは PDF セッションの UI 状態とする。
 
 M10 では Panel の `source` に `"drawing"` / `"upload"` を足す。画像バイトは PanelMediaStore。Timeline / Motion / Rush / タイムシートの保存項目は増やさない。Onion（M10.2）は UI 状態だけとする。M10.3で保存構造変更なし。M10.4で永続構造変更なし。InsertionContextはUI状態のみ。
+
+M11.0 では Auth / 利用権だけを Supabase に置く。制作データの保存項目は増やさない。プロジェクト保存とクラウド素材保存はまだ定義しない。

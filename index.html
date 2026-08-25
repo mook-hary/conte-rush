@@ -4,9 +4,61 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>conte-rush</title>
-    <link rel="stylesheet" href="css/style.css?v=m10-4-1" />
+    <link rel="stylesheet" href="css/style.css?v=m11-0-2" />
   </head>
-  <body data-state="idle">
+  <body data-state="idle" data-auth-state="loading">
+    <div id="auth-gate" class="auth-gate">
+      <section class="auth-card" data-gate-panel="loading">
+        <h1>conte-rush</h1>
+        <p>確認しています…</p>
+      </section>
+      <section class="auth-card" data-gate-panel="unconfigured" hidden>
+        <h1>conte-rush</h1>
+        <p>Supabase設定が未完了です</p>
+        <p class="auth-help">
+          <code>js/runtime-config.js</code> に Project URL と anon key を入れてください。service role
+          は置かないでください。
+        </p>
+      </section>
+      <section class="auth-card" data-gate-panel="unauthenticated" hidden>
+        <h1>conte-rush</h1>
+        <form id="gate-login-form" class="auth-form">
+          <label class="auth-field">
+            メールアドレス
+            <input
+              id="gate-email"
+              type="email"
+              autocomplete="email"
+              inputmode="email"
+              required
+            />
+          </label>
+          <button id="gate-send-link" type="submit">ログインリンクを送る</button>
+          <p id="gate-login-message" class="auth-message" role="status"></p>
+        </form>
+      </section>
+      <section class="auth-card" data-gate-panel="checking_access" hidden>
+        <h1>conte-rush</h1>
+        <p>利用権を確認しています…</p>
+      </section>
+      <section class="auth-card" data-gate-panel="denied" hidden>
+        <h1>conte-rush</h1>
+        <p>利用権がありません</p>
+        <p class="auth-help">
+          社内利用の場合は管理者に連絡してください。一般向けの有料公開は準備中です。
+        </p>
+        <div id="denied-upgrade-slot" class="denied-upgrade-slot"></div>
+        <button type="button" data-gate-logout>ログアウト</button>
+      </section>
+      <section class="auth-card" data-gate-panel="network_error" hidden>
+        <h1>conte-rush</h1>
+        <p>利用権を確認できませんでした。ネットワークを確認してください。</p>
+        <button id="gate-retry" type="button">再試行</button>
+        <button type="button" data-gate-logout>ログアウト</button>
+      </section>
+    </div>
+
+    <div id="app-shell" class="app-shell">
     <header class="toolbar">
       <h1>conte-rush</h1>
       <label class="file-picker">
@@ -14,6 +66,11 @@
         <input id="pdf-input" type="file" accept="application/pdf" />
       </label>
       <p id="file-name" class="file-name"></p>
+      <div id="account-bar" class="account-bar">
+        <p id="account-email" class="account-email"></p>
+        <p id="account-access" class="account-access"></p>
+        <button id="account-logout" type="button">ログアウト</button>
+      </div>
     </header>
 
     <main class="app">
@@ -343,6 +400,7 @@
         </aside>
       </div>
     </main>
+    </div>
 
     <script>
       window.addEventListener("error", (event) => {
@@ -357,6 +415,6 @@
         status.textContent = `起動エラー: ${event.message}`;
       });
     </script>
-    <script type="module" src="js/app.js?v=m10-4-1"></script>
+    <script type="module" src="js/access-gate.js?v=m11-0-2"></script>
   </body>
 </html>

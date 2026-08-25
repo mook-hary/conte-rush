@@ -1,6 +1,6 @@
 # 仕様
 
-この文書は、実装済みとして扱う仕様と、扱わない範囲を分けて書きます。M10.0 / M10.1 / M10.2 / M10.3 / M10.4 は実装済みです。将来構想は「将来」節に限ります。
+この文書は、実装済みとして扱う仕様と、扱わない範囲を分けて書きます。M10.0 / M10.1 / M10.2 / M10.3 / M10.4 は実装済みです。M11.0 は実装済みです。将来構想は「将来」節に限ります。
 
 対象マイルストーン:
 
@@ -19,6 +19,7 @@
 - **M8**: 実装済み
 - **M9**: 実装済み
 - **M10**: M10.0 / M10.1 / M10.2 / M10.3 / M10.4 実装済み
+- **M11.0**: 実装済み（Auth / 利用権基盤。Stripe と Cloudflare 移行は後続）
 
 ## 目的
 
@@ -37,6 +38,7 @@
 - M8: 同一 Panel を Cut 内で複数 placement できるようにし、所属順の Repeat 展開を編集コマンドとして Timeline へ書き込む。再生モードは増やさない
 - M9: 最終 Timeline と Motion から、印刷用の B4 縦タイムシート PDF を一方向に出力する。タイムシートは正本にしない
 - M10: PDF 以外（手描き / ローカル画像）からも Panel 素材を足す。お絵描きソフトにはしない。実装は M10.0 / M10.1 / M10.2 / M10.3 / M10.4
+- M11.0: ログインと利用権（internal / paid / none）を Supabase に分離する。制作素材は送らない。Stripe 決済はまだ実装しない
 
 責務の境界:
 
@@ -45,6 +47,7 @@
 - Timeline = Cut 内で各 Panel がいつ始まるか
 - Motion = ある Panel 表示区間内で、出力フレームへどこを crop して出すか
 - Rush = Timeline + Motion を時間軸に沿って再生したもの（M6 はブラウザ再生。M7 は同じ描画結果の MP4）
+- Auth / Access（M11.0）= ログインと利用権。制作データの正ではない。Stripe はまだ実装しない
 
 M1 の Panel は絵コンテ上の 1 つのコマ候補である。CUT 番号でも尺でもない。
 
@@ -70,15 +73,17 @@ M7 の MP4 は実行時の書き出しである。Panel / Cut / Timeline / Motio
 
 ## 制約
 
-- GitHub Pages で動作する静的 Web アプリとする
+- GitHub Pages で動作する静的 Web アプリとする（M11.0〜M11.4 の開発中も可）
 - HTML / CSS / JavaScript を使う
-- ビルドツールやサーバーサイド処理は使わない
+- ビルドツールは使わない
+- M11.0 の Auth / 利用権だけ hosted Supabase を使う。独自サーバーと Cloudflare Functions は M11.0 では必須にしない
 - PDF はユーザーが選んだローカルファイルのみを対象とする
-- PDF データをサーバーや外部サービスへ送信しない
+- PDF / Panel 画像 / Drawing / Upload / Rush / MP4 / Timesheet をサーバーや Supabase へ送信しない
 - 生成した MP4 もサーバーへ送信しない。ブラウザ内の Blob として保存する
 - PDF の処理はブラウザ内で完結させる
 - 表示には PDF.js を使う
 - Panel、Cut、Timeline、Rush の再生状態はブラウザのメモリ上のみとする。保存しない
+- 制作データを localStorage / IndexedDB に置かない。Auth session の保持だけ supabase-js の既定 storage を使ってよい
 - M0 の PDF 読み込み・描画の責務を、Panel 操作と混ぜない
 - 表示用 canvas と切り出し用 canvas を分けて使う
 - Panel 本体に画像データ、CUT 番号、尺を持たせない
@@ -2447,6 +2452,402 @@ PDF 再選択成功: drawing / upload も含め `clearSessionData`。失敗維�
 
 AI 検出、OCR、自動中割、レイヤー作画、色塗り、筆圧、音声、S 欄入力、プロジェクト保存、クラウド、サーバー Upload、手描き専用モード（PDF なし）
 
+## M11.0（実装済み）
+
+一般公開に向けて、Login / User identity / Access entitlement / 本体へのアクセス制御だけを安全に分離する。Stripe 決済は実装しない。本節が実装時の正である。
+
+公開後の扱い:
+
+- 社内ユーザー → 無料（`internal`）
+- 一般ユーザー → 月額約 100 円（`paid`。M11.2 以降）
+- どちらでもない → 利用不可（`none`）
+
+GitHub repository は public のままでよい。GitHub Pages での社内利用も続ける。private 化は後工程。
+
+### 1. 境界
+
+```
+App bootstrap
+  → Auth initialization（js/auth-client.js）
+  → session check
+  → access check（js/access-gate.js）
+  → allowed
+  → 既存 conte-rush initialize（js/app.js）
+```
+
+`app.js` に Supabase のクエリや鍵扱いを大量に書かない。制作 Store（Panel / Cut / Timeline / Motion / Media）は利用権の正にしない。
+
+社内版と公開版でコードベースを分けない。`internal` と `paid` は同じアプリ機能を使う。M11 では「internal だけ別機能」「public だけ別機能」を作らない。
+
+### 2. 利用権モデル
+
+ログイン後:
+
+```
+internal_users.enabled === true ?
+  YES → effectiveAccess = "internal" → 利用可能
+  NO
+    subscription が paid 条件 ?
+      YES → effectiveAccess = "paid" → 利用可能
+      NO  → effectiveAccess = "none" → 利用不可 / 契約案内
+```
+
+M11.0 では Stripe 契約から `paid` を作らない。後から webhook が `subscriptions` を更新できる表にする。テストは `manual_fixture` 行で行う。
+
+比較した案:
+
+| 案 | 内容 | 採用 |
+|---|---|---|
+| A | ユーザー行に `access_type: "internal" \| "paid" \| "none"` だけを正本にする | しない |
+| B | `internal_users` と `subscriptions` を分け、`effectiveAccess(userId)` で導出する | **する** |
+
+案 A を採らない理由: Stripe 状態と社内無料権限が 1 カラムに混ざる。webhook と管理者の enable/disable が上書きし合う。
+
+JWT `app_metadata` も正本にしない。将来のキャッシュにはできるが、M11.3 の正は表の行とする。
+
+### 3. Auth 方式
+
+候補:
+
+| 方式 | UX | 実装 | GitHub Pages |
+|---|---|---|---|
+| A. Email + Password | まれな利用では忘れる。リセットが先に要る | 中 | 問題なし |
+| B. Magic Link | パスワード不要。メール内リンクが別ブラウザ / 企業メールの書き換えで失敗しやすい | redirect URL の処理が要る | 設定が増える |
+| C. Email OTP | パスワード不要。同じ画面でコードを入れる | 少 | redirect に依存しない |
+
+M11.0 の第一候補は **C. Email OTP**。目標の流れは次のとおり。
+
+- メールアドレス入力 → コード送信 → 同じ画面で検証
+- 初回はユーザー作成してよい（`shouldCreateUser: true`）
+- 作った直後の `effectiveAccess` は `none`（internal 行も paid 行も無い）
+- Google OAuth は入れない
+
+暫定実装（D119）: 新規 Supabase Free + default SMTP では email template を編集できず、`{{ .Token }}` の OTP メールへ変えられない。そのため Auth UI だけを **Magic Link** にする。
+
+- メールアドレス入力 →「ログインリンクを送る」→ `signInWithOtp()`（`emailRedirectTo` は `location.origin + pathname`）
+- コード入力 / `verifyOtp` UI は出さない。`verifyEmailOtp` は残し、custom SMTP 後に数字 OTP へ戻せる
+- Magic Link をクリックして conte-rush に戻ったら既存 session を検出する（`detectSessionInUrl: true`）
+- access check / DB / RLS は変えない
+
+### 4. Supabase に持つもの / 持たないもの
+
+持つ:
+
+- Supabase Auth user
+- `internal_users`
+- `subscriptions`
+
+持たない:
+
+- `profiles`（不要。メールは session から読む）
+- PDF / Panel Data / Cut Data / Timeline / Motion
+- Drawing PNG / Upload 画像 / Rush / MP4 / Timesheet PDF
+
+制作データは現状どおりブラウザセッション内である。
+
+### 5. テーブル
+
+`internal_users`:
+
+| 列 | 型の目安 |
+|---|---|
+| `user_id` | `uuid` PK。`auth.users(id)` ON DELETE CASCADE |
+| `enabled` | `boolean` NOT NULL DEFAULT true |
+| `created_at` | `timestamptz` NOT NULL DEFAULT now() |
+| `updated_at` | `timestamptz` NOT NULL DEFAULT now() |
+
+email 列は持たない。権限の正は `user_id` + `enabled`。M11.1 の運用は、本人が先に Magic Link でログインし、管理者が SQL Editor で `auth.users.email` から `id` を引いて `internal_users` へ入れる。UID の手コピーはしない。未サインアップ向け invite 表は作らない。管理画面は作らない。
+
+`subscriptions`:
+
+| 列 | 型の目安 |
+|---|---|
+| `user_id` | `uuid` PK。`auth.users(id)` ON DELETE CASCADE |
+| `provider` | `text` NOT NULL。`"stripe"` \| `"manual_fixture"` |
+| `status` | `text` NOT NULL。アプリ enum |
+| `current_period_end` | `timestamptz`（nullable） |
+| `customer_id` | `text`（nullable。Stripe `cus_...`） |
+| `subscription_id` | `text`（nullable。Stripe `sub_...`） |
+| `created_at` | `timestamptz` NOT NULL DEFAULT now() |
+| `updated_at` | `timestamptz` NOT NULL DEFAULT now() |
+
+`status` は Stripe 生値を正本にしない。アプリ用:
+
+`active` / `trialing` / `past_due` / `canceled` / `unpaid` / `incomplete` / `paused`
+
+生値保存案は、ゲートが Stripe 語彙に縛られるため採らない。M11.3 の webhook が写像する。
+
+M11.0 の paid 条件:
+
+- `status` が `active` または `trialing`
+- `current_period_end` は補助情報であり、クライアント時計だけで利用不可にしない
+
+`past_due` は M11.0 では paid にしない。猶予は M11.4。
+
+fixture: Supabase SQL editor（service role）で `provider='manual_fixture'` かつ `status='active'` の行を入れる。production でクライアントから `paid=true` を書けないこと。
+
+### 6. effectiveAccess
+
+保存しない。読むたびに導出する。
+
+```
+effectiveAccess(userId):
+  internal_users に userId があり enabled === true → "internal"
+  else subscriptions が paid 条件 → "paid"
+  else → "none"
+```
+
+両方満たすときは `"internal"`。
+
+クライアントに「利用権 Store」を正として置かない。`js/access-store.js` は M11.0 では作らない。確認結果は Gate のメモリ上の状態だけとし、書き込み API を持たない。
+
+### 7. RLS
+
+原則: ブラウザは自分の利用権を読むだけ。変更は将来の管理処理または Stripe webhook（service role）。
+
+```
+internal_users / subscriptions:
+  ENABLE ROW LEVEL SECURITY
+
+SELECT（authenticated）:
+  user_id = auth.uid()
+
+INSERT / UPDATE / DELETE:
+  anon にも authenticated にも policy を付けない
+```
+
+`anon` は両表を読めない。テーブルの GRANT も SELECT 以外を authenticated / anon から外す。service role は RLS を迂回できる（webhook / SQL fixture 用）。
+
+クライアントの JS で `internal = true` と書き換えても、テーブルは変わらない。静的アプリではゲート DOM を外す改変は防ぎ切れない。M11.0 の守る線は「正のデータをクライアントが書けない」「未確認ではアプリを初期化しない」である。制作ファイルは元々サーバーに無い。
+
+### 8. anon key / service role
+
+| 値 | ブラウザ | GitHub Pages / 公開 repo |
+|---|---|---|
+| Supabase URL | 置いてよい | 置いてよい |
+| anon / public key | 置いてよい（RLS 前提の公開鍵） | 置いてよい |
+| service role key | **禁止** | **禁止** |
+| Stripe secret / webhook secret | **禁止**（M11.0 では導入しない） | **禁止** |
+
+`index.html` / `app.js` / `runtime-config.js` / GitHub Pages に service role を置かない。M11.0 で秘密鍵ファイルは作らない。
+
+### 9. Auth Gate の状態機械
+
+| 状態 | UI | アプリ初期化 |
+|---|---|---|
+| `unconfigured` | Supabase設定が未完了です | しない |
+| `loading` | 確認中 | しない |
+| `unauthenticated` | ログインフォーム | しない |
+| `checking_access` | 利用権を確認中 | しない |
+| `allowed` | 通常の conte-rush + 小さい Account | **する** |
+| `denied` | 利用権がありません。将来の月 100 円ボタン位置 | しない |
+| `network_error` | 利用権を確認できませんでした。ネットワークを確認してください | しない |
+
+fail-closed: `allowed` 以外では本体を操作できない。
+
+fail-closed の例外にしないこと: `network_error` を `denied`（未契約）と出さない。Checkout へ飛ばす導線も M11.0 には無い。
+
+再試行ボタンは `network_error` に置いてよい。
+
+### 10. 既存アプリとの境界
+
+現行 `js/app.js` はモジュール読み込み時に `showIdle()` する。M11.0 実装では:
+
+- エントリを Auth Gate にする（`index.html` が `access-gate.js` を読む、または gate が `app.js` の `initializeConteRush()` を呼ぶ）
+- `allowed` になるまで PDF 選択 / Panel / Timeline / Rush を隠すか disabled
+- 初期化前に操作イベントで制作データを作らない
+
+ログアウト後は制作データを捨てて Gate へ戻る。再 `allowed` なら改めて initialize してよい。
+
+### 11. UI
+
+大規模な Landing Page は作らない。既存 UI へ最小限足す。
+
+未ログイン（`unauthenticated`）:
+
+- 見出し `conte-rush`
+- メール入力と「ログインリンクを送る」（暫定 Magic Link。D119）
+- コード入力欄は出さない。custom SMTP 後に数字 OTP UI へ戻せる
+- 本体ワークスペースは出さない
+
+`denied`（`none`）:
+
+- 「利用権がありません」
+- M11.0 は仮の案内のみ（例: 社内利用は管理者へ、一般公開の有料化は準備中）
+- 「月額 100 円で利用する」は **置かない**（M11.2）
+- Stripe Checkout へ飛ばさない
+
+`allowed` かつ `internal`:
+
+- 通常の conte-rush
+- 画面全体に「社内版」を常時出す必要はない
+- Account: メールと「利用権: 社内」とログアウト
+
+`allowed` かつ `paid`:
+
+- 通常の conte-rush
+- Account: メールと「利用権: 契約中」とログアウト
+- M11.0 では fixture で確認できればよい
+
+Account はヘッダーの小さい表示で足りる。
+
+### 12. ログアウト
+
+Account からログアウトできる。
+
+順序:
+
+1. 既存 `clearSessionData()` を呼ぶ（Panel / MediaStore / Cut / Timeline / Motion / 履歴 / Rush / Timesheet UI / overlay を破棄する）
+2. 開いている PDF document を破棄し、PdfSession を空にする
+3. idle 相当の UI に戻す
+4. Supabase `signOut`
+5. Auth Gate を `unauthenticated` にする
+
+制作データを残したまま Auth だけ切らない。別ユーザーに前の PDF / Panel が見える事故を防ぐ。
+
+調査結果: `js/app.js` の `clearSessionData()` は制作 Store を一括クリアする。PDF document 破棄は `replaceSession` 側にあるため、ログアウト実装は `clearSessionData` + PDF 破棄 + `showIdle` 相当を組み合わせる。
+
+### 13. session 復元と access 再確認
+
+Supabase Auth session はリロード後も残り得る。毎回ログイン画面へ強制しない。
+
+起動時:
+
+1. 既存 session を読む
+2. あれば access を再確認する
+3. `allowed` ならアプリへ進む
+
+access をログイン成功時に 1 回だけ永久キャッシュしない。localStorage に `access=paid` を正として書かない。
+
+M11.0 の再確認:
+
+- 起動時
+- Auth session change（ログイン、ログアウト、token 更新）
+
+M11.3 / M11.4 で足せる余地: ウィンドウ再フォーカス、一定時間ごと。M11.0 では必須にしない。
+
+### 14. 通信と障害
+
+conte-rush 本体はブラウザ処理中心でも、利用権確認にはネットが要る。M11.0 は完全 offline 利用を保証しない。
+
+| 事象 | 状態 | 出してはいけない表示 |
+|---|---|---|
+| Supabase に届かない / タイムアウト | `network_error` | 利用権がありません |
+| 行が無く `none` | `denied` | ネットワークエラーと同一文 |
+| Auth 一時障害 | `network_error` | subscription none として契約画面へ進める |
+
+### 15. runtime config と localhost
+
+新規 `js/runtime-config.js`（または同等）:
+
+- `supabaseUrl`
+- `supabaseAnonKey`
+
+これは秘密情報ではない。service role をここに書かない。
+
+ビルド工程は増やさない。値は静的 JS に書いてよい。
+
+Supabase Auth の設定項目（実装時に dashboard へ入れる）:
+
+- Site URL: 本番 GitHub Pages URL
+- Additional Redirect URLs: Pages URL と `http://localhost:8080/`（README の例。実際に使う origin を列挙）
+- `127.0.0.1` を使うならそれも追加する
+- Magic Link 暫定中は Redirect URLs が必須。`emailRedirectTo` は開いているページの `origin + pathname` なので、`http://localhost:8080/` と `http://localhost:8080/index.html`、GitHub Pages の pathname を列挙する
+
+数字 OTP に戻したあとも Site URL と許可 origin は Pages と localhost の両方を扱う。
+
+supabase-js は PDF.js / Mediabunny と同様、**ピン止めした CDN ESM** を第一候補とする。`@latest` は使わない。版は実装時に DECISIONS へ追記してよい。
+
+### 16. GitHub Pages
+
+M11.0 では GitHub Pages を維持する。repo が public でも、runtime config に秘密鍵が無ければ「漏洩して困る資格情報」は増えない。anon key は公開前提である。
+
+repository private 化は M11.5 のあと。M11.0 で Cloudflare 移行を必須にしない。
+
+Stripe webhook 等のサーバー処理は M11.3 以降で Cloudflare Functions 等を使う前提で、M11.0 のゲートは Pages + Supabase だけで成立させる。
+
+### 17. Supabase Free の pause
+
+Free プロジェクトは非活動で pause され得る。これは M11 の運用リスクである。
+
+社内ユーザーや自分自身が通常利用して Auth / DB アクセスが続けば、活動として寄与し得る。ただし「時々使えば絶対 pause しない」とはしない。
+
+正式有料公開で Auth の安定が必要になった段階で、Supabase Pro への移行を検討する。時期は [ROADMAP.md](ROADMAP.md) の M11 後工程。
+
+### 18. モジュール
+
+実装したファイル:
+
+| ファイル | 責務 |
+|---|---|
+| `js/runtime-config.js` | 公開してよい URL / anon key だけ |
+| `js/auth-client.js` | Supabase client、`signInWithOtp` / `verifyEmailOtp`、session、signOut。RLS 表の書き込みを持たない。UI は暫定 Magic Link |
+| `js/access-gate.js` | 状態機械、UI 切替、access 再読込、allowed 時だけ app initialize |
+| `js/access.js` | `effectiveAccess` の純粋関数。Store ではない |
+| `js/app.js` | 既存制作アプリ。`initializeConteRush` / `resetConteRushSession`。Supabase SQL は書かない |
+| `index.html` / `css/style.css` | Gate / Account の最小 UI |
+| `docs/supabase-m11.sql` | テーブル / RLS / paid fixture 例 |
+| `docs/supabase-m11-1-internal.sql` | 社内利用権の付与 / 解除（email 参照。SQL Editor のみ） |
+
+`js/access-store.js` は作らない。利用権の正は Supabase。
+
+### 19. セキュリティレビュー（M11.0）
+
+| 項目 | 方針 |
+|---|---|
+| クライアントから自分を internal にできないか | RLS で INSERT/UPDATE なし。`enabled` を JS で変えても表は変わらない |
+| クライアントから paid を書けないか | 同上。fixture は service role / SQL のみ |
+| service role 漏洩 | ブラウザと repo に置かない。M11.0 では導入しない |
+| Auth なしで app initialization できないか | Gate が `allowed` になるまで initialize しない |
+| access check 失敗時に fail-open しないか | `network_error` ではアプリを開かない。ただし `denied` にもしない |
+| ログアウト後に前ユーザーの制作データが残らないか | `clearSessionData` + PDF 破棄 |
+
+原則は fail-closed。`network_error` を未契約と誤表示しない。
+
+静的 SPA の残差: 改変した JS で Gate を外せる。サーバー上の制作ファイルは無いので、M11.0 が守るのは entitlement データの改ざんと、通常 UI での未許可利用である。エッジでの強制は Cloudflare 移行後の余地とする。
+
+### 20. 完成条件（実装時）
+
+- Magic Link でログインできる（暫定。D119。custom SMTP 後は数字 OTP へ戻せる）
+- リロード後、既存 session があればログイン画面を必須にしない
+- `internal` fixture で本体を使える
+- `paid` fixture（`manual_fixture`）で本体を使える
+- 行の無いログイン済みユーザーは `denied` になり、本体を初期化しない
+- 通信失敗は `network_error` であり、`denied` と同一文にしない
+- クライアントから internal / subscriptions を変更できない
+- service role がフロントに無い
+- ログアウト後に PDF / Panel / Timeline / Drawing が残らない
+- 制作ファイルを Supabase へ送っていない
+- Stripe / Checkout / webhook / OAuth / Cloudflare 必須化 / repo private 化をしていない
+
+実接続確認（M11.0・記録）:
+
+- Magic Link メール送信成功
+- Magic Link から conte-rush へ復帰成功
+- Supabase session 取得成功
+- 利用権なし → `denied` 表示成功
+- `internal_users` に `enabled=true` を登録後、本体へ入れることを確認済み
+
+### 21. M11.0 では実装しない
+
+- Stripe、クレジットカード、月 100 円商品、Checkout、webhook、解約、Billing Portal
+- Cloudflare 移行、GitHub private 化
+- 管理画面、Google OAuth
+- プロジェクト保存、クラウド素材保存
+- `profiles`、`access_type` 正本カラム
+- 社内版 / 公開版の機能分岐
+- Landing Page の大規模化
+
+### 22. M11.1 以降との接続
+
+| 後続 | M11.0 が空けておくもの |
+|---|---|
+| M11.1 | `internal_users` スキーマと RLS。行の追加は SQL Editor（管理 UI は作らない） |
+| M11.2 | `denied` 画面の案内位置。Checkout はまだ置かない |
+| M11.3 | `subscriptions` の列と正規化 status。webhook は service role だけが書く |
+| M11.4 | 再確認のフック（起動と session change 以外を足せる） |
+| M11.5 | アプリは静的ファイルのまま。Pages 前提を崩さない |
+
 ## UI 要件
 
 
@@ -2596,6 +2997,23 @@ AI 検出、OCR、自動中割、レイヤー作画、色塗り、筆圧、音�
 - ＋から手描き追加（左右 Onion 初期 ON、確定で Panel+所属+placement）
 - 詳細側の従来追加 UI は残す
 
+### M11.0（実装済み）
+
+- 未ログイン時の Auth Gate（conte-rush 見出しと Magic Link フォーム。D119）。本体ワークスペースは出さない
+- 利用権確認中 / ネットワークエラー / 利用権なし の各表示。未契約と通信失敗を混ぜない
+- `denied` の仮案内。月 100 円ボタンは置かない
+- `allowed` 時の小さい Account（メール、利用権ラベル、ログアウト）
+- 「社内版」の常時バナーは置かない
+
+### M11.1（実装済み・運用）
+
+- 社内 5〜6 人を想定。専用管理画面は作らない
+- 本人が先に Magic Link で一度ログインする
+- 管理者がメールアドレスを指定し、SQL Editor で `auth.users` から `id` を引いて `internal_users` へ入れる
+- UID の手コピーはしない。手順は [supabase-m11-1-internal.sql](supabase-m11-1-internal.sql)
+- 解除は `enabled = false`（行削除でも可）
+- Auth Gate / RLS / ブラウザからの書き込み禁止は M11.0 のまま。service_role をフロントへ置かない
+
 ## 非対象
 
 次は M10 でも実装しない。UI もデータも作らない。
@@ -2644,8 +3062,7 @@ AI 検出、OCR、自動中割、レイヤー作画、色塗り、筆圧、音�
 - 選択フレームの移動・リサイズ・aspect lock の Undo / Redo
 - 履歴の永続化
 - 一覧のソート UI / フィルタ UI
-- localStorage
-- IndexedDB
+- 制作データの localStorage / IndexedDB（Auth session の保持は M11.0 で許可）
 - プロジェクト保存
 - JSON エクスポート
 - 切り出し画像のファイル書き出し
@@ -2676,6 +3093,11 @@ AI 検出、OCR、自動中割、レイヤー作画、色塗り、筆圧、音�
 - プロジェクトファイル保存、クラウド同期、画像のサーバー Upload
 - タイムシート S 欄への文字入力
 - PDF なしの手描き専用ワークスペース
+- M11.0 での Stripe / Checkout / webhook / 解約 / Billing Portal
+- M11.0 での Cloudflare 移行、GitHub repository private 化
+- M11.0 での管理画面、Google OAuth、profiles テーブル
+- PDF / Panel / Drawing / Upload / Rush / MP4 / Timesheet の Supabase Upload
+- 社内版と公開版の機能分岐
 
 ## 将来
 
@@ -2709,4 +3131,8 @@ M8 の複数 placement と Repeat は Timeline 編集である。Rush / MP4 は�
 
 M9 のタイムシートは最終 placements と Motion からの一方向出力である。Store には保存しない。
 
-M10 は Panel 素材の入口を PDF 以外へ広げる予定である。Timeline / Motion / Rush / MP4 / タイムシートの正本関係は変えない。実装は未着手。
+M10 は Panel 素材の入口を PDF 以外へ広げた。Timeline / Motion / Rush / MP4 / タイムシートの正本関係は変えない。
+
+M11.0 は Auth / 利用権の公開基盤である。制作データのクラウド保存はまだ定義しない。Stripe と Cloudflare 移行は M11.2 以降。
+
+M11.1 は社内利用権の運用である。管理画面は作らず、SQL Editor で email から `internal_users` へ付ける。

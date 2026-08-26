@@ -963,7 +963,7 @@
 
 ## D121. M11.2 の決済導線は Stripe Payment Link とする
 
-- 状態: 採用（M11.2・実装済み。Test Mode。webhook 未実装）
+- 状態: 採用（M11.2・実装済み。Test Mode。当時は webhook 未実装。反映は D126）
 - 判断: Test Mode の Subscription Payment Link を denied から開く。Checkout Session をフロントから作らない
 - 理由: GitHub Pages のみで、secret を置けるサーバーが無い。Payment Link URL は秘密ではない
 - 採用しなかった案: ブラウザから Checkout Session API。restricted key を JS に埋める。M11.2 で Cloudflare Functions を必須にする
@@ -971,7 +971,7 @@
 
 ## D122. Stripe と Supabase user の正の紐付けは client_reference_id とする
 
-- 状態: 採用（M11.2・実装済み。Test Mode。webhook 未実装）
+- 状態: 採用（M11.2・実装済み。Test Mode。当時は webhook 未実装。反映は D126）
 - 判断: Payment Link URL の `client_reference_id` に `session.user.id`（UUID）だけを入れる。email は `prefilled_email` の補助に留める
 - 理由: M11.3 の `checkout.session.completed` が user_id を取るため。email は Checkout 上で変わり得る。Stripe は英数字・ハイフン・アンダースコア（最大 200）を許可し、UUID はこれに入る
 - 採用しなかった案: email を reference にする。固定 id を Dashboard に焼き込む。`locked_prefilled_email` で権限を装う
@@ -979,7 +979,7 @@
 
 ## D123. checkout=success は案内であり paid ではない
 
-- 状態: 採用（M11.2・実装済み。Test Mode。webhook 未実装）
+- 状態: 採用（M11.2・実装済み。Test Mode。当時は webhook 未実装。反映は D126）
 - 判断: Payment Link の `after_completion` で Pages（または localhost）へ `?checkout=success` で戻す。M11.2 ではこの query と `{CHECKOUT_SESSION_ID}` のどちらでも `allowed` にしない
 - 理由: `subscriptions` の正は M11.3 webhook。Payment Link に Checkout Session の `cancel_url` は無い
 - 採用しなかった案: 成功 query で fixture 相当の paid をクライアントが書く。session id をフロントから Stripe へ取りに行く
@@ -987,7 +987,7 @@
 
 ## D124. M11.2 のブラウザは subscriptions を書かない
 
-- 状態: 採用（M11.2・実装済み。Test Mode。webhook 未実装）
+- 状態: 採用（M11.2・実装済み。Test Mode。当時は webhook 未実装。反映は D126）
 - 判断: 決済成功後もクライアントから `customer_id` / `subscription_id` / `status` を upsert しない
 - 理由: D110。書き込みは service role（M11.3 webhook）だけ
 - 採用しなかった案: success 画面から anon で subscriptions を更新する
@@ -1000,6 +1000,38 @@
 - 理由: default の implicit は hash token が GitHub Pages / メールクライアントで落ちやすい。PKCE の `?code=` は Pages の 301 でも残る。verifier は送信したブラウザの localStorage にある
 - 採用しなかった案: implicit のまま hash を待つ。callback 失敗を利用権の network_error と混ぜる
 - 結果: GitHub Pages は `https://mook-hary.github.io/conte-rush/`。localhost は `http://localhost:8080/` など現在 origin のルート。リンクは送った同じブラウザで開く
+
+## D126. Stripe webhook は Supabase Edge Function が受ける
+
+- 状態: 採用（M11.3・実装済み。Test Mode）
+- 判断: Stripe → Edge Function `stripe-webhook` → service role で `public.subscriptions` を upsert する。GitHub Pages の静的フロントは書かない。Cloudflare Functions は M11.3 で必須にしない
+- 理由: Stripe secret / webhook signing secret / service role をブラウザへ置けない。Supabase 公式が webhook 用途の `verify_jwt = false` を案内している
+- 採用しなかった案: ブラウザから Checkout Session を取る。success query で paid にする。M11.3 で Cloudflare へ移す
+- 結果: 署名は raw body。未知 event は 200。署名不正は 400
+
+## D127. subscriptions は 1 user 1 行のまま Stripe ID で追跡する
+
+- 状態: 採用（M11.3・実装済み）
+- 判断: PK は `user_id` のまま。初回は `checkout.session.completed` の `client_reference_id`。以後は `subscription_id` / `customer_id`。同じユーザーの新しい Checkout は同じ行を上書きする
+- 理由: 既存 `maybeSingle()` と RLS を壊さない。Payment Link は Customer を再利用しないため、複数行の「1 つでも active なら paid」は M11.3 では採らない
+- 採用しなかった案: user あたり複数 subscription 行。email で紐付ける
+- 結果: 古い Stripe subscription のイベントは、行の ID と一致しなければ無視する。Stripe 上の二重課金の整理は M11.4
+
+## D128. M11.3 でも paid 条件は status のみとする
+
+- 状態: 採用（M11.3・実装済み）
+- 判断: `effectiveAccess` と `PAID_STATUSES`（`active` / `trialing`）を変えない。`past_due` / `canceled` / `unpaid` は none。`cancel_at_period_end` は保存するが、status が `active` なら paid のまま
+- 理由: D118。猶予と解約 UX は M11.4
+- 採用しなかった案: webhook 導入と同時に past_due 猶予を入れる。クライアント時計で period end を切る
+- 結果: internal は従来どおり課金より優先
+
+## D129. checkout=success 後は確認 UX であり paid ではない
+
+- 状態: 採用（M11.3・実装済み）
+- 判断: query だけでは `allowed` にしない。denied のまま「決済を確認しています」と再確認ボタンを出す。自動再確認は 1 回だけ（数秒後）。無限 polling はしない
+- 理由: webhook 遅延があり得る。D123 を崩さない
+- 採用しなかった案: 成功 query で fixture 相当の paid を書く。数秒おきの永久 poll
+- 結果: 反映後の正は `subscriptions.status`。query は案内後に外す
 
 ## 未決
 

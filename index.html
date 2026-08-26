@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>conte-rush</title>
-    <link rel="stylesheet" href="css/style.css?v=m11-2-1" />
+    <link rel="stylesheet" href="css/style.css?v=m11-3" />
   </head>
   <body data-state="idle" data-auth-state="loading">
     <div id="auth-gate" class="auth-gate">
@@ -49,6 +49,7 @@
           <p>conte-rushは月額100円（税込）で利用できます。</p>
           <p id="denied-checkout-status" class="auth-message" role="status"></p>
           <button id="denied-checkout" type="button">月額100円で利用する</button>
+          <button id="denied-recheck" type="button" hidden>利用権を再確認</button>
         </div>
         <button type="button" data-gate-logout>ログアウト</button>
       </section>
@@ -417,6 +418,6 @@
         status.textContent = `起動エラー: ${event.message}`;
       });
     </script>
-    <script type="module" src="js/access-gate.js?v=m11-2-1"></script>
+    <script type="module" src="js/access-gate.js?v=m11-3"></script>
   </body>
 </html>

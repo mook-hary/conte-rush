@@ -946,6 +946,8 @@ Supabase Auth が持つ identity。conte-rush が `profiles` を複製して正�
 | `current_period_end` | 現在期間の終了。fixture では未来日時でよい |
 | `customer_id` | 外部 customer id（Stripe なら `cus_...`）。fixture は空でよい |
 | `subscription_id` | 外部 subscription id（Stripe なら `sub_...`）。fixture は空でよい |
+| `price_id` | Stripe Price id（補助。access 判定には使わない。M11.3） |
+| `cancel_at_period_end` | 期間末解約フラグ。`true` でも status が `active` なら paid（M11.3） |
 | `created_at` | 作成時刻 |
 | `updated_at` | 更新時刻 |
 
@@ -962,7 +964,21 @@ M11.0 の paid 条件（導出）:
 
 クライアントは自分の行を SELECT できるだけとする。書き込みは service role（fixture SQL または M11.3 webhook）。M11.2 のブラウザは決済成功後もこの表を更新しない。
 
-### Payment Link 導線（M11.2・実装済み。webhook / paid 反映は未実装）
+`subscription_id` / `customer_id` は NULL 以外で unique。後続の Stripe subscription イベントはこれらの ID から `user_id` を辿る。1 ユーザー 1 行。
+
+### stripe_webhook_events（M11.3・実装済み）
+
+Stripe の `event.id`（`evt_...`）の重複配信を捨てる表。ブラウザは読まない。service role のみ。
+
+| 項目 | 意味 |
+|---|---|
+| `event_id` | Stripe event id。主キー |
+| `event_type` | 受信した type |
+| `processed_at` | 処理完了時刻 |
+
+payload 全体は置かない。
+
+### Payment Link 導線（M11.2・実装済み。M11.3 で webhook 反映）
 
 Stripe Test Mode の Subscription Payment Link。Checkout Session をアプリが作らない。
 
@@ -971,7 +987,7 @@ Stripe Test Mode の Subscription Payment Link。Checkout Session をアプリ�
 | `stripePaymentLinkUrl` | 公開してよいベース URL。runtime-config。secret ではない |
 | `client_reference_id` | クエリ。値は `session.user.id`（UUID）だけ。M11.3 が `user_id` に使う |
 | `prefilled_email` | クエリ。session email の補助。権限の正ではない |
-| `checkout=success` | アプリへ戻ったあとの案内用 query。`paid` ではない |
+| `checkout=success` | アプリへ戻ったあとの案内用 query。`paid` ではない。M11.3 では確認中表示と再確認に使う |
 
 持たない:
 

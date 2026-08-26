@@ -44,9 +44,11 @@
 
 **実装済み（M11.1）** は、社内 5〜6 人を管理画面なしで `internal_users` へ登録する運用です。本人が Magic Link で一度ログインしたあと、管理者が SQL Editor でメールアドレスから利用権を付けます。
 
-**実装済み（M11.2）** は、一般ユーザーが `denied` から Stripe Test Mode の月額100円 Payment Link へ進む導線です。決済後の利用権反映（webhook）はまだです。Test Mode のみです。
+**実装済み（M11.2）** は、一般ユーザーが `denied` から Stripe Test Mode の月額100円 Payment Link へ進む導線です。Test Mode のみです。
 
-## 現状できること（M0〜M11.2・実装済み）
+**実装済み（M11.3）** は、Stripe webhook を Supabase Edge Function で受け、`subscriptions` を更新して `paid` にする処理です。Test Mode。`checkout=success` だけでは利用権は付きません。
+
+## 現状できること（M0〜M11.3・実装済み）
 
 - ユーザーの端末上にある PDF を選んで開く
 - 1ページ目をブラウザに描画する
@@ -103,7 +105,7 @@
 - 利用権が internal または paid のときだけ本体を操作する
 - Account からログアウトすると、ブラウザ内の制作データを破棄する
 - 社内利用者は、一度ログインしたあと管理者が SQL で利用権を付ける（管理画面なし）
-- 利用権がないときは、設定済みなら月額100円（税込）の Stripe Test Payment Link へ進める。決済直後はまだ本体を開けない（webhook は M11.3）
+- 利用権がないときは、設定済みなら月額100円（税込）の Stripe Test Payment Link へ進める。決済後は webhook が利用権を付ける（M11.3）。すぐ反映されないときは「利用権を再確認」する
 
 ## 現状できないこと
 
@@ -120,7 +122,7 @@
 - カメラワークの自動解析
 - ラッシュの自動生成
 - プロジェクト保存
-- Stripe 決済 / 月額課金（M11.2 は Test Payment Link 導線まで。Webhook による paid 反映は M11.3）
+- Stripe 本番モード / Billing Portal / 解約のアプリ内案内（M11.3 は Test Mode の paid 反映まで）
 - 制作データのクラウド保存
 
 ## プライバシー
@@ -148,7 +150,7 @@ M11.2 の課金は Stripe の Payment Link（Stripe がホストする Checkout�
 - 社内利用権の付与 / 解除: [docs/supabase-m11-1-internal.sql](docs/supabase-m11-1-internal.sql)
 - M11.2 の `stripePaymentLinkUrl` は公開してよい Test Payment Link。空でも Auth / 社内利用は動く
 
-## 使い方（M0〜M11.2）
+## 使い方（M0〜M11.3）
 
 1. このフォルダを HTTP で配信する。例:
 
@@ -159,7 +161,7 @@ M11.2 の課金は Stripe の Payment Link（Stripe がホストする Checkout�
 2. ブラウザで `http://localhost:8080/` を開く
 3. `js/runtime-config.js` に Supabase の URL と anon key が入っていれば、メールアドレスへログインリンクを送る。リンクは **送った同じブラウザ** で開く。戻り先は末尾 `/` 付き（GitHub Pages なら `https://mook-hary.github.io/conte-rush/`、ローカルなら `http://localhost:8080/`）。未設定なら「Supabase設定が未完了です」と出る。Dashboard の Redirect URLs にこれらの URL を入れる。PKCE の Magic Link は D125。これは default SMTP では OTP テンプレートを編集できないための暫定措置でもある（D119）
 4. 社内利用は、本人が一度ログインしたあと、管理者が [docs/supabase-m11-1-internal.sql](docs/supabase-m11-1-internal.sql) のメールアドレスを書き換えて SQL Editor で実行する。利用権が付くと本体を操作できる。UID の手コピーは不要
-5. 一般利用で利用権が無いときは「月額100円で利用する」から Stripe Test Checkout へ進む。`js/runtime-config.js` の `stripePaymentLinkUrl` が空なら「決済設定を準備中です」と出る。社内ユーザーは Stripe 未設定でも本体を使える
+5. 一般利用で利用権が無いときは「月額100円で利用する」から Stripe Test Checkout へ進む。決済後は webhook が `paid` を付ける。すぐ反映されないときは「利用権を再確認」する。`stripePaymentLinkUrl` が空なら「決済設定を準備中です」と出る。社内ユーザーは Stripe 未設定でも本体を使える
 6. 利用権がある場合だけ「PDFを選択」からローカルの PDF を選ぶ
 7. 「前へ」「次へ」でページを移動する
 8. 常設の選択フレームを動かして「画像取得」する。別サイズは「ドラッグ」
@@ -189,9 +191,15 @@ secret key は不要です。Payment Link の URL だけを `js/runtime-config.j
 6. **After the payment**: 確認ページではなくウェブサイトへリダイレクトする。開発中は `http://localhost:8080/?checkout=success`。GitHub Pages 公開前に `https://mook-hary.github.io/conte-rush/?checkout=success` へ変える（1 つの Link の戻り先は 1 URL）
 7. 作成後 **Copy** で `https://buy.stripe.com/test_...` を取る。Dashboard 側に `client_reference_id` を焼き込まない
 8. その URL を `stripePaymentLinkUrl` に入れる
-9. テストカード `4242 4242 4242 4242`（将来の期限、任意 CVC）で払う。戻っても利用権はまだ付かない（M11.3）
+9. テストカード `4242 4242 4242 4242`（将来の期限、任意 CVC）で払う。戻った直後は webhook 待ちで denied のことがある。「利用権を再確認」で `paid` になれば本体を開ける
 
 コンビニ決済や Stripe Tax は足さない。本番 Payment Link はまだ設定しない。
+
+### Stripe webhook（M11.3）
+
+secret は Supabase Edge Function にだけ置く。`js/runtime-config.js` には置かない。セットアップ SQL は [docs/supabase-m11-3.sql](docs/supabase-m11-3.sql)。
+
+実機確認済み（Test Mode）: Payment Link 決済 → webhook が `subscriptions` を更新 → `paid` で本体へ入れる。reload 後も、`checkout` query の無い通常 URL でも維持する。
 
 ## ドキュメント
 
@@ -201,8 +209,9 @@ secret key は不要です。Payment Link の URL だけを `js/runtime-config.j
 | [docs/DATA_MODEL.md](docs/DATA_MODEL.md) | 実行時データと、将来のデータ境界 |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | マイルストーン |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | 設計判断 |
-| [docs/supabase-m11.sql](docs/supabase-m11.sql) | M11.0 の Access DB / RLS |
+| [docs/supabase-m11.sql](docs/supabase-m11.sql) | M11.0 の Access DB / RLS（M11.3 列を含む） |
 | [docs/supabase-m11-1-internal.sql](docs/supabase-m11-1-internal.sql) | 社内利用権の付与 / 解除（SQL Editor） |
+| [docs/supabase-m11-3.sql](docs/supabase-m11-3.sql) | 既存プロジェクト向け M11.3 ALTER |
 
 ## ライセンス
 

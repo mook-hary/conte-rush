@@ -13,7 +13,7 @@ import {
 } from "./stripe-checkout.js?v=m11-2";
 
 const APP_MODULE_URL = new URL("./app.js?v=m11-2", import.meta.url).href;
-const AUTH_MODULE_URL = new URL("./auth-client.js?v=m11-2-1", import.meta.url).href;
+const AUTH_MODULE_URL = new URL("./auth-client.js?v=m11-3", import.meta.url).href;
 
 const gateEl = document.querySelector("#auth-gate");
 const loginForm = document.querySelector("#gate-login-form");
@@ -23,6 +23,7 @@ const loginMessageEl = document.querySelector("#gate-login-message");
 const accountEmailEl = document.querySelector("#account-email");
 const accountAccessEl = document.querySelector("#account-access");
 const checkoutButton = document.querySelector("#denied-checkout");
+const checkoutRecheckButton = document.querySelector("#denied-recheck");
 const checkoutStatusEl = document.querySelector("#denied-checkout-status");
 
 let authState = "loading";
@@ -38,8 +39,14 @@ let authApi = null;
 let authSubscription = null;
 let awaitingAuthCallback = false;
 let pendingCheckoutSuccess = false;
+let checkoutConfirming = false;
+let checkoutAutoRecheckDone = false;
+let checkoutAutoRecheckTimer = null;
+let checkoutRecheckInFlight = false;
 let openingCheckout = false;
 let deniedCheckoutError = "";
+
+const CHECKOUT_AUTO_RECHECK_MS = 4000;
 
 async function loadAuthApi() {
   if (!authApi) {
@@ -82,16 +89,21 @@ function isPaymentLinkConfigured() {
 
 function syncDeniedCheckoutUi({ successNote = false } = {}) {
   const configured = isPaymentLinkConfigured();
+  const showConfirming = successNote || checkoutConfirming;
   if (checkoutButton) {
     checkoutButton.hidden = !configured;
-    checkoutButton.disabled = !configured || openingCheckout;
+    checkoutButton.disabled = !configured || openingCheckout || checkoutRecheckInFlight;
+  }
+  if (checkoutRecheckButton) {
+    checkoutRecheckButton.hidden = !showConfirming;
+    checkoutRecheckButton.disabled = checkoutRecheckInFlight;
   }
   if (!checkoutStatusEl) {
     return;
   }
-  if (successNote) {
+  if (showConfirming) {
     checkoutStatusEl.textContent =
-      "テスト決済が完了しました。現在はWebhook未実装のため、利用権はまだ反映されません。";
+      "決済を確認しています。反映まで数秒かかることがあります。";
     checkoutStatusEl.classList.remove("is-error");
     return;
   }
@@ -113,12 +125,34 @@ function settleCheckoutSuccessQuery() {
   if (!pendingCheckoutSuccess) {
     return;
   }
-  const showNote = authState === "denied";
   pendingCheckoutSuccess = false;
-  if (showNote) {
+  if (authState === "denied") {
+    checkoutConfirming = true;
+    deniedCheckoutError = "";
     syncDeniedCheckoutUi({ successNote: true });
+    scheduleOneCheckoutRecheck();
+  } else {
+    checkoutConfirming = false;
+    clearCheckoutAutoRecheck();
   }
   stripCheckoutSuccessFromLocation();
+}
+
+function clearCheckoutAutoRecheck() {
+  if (checkoutAutoRecheckTimer) {
+    clearTimeout(checkoutAutoRecheckTimer);
+    checkoutAutoRecheckTimer = null;
+  }
+}
+
+function scheduleOneCheckoutRecheck() {
+  if (checkoutAutoRecheckDone || checkoutAutoRecheckTimer) {
+    return;
+  }
+  checkoutAutoRecheckTimer = setTimeout(() => {
+    checkoutAutoRecheckTimer = null;
+    void handleDeniedAccessRecheck({ automatic: true });
+  }, CHECKOUT_AUTO_RECHECK_MS);
 }
 
 async function loadAppModule() {
@@ -165,6 +199,8 @@ function renderAccount(session, access) {
 async function enterUnauthenticated() {
   currentAccess = "none";
   pendingEmail = pendingEmail || "";
+  checkoutConfirming = false;
+  clearCheckoutAutoRecheck();
   await teardownApp();
   setAuthState("unauthenticated");
   setBusy(false);
@@ -218,6 +254,9 @@ async function checkAccess(session, { silent = false } = {}) {
     settleCheckoutSuccessQuery();
     return;
   }
+
+  checkoutConfirming = false;
+  clearCheckoutAutoRecheck();
 
   try {
     await initializeAppIfNeeded(userId);
@@ -356,6 +395,34 @@ async function handleDeniedCheckout() {
   }
 }
 
+async function handleDeniedAccessRecheck({ automatic = false } = {}) {
+  if (checkoutRecheckInFlight || authState !== "denied" || currentAccess !== "none") {
+    return;
+  }
+  checkoutAutoRecheckDone = true;
+  clearCheckoutAutoRecheck();
+  checkoutRecheckInFlight = true;
+  syncDeniedCheckoutUi();
+  try {
+    const auth = await loadAuthApi();
+    const session = await auth.getSession();
+    if (!session) {
+      await enterUnauthenticated();
+      return;
+    }
+    await checkAccess(session, { silent: automatic });
+  } catch (error) {
+    console.error(error);
+    await teardownApp();
+    setAuthState("network_error");
+  } finally {
+    checkoutRecheckInFlight = false;
+    if (authState === "denied") {
+      syncDeniedCheckoutUi();
+    }
+  }
+}
+
 async function handleRetryAccess() {
   try {
     const auth = await loadAuthApi();
@@ -434,6 +501,9 @@ document.querySelectorAll("[data-gate-logout]").forEach((button) => {
 checkoutButton?.addEventListener("click", () => {
   void handleDeniedCheckout();
 });
+checkoutRecheckButton?.addEventListener("click", () => {
+  void handleDeniedAccessRecheck({ automatic: false });
+});
 document.querySelector("#gate-retry")?.addEventListener("click", () => {
   void handleRetryAccess();
 });
@@ -445,4 +515,5 @@ void start();
 
 window.addEventListener("pagehide", () => {
   authSubscription?.unsubscribe?.();
+  clearCheckoutAutoRecheck();
 });

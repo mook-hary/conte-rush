@@ -18,6 +18,8 @@ create table if not exists public.subscriptions (
   current_period_end timestamptz,
   customer_id text,
   subscription_id text,
+  price_id text,
+  cancel_at_period_end boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint subscriptions_provider_check
@@ -61,12 +63,31 @@ create policy subscriptions_select_own
   using (user_id = auth.uid());
 
 -- No INSERT / UPDATE / DELETE policies for anon or authenticated.
--- Writes are service role only (Dashboard SQL, later admin / Stripe webhook).
+-- Writes are service role only (Dashboard SQL, Stripe webhook Edge Function).
+
+create unique index if not exists subscriptions_stripe_subscription_id_uidx
+  on public.subscriptions (subscription_id)
+  where subscription_id is not null;
+
+create unique index if not exists subscriptions_stripe_customer_id_uidx
+  on public.subscriptions (customer_id)
+  where customer_id is not null;
+
+create table if not exists public.stripe_webhook_events (
+  event_id text primary key,
+  event_type text not null,
+  processed_at timestamptz not null default now()
+);
+
+alter table public.stripe_webhook_events enable row level security;
+revoke all on table public.stripe_webhook_events from public, anon, authenticated;
+grant all on table public.stripe_webhook_events to service_role;
 
 -- ---------------------------------------------------------------------------
 -- Fixtures (run after the user has signed in once)
 -- Internal grant/revoke by email: docs/supabase-m11-1-internal.sql (M11.1).
 -- Paid fixture below still uses a UUID because it is a one-off test row.
+-- Stripe paid rows are written by the M11.3 webhook, not the browser.
 -- ---------------------------------------------------------------------------
 
 -- Internal (free) access: do not copy UUIDs by hand. Use M11.1 SQL.

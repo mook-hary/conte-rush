@@ -339,7 +339,7 @@ conte-rush を SNS 等で一般公開するための認証・利用権基盤。�
 - Auth / Gate / RLS は変更しない。ブラウザから internal_users を書けない
 - 仕様は [SPEC.md](SPEC.md) の M11.1 節を正とする
 
-### M11.2 Stripe Test Mode・月額 100 円 Checkout（実装済み・webhook 未実装）
+### M11.2 Stripe Test Mode・月額 100 円 Checkout（実装済み。paid 反映は M11.3）
 
 - Test Mode の **Payment Link**（Checkout Session API は使わない）
 - Product `conte-rush` / 月額 100 JPY / quantity 1。トライアルなし
@@ -348,11 +348,14 @@ conte-rush を SNS 等で一般公開するための認証・利用権基盤。�
 - クライアントに Stripe secret を置かない。Payment Link URL は公開設定でよい
 - 仕様は [SPEC.md](SPEC.md) の M11.2 節を正とする
 
-### M11.3 Stripe webhook → Supabase subscription 反映（未着手）
+### M11.3 Stripe webhook → Supabase subscription 反映（実装済み・Test Mode）
 
-- webhook は service role だけで `subscriptions` を更新する
-- サーバー処理が必要になった時点で Cloudflare Functions 等を使う
-- ブラウザへ webhook secret を置かない
+- webhook は Supabase Edge Function `stripe-webhook` が受ける
+- service role だけで `subscriptions` を更新する
+- ブラウザへ webhook secret / Stripe secret を置かない
+- GitHub Pages は静的のまま。Cloudflare Functions は使わない
+- 仕様は [SPEC.md](SPEC.md) の M11.3 節を正とする
+- 実機確認済み（Test Mode）: none → Payment Link 決済 → webhook で `subscriptions` 更新 → `paid` で本体へ入れる。reload 後も、`checkout` query 無しの通常 URL でも維持する
 
 ### M11.4 解約 / 支払い失敗 / 再ログイン（未着手）
 

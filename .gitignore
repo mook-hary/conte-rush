@@ -7,3 +7,5 @@ Thumbs.db
 *.swo
 .env
 .env.*
+supabase/.temp
+supabase/.branches

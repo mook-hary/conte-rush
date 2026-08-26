@@ -2765,7 +2765,7 @@ M11.0 では GitHub Pages を維持する。repo が public でも、runtime con
 
 repository private 化は M11.5 のあと。M11.0 で Cloudflare 移行を必須にしない。
 
-Stripe webhook 等のサーバー処理は M11.3 以降で Cloudflare Functions 等を使う前提で、M11.0 のゲートは Pages + Supabase だけで成立させる。
+M11.0 のゲートは Pages + Supabase Auth だけで成立させる。Stripe webhook のサーバー処理は M11.3 で Supabase Edge Function とした（Cloudflare Functions は使わない）。
 
 ### 17. Supabase Free の pause
 
@@ -2788,8 +2788,10 @@ Free プロジェクトは非活動で pause され得る。これは M11 の運
 | `js/access.js` | `effectiveAccess` の純粋関数。Store ではない |
 | `js/app.js` | 既存制作アプリ。`initializeConteRush` / `resetConteRushSession`。Supabase SQL は書かない |
 | `index.html` / `css/style.css` | Gate / Account の最小 UI |
-| `docs/supabase-m11.sql` | テーブル / RLS / paid fixture 例 |
+| `docs/supabase-m11.sql` | テーブル / RLS / paid fixture 例。M11.3 列と event 表を含む |
 | `docs/supabase-m11-1-internal.sql` | 社内利用権の付与 / 解除（email 参照。SQL Editor のみ） |
+| `docs/supabase-m11-3.sql` | 既存プロジェクト向け M11.3 ALTER（price_id、event 表、unique index） |
+| `supabase/functions/stripe-webhook/index.ts` | Stripe webhook。secret は Function env のみ |
 
 `js/access-store.js` は作らない。利用権の正は Supabase。
 
@@ -2978,11 +2980,9 @@ M11.2 の設定:
 
 **キャンセル:** Payment Link に Checkout Session 相当の `cancel_url` は無い。ユーザーがタブを閉じるか Stripe ページを離れる。専用の `checkout=cancel` は必須にしない。戻ってきたときは通常の access check。
 
-`checkout=success` は **テスト段階の表示だけ**:
+`checkout=success` は **案内だけ**（D123 / D129）。M11.3 では「決済を確認しています」と再確認。query では `paid` にしない。
 
-「決済が完了しました。現在はWebhook未実装のため利用権はまだ反映されません。」
-
-その後 query を `history.replaceState` で外す。表示しても `effectiveAccess` は `none` のまま。`denied` のまま。本番公開前にこの文は外す（M11.3 以降。M11.2 の完成条件には残す）。
+その後 query を `history.replaceState` で外す。表示しても `effectiveAccess` の正は `subscriptions` 行である。
 
 ### 10. runtime config
 
@@ -3079,7 +3079,7 @@ M11.2 Test Mode の見せ方: **税込 100 円** として UI に書く。イン
 6. **After the payment**: 確認ページではなくウェブサイトへリダイレクト。URL は GitHub Pages（例: `https://mook-hary.github.io/conte-rush/?checkout=success`）。localhost で戻したいときは別 Link を同じ Price で作る
 7. 作成後、**Copy** でベース URL（`https://buy.stripe.com/test_...`）を取る。Copy の URL parameters で固定 `client_reference_id` を焼き込まない（アプリが付ける）
 8. `js/runtime-config.js` の `stripePaymentLinkUrl` にそのベース URL を入れる
-9. テストカードで払う（例: `4242 4242 4242 4242`、将来の期限、任意 CVC）。成功後 conte-rush に戻り、Webhook 未実装の案内が出て、本体は開かないことを確認する
+9. テストカードで払う（例: `4242 4242 4242 4242`、将来の期限、任意 CVC）。M11.2 単体では戻っても本体は開かない。M11.3 導入後は webhook 反映で `paid` になり得る（query だけでは付かない）
 
 支払方法の追加（コンビニ等）は **Settings → Payment methods** で M11.2 では増やさない。Stripe Tax はオフ。
 
@@ -3107,6 +3107,89 @@ M11.2 Test Mode の見せ方: **税込 100 円** として UI に書く。イン
 - custom SMTP、数字 OTP 復帰
 - Stripe Tax、コンビニ決済の追加、年額プラン
 - 特商法・利用規約ページ（公開前 Must。実装は後）
+
+## M11.3（実装済み・Test Mode）
+
+Stripe の Subscription Payment Link 決済を webhook で受け、`public.subscriptions` をサーバー側で更新する。既存の `effectiveAccess` が `paid` を返せるようにする。本節が実装時の正である。
+
+```
+Payment Link（M11.2）
+  → Stripe Test Checkout
+  → Edge Function stripe-webhook（署名検証）
+  → subscriptions upsert（service role）
+  → ユーザーが ?checkout=success で戻る
+  → 通常の access check（query では paid にしない）
+  → none なら「決済確認中」+ 再確認（自動は 1 回）
+```
+
+M11.0 / M11.1 / M11.2 の Auth Gate、RLS SELECT-own、`PAID_STATUSES`、Payment Link URL 生成、`clearSessionData`、app initialize 条件は変えない。
+
+### 1. 境界
+
+- 書き込みの正は Stripe webhook。ブラウザは自分の行を SELECT するだけ
+- secret / `whsec_` / `sk_test` / service role は Edge Function secret のみ
+- GitHub Pages は静的のまま。Cloudflare Functions は使わない
+- `checkout=success` だけでは `allowed` にしない
+- 1 ユーザー 1 `subscriptions` 行（`user_id` PK）
+
+### 2. イベント
+
+処理する:
+
+| イベント | 処理 |
+|---|---|
+| `checkout.session.completed` | `client_reference_id`（UUID）を `user_id` にする。`customer` / `subscription` を保存。可能なら Subscription を retrieve して status を書く |
+| `customer.subscription.created` | 既存行を `subscription_id` → `customer_id` で探す。無ければ無視 |
+| `customer.subscription.updated` | 同上。live retrieve して status / period / price / `cancel_at_period_end` を更新 |
+| `customer.subscription.deleted` | 同上。status=`canceled` |
+
+未知イベントと `invoice.*` は 200 で無視（invoice は M11.4）。署名不正は 400。紐付け不能（UUID 不正・欠如・行なし）は 200 で書かない。
+
+### 3. access
+
+`active` / `trialing` だけ paid。`past_due` / `canceled` / `unpaid` / `incomplete` / `paused` は none。internal は課金より優先。`current_period_end` と `cancel_at_period_end` は権限の正にしない。
+
+### 4. 重複
+
+`stripe_webhook_events` に `event.id` を処理成功後へ入れる。同一 event は再実行しない。subscription の正は可能な範囲で Stripe retrieve。
+
+### 5. UX
+
+`?checkout=success` でまだ none なら denied のまま「決済を確認しています。反映まで数秒かかることがあります。」と［利用権を再確認］。自動再確認は約 4 秒後に 1 回だけ。無限 polling はしない。
+
+### 6. ファイル
+
+| ファイル | 役割 |
+|---|---|
+| `supabase/functions/stripe-webhook/index.ts` | 署名検証と upsert |
+| `supabase/functions/_shared/stripe-webhook-map.js` | status / UUID / period の写像 |
+| `supabase/config.toml` | `verify_jwt = false` |
+| `docs/supabase-m11-3.sql` | 既存プロジェクト向け ALTER |
+| `js/access-gate.js` | 確認中コピーと再確認 |
+| 正本 5 点 | 本節 |
+
+### 7. 完成条件
+
+- Test 決済の webhook が `subscriptions` を `provider=stripe` かつ paid 条件の status で更新する
+- 既存 `effectiveAccess` が `paid` を返し本体が開く
+- `checkout=success` だけでは paid にしない
+- 署名不正は 400。secret がフロントに無い
+- internal は課金と独立して allowed
+- canceled / past_due は none
+
+実機確認（M11.3・Test Mode・記録）:
+
+- none ユーザーの Magic Link / PKCE ログイン、denied、Test Payment Link、Test Card 決済成功
+- Stripe webhook が Edge Function に到達し `public.subscriptions` を更新
+- `paid` で本体へ入れる。reload 後も、`checkout` query 無しの通常 URL でも維持する
+- `checkout=success` は案内であり、権限の正ではない
+
+### 8. M11.3 では実装しない
+
+- Stripe 本番モード、Billing Portal、past_due 猶予
+- invoice イベント処理、Customer 再利用、サーバー側 Checkout Session
+- Cloudflare Functions、repo private 化
+- `effectiveAccess` / RLS の変更
 
 ## UI 要件
 
@@ -3404,4 +3487,4 @@ M11.0 は Auth / 利用権の公開基盤である。制作データのクラウ
 
 M11.1 は社内利用権の運用である。管理画面は作らず、SQL Editor で email から `internal_users` へ付ける。
 
-M11.2 は Test Mode の Payment Link 導線である。`subscriptions` への Stripe 反映と Cloudflare Functions は M11.3 以降。
+M11.3 は Stripe webhook を Supabase Edge Function で受け、`subscriptions` を更新する。GitHub Pages は静的のままである。

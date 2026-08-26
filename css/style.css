@@ -1883,6 +1883,10 @@ body[data-auth-state="allowed"] .app-shell {
   margin: 0 0 0.75rem;
 }
 
+#denied-recheck {
+  margin-top: 0.5rem;
+}
+
 .account-bar {
   margin-left: auto;
   display: flex;

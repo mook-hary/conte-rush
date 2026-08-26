@@ -1,0 +1,4 @@
+# conte-rush Edge Functions. Do not put secrets in this file.
+
+[functions.stripe-webhook]
+verify_jwt = false

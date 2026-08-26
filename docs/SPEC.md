@@ -2524,9 +2524,10 @@ M11.0 の第一候補は **C. Email OTP**。目標の流れは次のとおり。
 
 暫定実装（D119）: 新規 Supabase Free + default SMTP では email template を編集できず、`{{ .Token }}` の OTP メールへ変えられない。そのため Auth UI だけを **Magic Link** にする。
 
-- メールアドレス入力 →「ログインリンクを送る」→ `signInWithOtp()`（`emailRedirectTo` は `location.origin + pathname`）
+- メールアドレス入力 →「ログインリンクを送る」→ `signInWithOtp()`（`emailRedirectTo` は origin + ディレクトリルート + 末尾 `/`。D125）
 - コード入力 / `verifyOtp` UI は出さない。`verifyEmailOtp` は残し、custom SMTP 後に数字 OTP へ戻せる
-- Magic Link をクリックして conte-rush に戻ったら既存 session を検出する（`detectSessionInUrl: true`）
+- Magic Link は PKCE（`flowType: "pkce"`）。`?code=` の交換が終わるまでログイン画面に落とさない。`detectSessionInUrl: true`。不足時は `exchangeCodeForSession`
+- リンクは送った同じブラウザで開く。verifier が無いときは認証エラーとしてログイン画面へ戻す（`network_error` ではない）
 - access check / DB / RLS は変えない
 
 ### 4. Supabase に持つもの / 持たないもの
@@ -2673,9 +2674,9 @@ fail-closed の例外にしないこと: `network_error` を `denied`（未契�
 `denied`（`none`）:
 
 - 「利用権がありません」
-- M11.0 は仮の案内のみ（例: 社内利用は管理者へ、一般公開の有料化は準備中）
-- 「月額 100 円で利用する」は **置かない**（M11.2）
-- Stripe Checkout へ飛ばさない
+- 社内利用は管理者へ
+- M11.2: 月額100円（税込）と［月額100円で利用する］（`#denied-upgrade-slot`）。Payment Link 未設定なら「決済設定を準備中です」
+- `checkout=success` は案内だけ。`paid` にしない
 
 `allowed` かつ `internal`:
 
@@ -2752,7 +2753,7 @@ Supabase Auth の設定項目（実装時に dashboard へ入れる）:
 - Site URL: 本番 GitHub Pages URL
 - Additional Redirect URLs: Pages URL と `http://localhost:8080/`（README の例。実際に使う origin を列挙）
 - `127.0.0.1` を使うならそれも追加する
-- Magic Link 暫定中は Redirect URLs が必須。`emailRedirectTo` は開いているページの `origin + pathname` なので、`http://localhost:8080/` と `http://localhost:8080/index.html`、GitHub Pages の pathname を列挙する
+- Magic Link 暫定中は Redirect URLs が必須。`emailRedirectTo` は origin + ディレクトリルート + 末尾 `/`（D125）。`http://localhost:8080/` と `https://mook-hary.github.io/conte-rush/` を列挙する
 
 数字 OTP に戻したあとも Site URL と許可 origin は Pages と localhost の両方を扱う。
 
@@ -2781,8 +2782,9 @@ Free プロジェクトは非活動で pause され得る。これは M11 の運
 | ファイル | 責務 |
 |---|---|
 | `js/runtime-config.js` | 公開してよい URL / anon key だけ |
-| `js/auth-client.js` | Supabase client、`signInWithOtp` / `verifyEmailOtp`、session、signOut。RLS 表の書き込みを持たない。UI は暫定 Magic Link |
-| `js/access-gate.js` | 状態機械、UI 切替、access 再読込、allowed 時だけ app initialize |
+| `js/auth-client.js` | Supabase client（`flowType: "pkce"`）、`signInWithOtp` / `verifyEmailOtp`、PKCE callback、session、signOut。RLS 表の書き込みを持たない。UI は暫定 Magic Link |
+| `js/auth-redirect.js` | `emailRedirectTo` の末尾 `/` 正規化、callback query の読取 / 除去。supabase に依存しない |
+| `js/access-gate.js` | 状態機械、UI 切替、access 再読込、allowed 時だけ app initialize。callback 完了前は unauthenticated にしない |
 | `js/access.js` | `effectiveAccess` の純粋関数。Store ではない |
 | `js/app.js` | 既存制作アプリ。`initializeConteRush` / `resetConteRushSession`。Supabase SQL は書かない |
 | `index.html` / `css/style.css` | Gate / Account の最小 UI |
@@ -2808,7 +2810,7 @@ Free プロジェクトは非活動で pause され得る。これは M11 の運
 
 ### 20. 完成条件（実装時）
 
-- Magic Link でログインできる（暫定。D119。custom SMTP 後は数字 OTP へ戻せる）
+- Magic Link でログインできる（暫定。D119 / D125。custom SMTP 後は数字 OTP へ戻せる）
 - リロード後、既存 session があればログイン画面を必須にしない
 - `internal` fixture で本体を使える
 - `paid` fixture（`manual_fixture`）で本体を使える
@@ -2843,10 +2845,268 @@ Free プロジェクトは非活動で pause され得る。これは M11 の運
 | 後続 | M11.0 が空けておくもの |
 |---|---|
 | M11.1 | `internal_users` スキーマと RLS。行の追加は SQL Editor（管理 UI は作らない） |
-| M11.2 | `denied` 画面の案内位置。Checkout はまだ置かない |
+| M11.2 | `denied` 画面の `#denied-upgrade-slot`。Checkout Session API はまだ置かない |
 | M11.3 | `subscriptions` の列と正規化 status。webhook は service role だけが書く |
 | M11.4 | 再確認のフック（起動と session change 以外を足せる） |
 | M11.5 | アプリは静的ファイルのまま。Pages 前提を崩さない |
+
+## M11.2（実装済み・Test Mode。webhook / paid 反映は未実装）
+
+一般ユーザーが Magic Link ログイン → `effectiveAccess = none` →「月額100円で利用する」→ Stripe Test Mode の Subscription Payment Link へ進む導線だけを足す。本節が実装時の正である。
+
+M11.0 / M11.1 の Auth・利用権・RLS は変えない。決済完了後に `subscriptions` へ `active` を書く処理は **M11.3 の webhook** である。M11.2 では支払い成功しても `paid` にしない。
+
+```
+Magic Link
+  → session
+  → access check
+  → none → denied + Payment Link
+  → Stripe Test Checkout
+  → conte-rush へ戻る（まだ none）
+```
+
+M11.3 を足すと、同じ決済イベントが `subscriptions` を更新し `allowed` になる。
+
+### 1. 境界
+
+- Stripe 処理は Auth Gate 側（`js/access-gate.js` と必要なら `js/stripe-checkout.js`）
+- `app.js` に Stripe を書かない
+- クライアントから `subscriptions` を INSERT / UPDATE / DELETE しない
+- Cloudflare Functions は使わない。GitHub Pages の静的配信のまま
+- repository private 化をしない
+- custom SMTP / 数字 OTP 復帰をしない
+
+### 2. なぜ Payment Link か
+
+第一候補は **Stripe Payment Links**（Test Mode）。
+
+| 案 | M11.2 |
+|---|---|
+| A. Payment Link（Dashboard で作る固定 URL） | **する** |
+| B. Checkout Session をフロントから API 作成 | しない |
+| C. Stripe.js + secret / restricted key | しない |
+
+案 B を採らない理由: Checkout Session の作成には secret key を置けるサーバーが要る。M11.2 は GitHub Pages のみで、Cloudflare Functions はまだ無い。secret をブラウザへ置くことは禁止（D111）。
+
+Payment Link の URL 自体は公開してよい。secret key / restricted key / webhook secret はフロントにも repo の runtime-config にも置かない。
+
+### 3. 商品（Test Mode のみ）
+
+本番 Product / Price は作らない。年額・複数料金・トライアルは作らない。
+
+| 項目 | 値 |
+|---|---|
+| Product 名 | `conte-rush` |
+| Price | `100` JPY（ゼロ小数通貨なので `unit_amount = 100` は 100 円） |
+| Recurring | `month` |
+| quantity | `1`（顧客による数量変更はオフ） |
+
+表示は「月額100円」。税の自動計算は導入しない（後述）。
+
+### 4. Payment Link
+
+Stripe Dashboard で上記 Price を 1 件だけ載せた **Subscription** Payment Link を Test Mode で作る。
+
+conte-rush の `denied` から遷移する。共有するベース URL は `runtimeConfig.stripePaymentLinkUrl`（例: `https://buy.stripe.com/test_...`）。
+
+クエリはアプリが毎回付ける。Dashboard 側に固定の `client_reference_id` を焼き込まない。
+
+### 5. user 紐付け（必須）
+
+決済と Supabase user の正の紐付けは **`client_reference_id` = `session.user.id`（UUID）**。
+
+例:
+
+`https://buy.stripe.com/test_xxx?client_reference_id=<USER_UUID>`
+
+メールアドレスを `client_reference_id` にしない。email だけで利用権を付けない。
+
+Stripe 現行仕様: `client_reference_id` は英数字・ハイフン・アンダースコア、最大 200 文字。無効値は静かに落ちるが Checkout 自体は動く。[Payment Link URL parameters](https://docs.stripe.com/payment-links/url-parameters)
+
+Supabase Auth の UUID（8-4-4-4-12 のハイフン付き）はこの集合に入る。M11.3 は `checkout.session.completed` の `client_reference_id` を `subscriptions.user_id` と照合する。
+
+生成は文字列連結にしない。`URL` + `URLSearchParams` で、既存クエリがあっても壊さない。
+
+`client_reference_id` の値は **今の session の `user.id` だけ**。DOM 入力・URL クエリ・localStorage から任意 id を読まない。session が無ければボタンを出さない / 遷移しない。
+
+### 6. email prefill（補助）
+
+Stripe 現行仕様で Payment Link に `prefilled_email` を付けられる。顧客は編集できる。`locked_prefilled_email` もあるが、M11.2 では使わない（typo 修正を塞ぎ、email を権限の正に見せてしまう）。
+
+[Customize Payment Links](https://docs.stripe.com/payment-links/customize)
+
+- 付ける値: 今の session の email。無ければパラメータを付けない
+- URL エンコードは `URLSearchParams` に任せる
+- 秘密情報（token、API key）は URL に載せない。email は Stripe が想定する公開クエリであり、利用権の正ではない
+- Checkout 上で email が変わっても、M11.3 の照合は `client_reference_id` の user id
+
+### 7. denied UI
+
+既存 `#denied-upgrade-slot` に足す。見出し `conte-rush` とログアウトは残す。無料トライアルは無し。
+
+想定文:
+
+- 利用権がありません
+- conte-rushは月額100円で利用できます。
+- ［月額100円で利用する］
+- ［ログアウト］
+
+社内向け「管理者に連絡」は残してよい。有料化準備中、だけを Payment Link 案内に置き換える。
+
+`stripePaymentLinkUrl` が未設定 / placeholder ならボタンを出さない（または disabled + 短い説明）。secret が無いことを理由に Checkout Session へフォールバックしない。
+
+### 8. access 別の挙動
+
+| `effectiveAccess` | 課金ボタン | 本体 |
+|---|---|---|
+| `internal` | 出さない | 無料で利用。Stripe へ誘導しない |
+| `paid` | 出さない | 通常利用 |
+| `none` | 出す（session あり、Payment Link URL 設定済み） | 出さない |
+| `network_error` | 出さない | 出さない。Checkout へ誤誘導しない |
+
+### 9. 完了後 / キャンセル
+
+Payment Link の完了後は Checkout Session API の `success_url` / `cancel_url` ではない。Dashboard の **After the payment**（API では `after_completion`）で決める。[After a payment](https://docs.stripe.com/payment-links/post-payment)
+
+M11.2 の設定:
+
+- Confirmation page を出さず、**リダイレクト**
+- URL 例: `https://mook-hary.github.io/conte-rush/?checkout=success`
+- 開発用に別 Link を作るなら `http://localhost:8080/?checkout=success`。1 つの Payment Link の `after_completion` は 1 URL
+
+`{CHECKOUT_SESSION_ID}` をリダイレクト URL に埋め込めるが、session 取得には secret が要る。M11.2 では **使わない**。クエリだけで `paid` にしない。
+
+**キャンセル:** Payment Link に Checkout Session 相当の `cancel_url` は無い。ユーザーがタブを閉じるか Stripe ページを離れる。専用の `checkout=cancel` は必須にしない。戻ってきたときは通常の access check。
+
+`checkout=success` は **テスト段階の表示だけ**:
+
+「決済が完了しました。現在はWebhook未実装のため利用権はまだ反映されません。」
+
+その後 query を `history.replaceState` で外す。表示しても `effectiveAccess` は `none` のまま。`denied` のまま。本番公開前にこの文は外す（M11.3 以降。M11.2 の完成条件には残す）。
+
+### 10. runtime config
+
+公開してよい値だけ:
+
+```
+supabaseUrl
+supabaseAnonKey
+stripePaymentLinkUrl
+```
+
+`stripePaymentLinkUrl` は Payment Link のベース URL。未設定でもアプリは起動する（denied でボタンが出ない）。仕様段階では空でよい。
+
+置いてはいけないもの: Stripe secret / restricted key / webhook secret / service role。
+
+### 11. M11.3 への接続
+
+M11.2 の Payment Link は、完了時の Checkout Session に `client_reference_id` が残ることが必須。
+
+M11.3 が聞く想定イベント（実装は M11.3）:
+
+- `checkout.session.completed`（`client_reference_id` → `user_id`。`customer` / `subscription` を保存）
+- `customer.subscription.updated`
+- `customer.subscription.deleted`
+- `invoice.paid`
+- `invoice.payment_failed`
+
+M11.2 のブラウザは `customer_id` / `subscription_id` / `status` を書かない。Payment Link の subscription は、既存 Customer を指定しないため **新しい Customer が毎回作られる**（Stripe ドキュメント）。これが二重契約の温床になる。
+
+### 12. 二重契約（Payment Link の限界）
+
+M11.2 では none ユーザーがリンクを何度も開けることを完全には防げない。同じ Payment Link を人数制限で 1 回払いにはしない（全員が使う共有リンクだから）。
+
+限界として残す:
+
+- 既存 subscription の確認なし
+- Customer 再利用なし
+- サーバー側 Checkout 生成なし
+
+M11.3 以降の進化余地: 既存 subscription 確認、Customer 再利用、Checkout Session をサーバー（Cloudflare Functions 等）で作る。M11.2 ではサーバー処理を足さない。
+
+### 13. 支払方法
+
+カード中心。Dashboard の Payment methods 既定（カード、条件が揃えば Apple Pay / Google Pay）に任せる。コンビニ払い等は M11.2 で足さない。月 100 円は最低手数料と相性が悪い手段がある。
+
+Stripe Tax / 自動税計算は導入しない。Adaptive Pricing（Payment Link 既定の現地通貨表示）は Dashboard に従うが、Price の正は JPY 100。本番前に確認する。
+
+### 14. 税と法務
+
+M11.2 Test Mode の見せ方: **税込 100 円** として UI に書く。インボイス・軽減税率・課税事業者の扱いは決めない。
+
+正式有料公開前の Must（ROADMAP の M11 後工程。M11.2 では実装しない）:
+
+- 特定商取引法に基づく表記
+- 利用規約
+- プライバシーポリシー
+- 解約方法の案内
+- 価格表示（税）
+- 税務 / 会計の確認
+- Stripe 本番モード切替
+
+### 15. セキュリティ
+
+| 項目 | 方針 |
+|---|---|
+| 任意 user id を Checkout に付けられないか | `client_reference_id` は `session.user.id` のみ |
+| クライアントから paid を書けないか | RLS どおり SELECT のみ。M11.2 で書き込み API を足さない |
+| secret 漏洩 | ブラウザと runtime-config に置かない |
+| `checkout=success` で allowed にしないか | query は案内だけ。正は `effectiveAccess` |
+| email で利用権を付けないか | prefill のみ。照合は UUID |
+| Payment Link URL の共有 | ベース URL は公開可。`client_reference_id` 付き URL は本人向け。秘密は載せない |
+
+### 16. 実装時のファイル候補
+
+| ファイル | 役割 |
+|---|---|
+| `js/runtime-config.js` | `stripePaymentLinkUrl` を足す |
+| `js/stripe-checkout.js`（任意） | URL 生成だけ。secret を読まない |
+| `js/access-gate.js` | denied スロット、none だけボタン、success 案内 |
+| `index.html` / `css/style.css` | 文言とボタン |
+| 正本 5 点 | 本節 |
+
+`app.js` に Stripe を入れない。DB / RLS / `clearSessionData` を変えない。
+
+### 17. Dashboard 操作（実装時にユーザーが行う）
+
+現行 Dashboard（[Payment Links](https://dashboard.stripe.com/payment-links)、[作成](https://dashboard.stripe.com/payment-links/create)）:
+
+1. [Stripe](https://dashboard.stripe.com) アカウントを作る（未作成なら）
+2. 画面右上（または左）の **Test mode** がオンであることを確認する。Live にしない
+3. **Product catalog**（製品カタログ）→ 製品を追加。名前 `conte-rush`
+4. 価格: 定期課金、毎月、通貨 JPY、金額 `100`。トライアルなし
+5. **Payment links** → **+ New**（または + → Payment link）。既存製品 `conte-rush` を選ぶ。数量変更はオフ。顧客が金額を選ぶモードにはしない
+6. **After the payment**: 確認ページではなくウェブサイトへリダイレクト。URL は GitHub Pages（例: `https://mook-hary.github.io/conte-rush/?checkout=success`）。localhost で戻したいときは別 Link を同じ Price で作る
+7. 作成後、**Copy** でベース URL（`https://buy.stripe.com/test_...`）を取る。Copy の URL parameters で固定 `client_reference_id` を焼き込まない（アプリが付ける）
+8. `js/runtime-config.js` の `stripePaymentLinkUrl` にそのベース URL を入れる
+9. テストカードで払う（例: `4242 4242 4242 4242`、将来の期限、任意 CVC）。成功後 conte-rush に戻り、Webhook 未実装の案内が出て、本体は開かないことを確認する
+
+支払方法の追加（コンビニ等）は **Settings → Payment methods** で M11.2 では増やさない。Stripe Tax はオフ。
+
+### 18. 完成条件（実装時）
+
+- none のログインユーザーが「月額100円で利用する」で Test Payment Link へ進む（URL 設定後）
+- URL に `client_reference_id=<そのユーザーの UUID>` がある
+- 可能なら `prefilled_email` がある
+- internal / paid に課金ボタンが無い
+- session 無しでは進まない
+- テスト決済後、Pages または localhost に戻り、まだ `denied` である
+- `checkout=success` だけでは `allowed` にならない
+- `subscriptions` をクライアントが書いていない
+- secret / webhook secret がフロントに無い
+- Stripe 本番モード、webhook、Billing Portal、解約、Cloudflare Functions、repo private 化をしていない
+
+### 19. M11.2 では実装しない
+
+- webhook、`subscriptions` への Stripe 反映
+- Stripe secret API、Checkout Session 作成
+- Cloudflare Functions
+- Billing Portal、解約、支払い失敗処理
+- Customer 再利用、二重 Subscription 防止
+- 本番決済、GitHub private 化
+- custom SMTP、数字 OTP 復帰
+- Stripe Tax、コンビニ決済の追加、年額プラン
+- 特商法・利用規約ページ（公開前 Must。実装は後）
 
 ## UI 要件
 
@@ -3014,6 +3274,13 @@ Free プロジェクトは非活動で pause され得る。これは M11 の運
 - 解除は `enabled = false`（行削除でも可）
 - Auth Gate / RLS / ブラウザからの書き込み禁止は M11.0 のまま。service_role をフロントへ置かない
 
+### M11.2（実装済み・Test Mode。webhook / paid 反映は未実装）
+
+- `denied` の「conte-rushは月額100円（税込）で利用できます。」と［月額100円で利用する］
+- none かつ session あり、Payment Link 設定済みのときだけ遷移。internal / paid には出さない
+- 決済後 `?checkout=success` のテスト案内。これだけでは本体を開かない
+- 無料トライアル、Billing Portal、解約 UI は置かない
+
 ## 非対象
 
 次は M10 でも実装しない。UI もデータも作らない。
@@ -3133,6 +3400,8 @@ M9 のタイムシートは最終 placements と Motion からの一方向出力
 
 M10 は Panel 素材の入口を PDF 以外へ広げた。Timeline / Motion / Rush / MP4 / タイムシートの正本関係は変えない。
 
-M11.0 は Auth / 利用権の公開基盤である。制作データのクラウド保存はまだ定義しない。Stripe と Cloudflare 移行は M11.2 以降。
+M11.0 は Auth / 利用権の公開基盤である。制作データのクラウド保存はまだ定義しない。
 
 M11.1 は社内利用権の運用である。管理画面は作らず、SQL Editor で email から `internal_users` へ付ける。
+
+M11.2 は Test Mode の Payment Link 導線である。`subscriptions` への Stripe 反映と Cloudflare Functions は M11.3 以降。

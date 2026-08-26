@@ -936,7 +936,7 @@ Supabase Auth が持つ identity。conte-rush が `profiles` を複製して正�
 
 ### subscriptions（M11.0・実装済み）
 
-有料契約の記録。M11.0 では Stripe を動かさない。M11.3 の webhook が同じ表を更新できる形にする。
+有料契約の記録。M11.0 / M11.2 ではクライアントが書かない。M11.3 の webhook が同じ表を更新する。
 
 | 項目 | 意味 |
 |---|---|
@@ -960,7 +960,26 @@ M11.0 の paid 条件（導出）:
 
 `past_due` の猶予は M11.4 で決める。M11.0 では paid にしない。
 
-クライアントは自分の行を SELECT できるだけとする。書き込みは service role（fixture SQL または将来の webhook）。
+クライアントは自分の行を SELECT できるだけとする。書き込みは service role（fixture SQL または M11.3 webhook）。M11.2 のブラウザは決済成功後もこの表を更新しない。
+
+### Payment Link 導線（M11.2・実装済み。webhook / paid 反映は未実装）
+
+Stripe Test Mode の Subscription Payment Link。Checkout Session をアプリが作らない。
+
+| 項目 | 意味 |
+|---|---|
+| `stripePaymentLinkUrl` | 公開してよいベース URL。runtime-config。secret ではない |
+| `client_reference_id` | クエリ。値は `session.user.id`（UUID）だけ。M11.3 が `user_id` に使う |
+| `prefilled_email` | クエリ。session email の補助。権限の正ではない |
+| `checkout=success` | アプリへ戻ったあとの案内用 query。`paid` ではない |
+
+持たない:
+
+- フロントの Stripe secret / restricted key / webhook secret
+- クライアントが書く `customer_id` / `subscription_id` / `status`
+- Payment Link の `cancel_url`（仕様上無い。タブを閉じる）
+
+`effectiveAccess` の正は従来どおり Supabase の行から導出する。success query では変えない。
 
 ### effectiveAccess（導出・保存しない）
 

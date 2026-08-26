@@ -44,7 +44,9 @@
 
 **実装済み（M11.1）** は、社内 5〜6 人を管理画面なしで `internal_users` へ登録する運用です。本人が Magic Link で一度ログインしたあと、管理者が SQL Editor でメールアドレスから利用権を付けます。
 
-## 現状できること（M0〜M11.1・実装済み）
+**実装済み（M11.2）** は、一般ユーザーが `denied` から Stripe Test Mode の月額100円 Payment Link へ進む導線です。決済後の利用権反映（webhook）はまだです。Test Mode のみです。
+
+## 現状できること（M0〜M11.2・実装済み）
 
 - ユーザーの端末上にある PDF を選んで開く
 - 1ページ目をブラウザに描画する
@@ -101,6 +103,7 @@
 - 利用権が internal または paid のときだけ本体を操作する
 - Account からログアウトすると、ブラウザ内の制作データを破棄する
 - 社内利用者は、一度ログインしたあと管理者が SQL で利用権を付ける（管理画面なし）
+- 利用権がないときは、設定済みなら月額100円（税込）の Stripe Test Payment Link へ進める。決済直後はまだ本体を開けない（webhook は M11.3）
 
 ## 現状できないこと
 
@@ -117,7 +120,7 @@
 - カメラワークの自動解析
 - ラッシュの自動生成
 - プロジェクト保存
-- Stripe 決済 / 月額課金
+- Stripe 決済 / 月額課金（M11.2 は Test Payment Link 導線まで。Webhook による paid 反映は M11.3）
 - 制作データのクラウド保存
 
 ## プライバシー
@@ -130,6 +133,8 @@ M7 では Mediabunny 1.51.0 も CDN（jsDelivr）から取得します。M9 で�
 
 M11.0 では、ログインと利用権の確認だけ Supabase を使います。PDF / Panel / Drawing / Rush / MP4 / Timesheet は Supabase へ送りません。anon key は公開前提です。service role はブラウザに置きません。
 
+M11.2 の課金は Stripe の Payment Link（Stripe がホストする Checkout）へ遷移する想定です。制作ファイルは Stripe へ送りません。Stripe secret はブラウザに置きません。
+
 ## 動作環境
 
 - GitHub Pages で配信できる静的 Web アプリ
@@ -141,8 +146,9 @@ M11.0 では、ログインと利用権の確認だけ Supabase を使います�
 - 現行は GitHub Pages の静的配信。M11.0 でログインする場合は Supabase プロジェクトが必要
 - セットアップ SQL: [docs/supabase-m11.sql](docs/supabase-m11.sql)
 - 社内利用権の付与 / 解除: [docs/supabase-m11-1-internal.sql](docs/supabase-m11-1-internal.sql)
+- M11.2 の `stripePaymentLinkUrl` は公開してよい Test Payment Link。空でも Auth / 社内利用は動く
 
-## 使い方（M0〜M11.1）
+## 使い方（M0〜M11.2）
 
 1. このフォルダを HTTP で配信する。例:
 
@@ -151,24 +157,41 @@ M11.0 では、ログインと利用権の確認だけ Supabase を使います�
    ```
 
 2. ブラウザで `http://localhost:8080/` を開く
-3. `js/runtime-config.js` に Supabase の URL と anon key が入っていれば、メールアドレスへログインリンクを送る。メール内のリンクを開くとこの画面に戻る。未設定なら「Supabase設定が未完了です」と出る。Dashboard の Redirect URLs に、今開いている origin（例: `http://localhost:8080/`）と GitHub Pages の URL を入れる。これは default SMTP では OTP テンプレートを編集できないための暫定措置である（D119）
+3. `js/runtime-config.js` に Supabase の URL と anon key が入っていれば、メールアドレスへログインリンクを送る。リンクは **送った同じブラウザ** で開く。戻り先は末尾 `/` 付き（GitHub Pages なら `https://mook-hary.github.io/conte-rush/`、ローカルなら `http://localhost:8080/`）。未設定なら「Supabase設定が未完了です」と出る。Dashboard の Redirect URLs にこれらの URL を入れる。PKCE の Magic Link は D125。これは default SMTP では OTP テンプレートを編集できないための暫定措置でもある（D119）
 4. 社内利用は、本人が一度ログインしたあと、管理者が [docs/supabase-m11-1-internal.sql](docs/supabase-m11-1-internal.sql) のメールアドレスを書き換えて SQL Editor で実行する。利用権が付くと本体を操作できる。UID の手コピーは不要
-5. 利用権がある場合だけ「PDFを選択」からローカルの PDF を選ぶ
-6. 「前へ」「次へ」でページを移動する
-7. 常設の選択フレームを動かして「画像取得」する。別サイズは「ドラッグ」
-8. 右側の一覧で切り出し画像を確認し、誤登録を削除する
-9. Panel を選び、CUT 番号と尺（例: `3+12`）を入れて Cut を作成する
-10. Cut の「Timeline」で追加候補のサムネと番号を見て start を指定して追加する。同じ Panel を何度でも置ける。横 Timeline の空白の「＋」からも、既存 Panel または手描きをその位置へ挿入できる。手描きは左右が Onion として最初から見える。配置済みはサムネ・番号・区間と「削除」で確認する。配置後はドラッグと矢印キーで個別に調整する。開始位置は `1+18（42f）` のように秒+コマと frame で確認する
-11. 必要なら hold を入れて「Repeatで置き換え」する。既存 Timeline があるときは確認が出る
-12. 配置完了後、「Play」で Rush を再生する
-13. Cut 詳細の Motion で PAN / TU / TB を付け、START / END 枠を調整する。同じ Panel の各出現区間で同じ Motion が再生される
-14. Undo / Redo で Panel 登録・削除、placement 追加 / 削除 / 移動、Repeat、Motion 変更を戻す
-15. Timeline 完成後、「MP4を書き出す」で 1280×720 の映像のみ MP4 を保存する
-16. Cut 詳細の「タイムシート」で話数・タイトルを入れ、プレビューまたは B4 PDF を保存する
+5. 一般利用で利用権が無いときは「月額100円で利用する」から Stripe Test Checkout へ進む。`js/runtime-config.js` の `stripePaymentLinkUrl` が空なら「決済設定を準備中です」と出る。社内ユーザーは Stripe 未設定でも本体を使える
+6. 利用権がある場合だけ「PDFを選択」からローカルの PDF を選ぶ
+7. 「前へ」「次へ」でページを移動する
+8. 常設の選択フレームを動かして「画像取得」する。別サイズは「ドラッグ」
+9. 右側の一覧で切り出し画像を確認し、誤登録を削除する
+10. Panel を選び、CUT 番号と尺（例: `3+12`）を入れて Cut を作成する
+11. Cut の「Timeline」で追加候補のサムネと番号を見て start を指定して追加する。同じ Panel を何度でも置ける。横 Timeline の空白の「＋」からも、既存 Panel または手描きをその位置へ挿入できる。手描きは左右が Onion として最初から見える。配置済みはサムネ・番号・区間と「削除」で確認する。配置後はドラッグと矢印キーで個別に調整する。開始位置は `1+18（42f）` のように秒+コマと frame で確認する
+12. 必要なら hold を入れて「Repeatで置き換え」する。既存 Timeline があるときは確認が出る
+13. 配置完了後、「Play」で Rush を再生する
+14. Cut 詳細の Motion で PAN / TU / TB を付け、START / END 枠を調整する。同じ Panel の各出現区間で同じ Motion が再生される
+15. Undo / Redo で Panel 登録・削除、placement 追加 / 削除 / 移動、Repeat、Motion 変更を戻す
+16. Timeline 完成後、「MP4を書き出す」で 1280×720 の映像のみ MP4 を保存する
+17. Cut 詳細の「タイムシート」で話数・タイトルを入れ、プレビューまたは B4 PDF を保存する
 
 `index.html` を `file://` で直接開くと、ES モジュールと PDF.js の worker が動かないことがあります。
 
 GitHub Pages で公開する場合は、リポジトリのルートを配信元にしてください。PDF.js と Mediabunny、pdf-lib の取得に CDN（jsDelivr）へ接続できる必要があります。PDF 自体と生成ファイルは Pages へ送られません。
+
+### Stripe Test Mode（M11.2）
+
+secret key は不要です。Payment Link の URL だけを `js/runtime-config.js` の `stripePaymentLinkUrl` に入れます。
+
+1. [Stripe Dashboard](https://dashboard.stripe.com) でアカウントを作る
+2. **Test mode** がオンであることを確認する（Live にしない）
+3. **Product catalog** で製品 `conte-rush` を追加する
+4. 価格: 定期課金・毎月・JPY・`100`。トライアルなし。数量変更はオフ
+5. **Payment links** → **+ New** でその製品の Subscription Link を作る
+6. **After the payment**: 確認ページではなくウェブサイトへリダイレクトする。開発中は `http://localhost:8080/?checkout=success`。GitHub Pages 公開前に `https://mook-hary.github.io/conte-rush/?checkout=success` へ変える（1 つの Link の戻り先は 1 URL）
+7. 作成後 **Copy** で `https://buy.stripe.com/test_...` を取る。Dashboard 側に `client_reference_id` を焼き込まない
+8. その URL を `stripePaymentLinkUrl` に入れる
+9. テストカード `4242 4242 4242 4242`（将来の期限、任意 CVC）で払う。戻っても利用権はまだ付かない（M11.3）
+
+コンビニ決済や Stripe Tax は足さない。本番 Payment Link はまだ設定しない。
 
 ## ドキュメント
 

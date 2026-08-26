@@ -96,6 +96,7 @@ test("runtime config rejects placeholders", () => {
     isSupabaseRuntimeConfigReady({
       supabaseUrl: "https://abcd.supabase.co",
       supabaseAnonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.example",
+      stripePaymentLinkUrl: "",
     }),
     true,
   );

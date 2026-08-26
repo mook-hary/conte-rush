@@ -339,11 +339,14 @@ conte-rush を SNS 等で一般公開するための認証・利用権基盤。�
 - Auth / Gate / RLS は変更しない。ブラウザから internal_users を書けない
 - 仕様は [SPEC.md](SPEC.md) の M11.1 節を正とする
 
-### M11.2 Stripe Test Mode・月額 100 円 Checkout（未着手）
+### M11.2 Stripe Test Mode・月額 100 円 Checkout（実装済み・webhook 未実装）
 
-- Test Mode の Checkout
-- `none` 画面へ「月額 100 円で利用する」を足す
-- クライアントに Stripe secret を置かない
+- Test Mode の **Payment Link**（Checkout Session API は使わない）
+- Product `conte-rush` / 月額 100 JPY / quantity 1。トライアルなし
+- `none` の denied 画面へ「月額100円で利用する」。`client_reference_id` は Supabase user UUID
+- 決済後も M11.2 だけでは `paid` にしない。webhook は M11.3
+- クライアントに Stripe secret を置かない。Payment Link URL は公開設定でよい
+- 仕様は [SPEC.md](SPEC.md) の M11.2 節を正とする
 
 ### M11.3 Stripe webhook → Supabase subscription 反映（未着手）
 
@@ -367,6 +370,7 @@ conte-rush を SNS 等で一般公開するための認証・利用権基盤。�
 - GitHub repository の private 化
 - Stripe 本番モード
 - 正式有料公開で Auth の安定が必要になった段階で、Supabase Free から Pro への移行を検討する。Free の pause は運用リスクとして残る。「時々使えば絶対 pause しない」とはしない
+- **正式有料公開前の Must（M11.2 では実装しない）:** 特定商取引法に基づく表記、利用規約、プライバシーポリシー、解約方法の案内、価格（税）表示、税務 / 会計の確認。Test Mode の「税込100円」は仮の見せ方である
 
 ## 以降（構想）
 

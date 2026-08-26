@@ -1879,6 +1879,10 @@ body[data-auth-state="allowed"] .app-shell {
   display: none;
 }
 
+.denied-upgrade-slot p {
+  margin: 0 0 0.75rem;
+}
+
 .account-bar {
   margin-left: auto;
   display: flex;

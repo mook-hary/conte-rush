@@ -3,11 +3,17 @@ import {
   effectiveAccess,
   isLikelyEmail,
   isSupabaseRuntimeConfigReady,
-} from "./access.js?v=m11-0";
+} from "./access.js?v=m11-2";
 import { runtimeConfig } from "./runtime-config.js";
+import {
+  buildStripeCheckoutUrl,
+  hasCheckoutSuccessParam,
+  isStripePaymentLinkReady,
+  stripCheckoutSuccessFromLocation,
+} from "./stripe-checkout.js?v=m11-2";
 
-const APP_MODULE_URL = new URL("./app.js?v=m11-0", import.meta.url).href;
-const AUTH_MODULE_URL = new URL("./auth-client.js?v=m11-0-2", import.meta.url).href;
+const APP_MODULE_URL = new URL("./app.js?v=m11-2", import.meta.url).href;
+const AUTH_MODULE_URL = new URL("./auth-client.js?v=m11-2-1", import.meta.url).href;
 
 const gateEl = document.querySelector("#auth-gate");
 const loginForm = document.querySelector("#gate-login-form");
@@ -16,7 +22,8 @@ const sendLinkButton = document.querySelector("#gate-send-link");
 const loginMessageEl = document.querySelector("#gate-login-message");
 const accountEmailEl = document.querySelector("#account-email");
 const accountAccessEl = document.querySelector("#account-access");
-const deniedUpgradeSlot = document.querySelector("#denied-upgrade-slot");
+const checkoutButton = document.querySelector("#denied-checkout");
+const checkoutStatusEl = document.querySelector("#denied-checkout-status");
 
 let authState = "loading";
 let appModule = null;
@@ -30,6 +37,9 @@ let currentAccess = "none";
 let authApi = null;
 let authSubscription = null;
 let awaitingAuthCallback = false;
+let pendingCheckoutSuccess = false;
+let openingCheckout = false;
+let deniedCheckoutError = "";
 
 async function loadAuthApi() {
   if (!authApi) {
@@ -64,6 +74,51 @@ function setBusy(busy) {
   if (sendLinkButton) {
     sendLinkButton.disabled = busy || sendingLink;
   }
+}
+
+function isPaymentLinkConfigured() {
+  return isStripePaymentLinkReady(runtimeConfig.stripePaymentLinkUrl);
+}
+
+function syncDeniedCheckoutUi({ successNote = false } = {}) {
+  const configured = isPaymentLinkConfigured();
+  if (checkoutButton) {
+    checkoutButton.hidden = !configured;
+    checkoutButton.disabled = !configured || openingCheckout;
+  }
+  if (!checkoutStatusEl) {
+    return;
+  }
+  if (successNote) {
+    checkoutStatusEl.textContent =
+      "テスト決済が完了しました。現在はWebhook未実装のため、利用権はまだ反映されません。";
+    checkoutStatusEl.classList.remove("is-error");
+    return;
+  }
+  if (deniedCheckoutError) {
+    checkoutStatusEl.textContent = deniedCheckoutError;
+    checkoutStatusEl.classList.add("is-error");
+    return;
+  }
+  if (!configured) {
+    checkoutStatusEl.textContent = "決済設定を準備中です";
+    checkoutStatusEl.classList.remove("is-error");
+    return;
+  }
+  checkoutStatusEl.textContent = "";
+  checkoutStatusEl.classList.remove("is-error");
+}
+
+function settleCheckoutSuccessQuery() {
+  if (!pendingCheckoutSuccess) {
+    return;
+  }
+  const showNote = authState === "denied";
+  pendingCheckoutSuccess = false;
+  if (showNote) {
+    syncDeniedCheckoutUi({ successNote: true });
+  }
+  stripCheckoutSuccessFromLocation();
 }
 
 async function loadAppModule() {
@@ -113,6 +168,7 @@ async function enterUnauthenticated() {
   await teardownApp();
   setAuthState("unauthenticated");
   setBusy(false);
+  settleCheckoutSuccessQuery();
 }
 
 async function checkAccess(session, { silent = false } = {}) {
@@ -141,6 +197,7 @@ async function checkAccess(session, { silent = false } = {}) {
     await teardownApp();
     setAuthState("network_error");
     setBusy(false);
+    settleCheckoutSuccessQuery();
     return;
   }
 
@@ -156,6 +213,9 @@ async function checkAccess(session, { silent = false } = {}) {
     await teardownApp();
     setAuthState("denied");
     setBusy(false);
+    deniedCheckoutError = "";
+    syncDeniedCheckoutUi();
+    settleCheckoutSuccessQuery();
     return;
   }
 
@@ -169,6 +229,7 @@ async function checkAccess(session, { silent = false } = {}) {
     await teardownApp();
     setAuthState("network_error");
     setBusy(false);
+    settleCheckoutSuccessQuery();
     return;
   }
 
@@ -178,6 +239,7 @@ async function checkAccess(session, { silent = false } = {}) {
 
   setAuthState("allowed");
   setBusy(false);
+  settleCheckoutSuccessQuery();
 }
 
 async function handleAuthEvent(event, session) {
@@ -187,6 +249,9 @@ async function handleAuthEvent(event, session) {
   if (!session) {
     const auth = await loadAuthApi();
     if (event !== "SIGNED_OUT" && (awaitingAuthCallback || auth.hasAuthCodeParam())) {
+      return;
+    }
+    if (event === "INITIAL_SESSION") {
       return;
     }
     awaitingAuthCallback = false;
@@ -218,7 +283,7 @@ async function handleSendLoginLink(event) {
     const auth = await loadAuthApi();
     pendingEmail = await auth.sendEmailOtp(emailInput.value);
     setLoginMessage(
-      "メールのログインリンクを開いてください。この画面に戻ると利用権を確認します。",
+      "メールのログインリンクを、このブラウザで開いてください。この画面に戻ると利用権を確認します。",
     );
   } catch (error) {
     console.error(error);
@@ -257,6 +322,40 @@ async function handleLogout() {
   }
 }
 
+async function handleDeniedCheckout() {
+  if (openingCheckout || authState !== "denied" || currentAccess !== "none") {
+    return;
+  }
+  if (!isPaymentLinkConfigured()) {
+    deniedCheckoutError = "";
+    syncDeniedCheckoutUi();
+    return;
+  }
+  openingCheckout = true;
+  deniedCheckoutError = "";
+  syncDeniedCheckoutUi();
+  try {
+    const auth = await loadAuthApi();
+    const session = await auth.getSession();
+    const userId = session?.user?.id;
+    if (!userId) {
+      openingCheckout = false;
+      await enterUnauthenticated();
+      return;
+    }
+    window.location.href = buildStripeCheckoutUrl({
+      paymentLinkUrl: runtimeConfig.stripePaymentLinkUrl,
+      userId,
+      email: session.user?.email ?? "",
+    });
+  } catch (error) {
+    console.error(error);
+    openingCheckout = false;
+    deniedCheckoutError = "決済ページを開けませんでした。";
+    syncDeniedCheckoutUi();
+  }
+}
+
 async function handleRetryAccess() {
   try {
     const auth = await loadAuthApi();
@@ -274,15 +373,12 @@ async function handleRetryAccess() {
 }
 
 async function start() {
-  if (deniedUpgradeSlot) {
-    deniedUpgradeSlot.replaceChildren();
-  }
-
   if (!isSupabaseRuntimeConfigReady(runtimeConfig)) {
     setAuthState("unconfigured");
     return;
   }
 
+  pendingCheckoutSuccess = hasCheckoutSuccessParam(window.location.href);
   setAuthState("loading");
 
   let auth;
@@ -294,86 +390,37 @@ async function start() {
     return;
   }
 
+  awaitingAuthCallback = auth.hasAuthCodeParam();
   const { data } = auth.onAuthStateChange((event, session) => {
     void handleAuthEvent(event, session);
   });
   authSubscription = data?.subscription ?? null;
-  awaitingAuthCallback = auth.hasAuthCodeParam();
 
-  queueMicrotask(() => {
+  try {
+    const { session, error } = await auth.establishSessionFromUrl();
+    awaitingAuthCallback = false;
     if (authState !== "loading") {
       return;
     }
-    void auth
-      .getSession()
-      .then(async (session) => {
-        if (authState !== "loading") {
-          return;
-        }
-        const callbackError = auth.readAuthCallbackError();
-        if (callbackError) {
-          awaitingAuthCallback = false;
-          auth.stripAuthParamsFromUrl();
-          await enterUnauthenticated();
-          setLoginMessage(
-            `ログインリンクを確認できませんでした。${callbackError}`,
-            true,
-          );
-          return;
-        }
-        if (session) {
-          awaitingAuthCallback = false;
-          auth.stripAuthParamsFromUrl();
-          await checkAccess(session);
-          return;
-        }
-        if (awaitingAuthCallback || auth.hasAuthCodeParam()) {
-          window.setTimeout(() => {
-            if (authState !== "loading") {
-              return;
-            }
-            void auth
-              .getSession()
-              .then(async (laterSession) => {
-                if (authState !== "loading") {
-                  return;
-                }
-                if (laterSession) {
-                  awaitingAuthCallback = false;
-                  auth.stripAuthParamsFromUrl();
-                  await checkAccess(laterSession);
-                  return;
-                }
-                awaitingAuthCallback = false;
-                auth.stripAuthParamsFromUrl();
-                await enterUnauthenticated();
-                setLoginMessage(
-                  "ログインリンクの確認に失敗しました。もう一度送ってください。",
-                  true,
-                );
-              })
-              .catch(async (error) => {
-                console.error(error);
-                if (authState !== "loading") {
-                  return;
-                }
-                await teardownApp();
-                setAuthState("network_error");
-              });
-          }, 12000);
-          return;
-        }
-        await enterUnauthenticated();
-      })
-      .catch(async (error) => {
-        console.error(error);
-        if (authState !== "loading") {
-          return;
-        }
-        await teardownApp();
-        setAuthState("network_error");
-      });
-  });
+    if (error) {
+      await enterUnauthenticated();
+      setLoginMessage(error, true);
+      return;
+    }
+    if (session) {
+      await checkAccess(session);
+      return;
+    }
+    await enterUnauthenticated();
+  } catch (error) {
+    console.error(error);
+    awaitingAuthCallback = false;
+    if (authState !== "loading") {
+      return;
+    }
+    await teardownApp();
+    setAuthState("network_error");
+  }
 }
 
 loginForm?.addEventListener("submit", (event) => {
@@ -383,6 +430,9 @@ document.querySelectorAll("[data-gate-logout]").forEach((button) => {
   button.addEventListener("click", () => {
     void handleLogout();
   });
+});
+checkoutButton?.addEventListener("click", () => {
+  void handleDeniedCheckout();
 });
 document.querySelector("#gate-retry")?.addEventListener("click", () => {
   void handleRetryAccess();

@@ -948,10 +948,10 @@
 ## D119. Auth UI は default SMTP 制約のため暫定 Magic Link とする
 
 - 状態: 採用（M11.0・暫定）
-- 判断: Auth Gate のログイン UI はメールアドレス入力と「ログインリンクを送る」だけにする。コード入力と `verifyOtp` UI は出さない。送信は従来どおり `signInWithOtp()`。`emailRedirectTo` は `location.origin + pathname`。戻ってきたあとの session 検出は `detectSessionInUrl: true`
+- 判断: Auth Gate のログイン UI はメールアドレス入力と「ログインリンクを送る」だけにする。コード入力と `verifyOtp` UI は出さない。送信は従来どおり `signInWithOtp()`。`emailRedirectTo` と PKCE 復帰は D125。戻ってきたあとの session 検出は `detectSessionInUrl: true`
 - 理由: 新規 Supabase Free project + default SMTP では email template を編集できず、`{{ .Token }}` を入れた OTP メールへ変更できない。default テンプレートは Magic Link 向けである
 - 採用しなかった案: コード入力 UI を残したまま届かない OTP メールを待つ。Auth / DB / RLS / access check を Magic Link 専用に作り替える
-- 結果: 変更は Auth UI と redirect 検出だけ。`verifyEmailOtp` と `normalizeOtp` は残す。custom SMTP 導入後は D106 の数字 OTP UI へ戻せる。access check / internal / paid / denied / network_error、DB、RLS、`runtime-config.js`、`clearSessionData` は変えない。これは default SMTP 制約上の暫定措置である
+- 結果: 変更は Auth UI と redirect 検出だけ。`verifyEmailOtp` と `normalizeOtp` は残す。custom SMTP 導入後は D106 の数字 OTP UI へ戻せる。access check / internal / paid / denied / network_error、DB、RLS、`runtime-config.js`、`clearSessionData` は変えない。これは default SMTP 制約上の暫定措置である。Magic Link 復帰の実装は D125
 
 ## D120. 社内利用権は管理画面なし、SQL Editor の email 参照で付ける
 
@@ -961,9 +961,50 @@
 - 採用しなかった案: 管理 UI。`allowlist_emails` を正本にする。authenticated に INSERT/UPDATE を付ける。service_role をフロントへ置く。未ログイン向け invite 表
 - 結果: 手順は [supabase-m11-1-internal.sql](supabase-m11-1-internal.sql)。M11.0 の Auth Gate / RLS / 表定義は変えない
 
+## D121. M11.2 の決済導線は Stripe Payment Link とする
+
+- 状態: 採用（M11.2・実装済み。Test Mode。webhook 未実装）
+- 判断: Test Mode の Subscription Payment Link を denied から開く。Checkout Session をフロントから作らない
+- 理由: GitHub Pages のみで、secret を置けるサーバーが無い。Payment Link URL は秘密ではない
+- 採用しなかった案: ブラウザから Checkout Session API。restricted key を JS に埋める。M11.2 で Cloudflare Functions を必須にする
+- 結果: `runtimeConfig.stripePaymentLinkUrl` にベース URL。クエリはアプリが付ける
+
+## D122. Stripe と Supabase user の正の紐付けは client_reference_id とする
+
+- 状態: 採用（M11.2・実装済み。Test Mode。webhook 未実装）
+- 判断: Payment Link URL の `client_reference_id` に `session.user.id`（UUID）だけを入れる。email は `prefilled_email` の補助に留める
+- 理由: M11.3 の `checkout.session.completed` が user_id を取るため。email は Checkout 上で変わり得る。Stripe は英数字・ハイフン・アンダースコア（最大 200）を許可し、UUID はこれに入る
+- 採用しなかった案: email を reference にする。固定 id を Dashboard に焼き込む。`locked_prefilled_email` で権限を装う
+- 結果: URL は `URL` + `URLSearchParams` で組み立てる。session が無ければ遷移しない
+
+## D123. checkout=success は案内であり paid ではない
+
+- 状態: 採用（M11.2・実装済み。Test Mode。webhook 未実装）
+- 判断: Payment Link の `after_completion` で Pages（または localhost）へ `?checkout=success` で戻す。M11.2 ではこの query と `{CHECKOUT_SESSION_ID}` のどちらでも `allowed` にしない
+- 理由: `subscriptions` の正は M11.3 webhook。Payment Link に Checkout Session の `cancel_url` は無い
+- 採用しなかった案: 成功 query で fixture 相当の paid をクライアントが書く。session id をフロントから Stripe へ取りに行く
+- 結果: テスト案内を出したあと query を外す。本番ではこの案内を残さない
+
+## D124. M11.2 のブラウザは subscriptions を書かない
+
+- 状態: 採用（M11.2・実装済み。Test Mode。webhook 未実装）
+- 判断: 決済成功後もクライアントから `customer_id` / `subscription_id` / `status` を upsert しない
+- 理由: D110。書き込みは service role（M11.3 webhook）だけ
+- 採用しなかった案: success 画面から anon で subscriptions を更新する
+- 結果: 支払い直後も `effectiveAccess` は `none` でよい
+
+## D125. Magic Link 復帰は PKCE と末尾スラッシュ付き redirect とする
+
+- 状態: 採用（M11.0 修正）
+- 判断: supabase-js 2.112.3 に `flowType: "pkce"` を明示する。`emailRedirectTo` は origin + ディレクトリルート + 末尾 `/`。`?code=` があるあいだは unauthenticated にしない。`detectSessionInUrl` で足りなければ `exchangeCodeForSession` する。PKCE verifier 欠如はログイン画面の認証エラーとし、`network_error` にしない
+- 理由: default の implicit は hash token が GitHub Pages / メールクライアントで落ちやすい。PKCE の `?code=` は Pages の 301 でも残る。verifier は送信したブラウザの localStorage にある
+- 採用しなかった案: implicit のまま hash を待つ。callback 失敗を利用権の network_error と混ぜる
+- 結果: GitHub Pages は `https://mook-hary.github.io/conte-rush/`。localhost は `http://localhost:8080/` など現在 origin のルート。リンクは送った同じブラウザで開く
+
 ## 未決
 
 - ライセンス
 - GitHub Pages の公開 URL / リポジトリ公開範囲
-- Stripe 本番モードへの切替時期（M11.5 のあと。M11.0 では決済しない）
+- Stripe 本番モードへの切替時期（M11.5 のあと。M11.2 は Test Mode のみ）
+- 正式有料公開時の税表示・特商法・利用規約（M11 後工程の Must。M11.2 では実装しない）
 - 正式有料公開時の Supabase Pro 移行時期（Free pause は運用リスク。保証はしない）

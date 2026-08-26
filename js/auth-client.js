@@ -1,42 +1,40 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.3/+esm";
 import { runtimeConfig } from "./runtime-config.js";
-import { normalizeEmail, normalizeOtp } from "./access.js?v=m11-0";
+import { normalizeEmail, normalizeOtp } from "./access.js?v=m11-2-1";
+import {
+  canonicalizeAuthRedirectUrl,
+  getAuthCallbackCodeFromHref,
+  hasAuthCodeParamFromHref,
+  hrefWithoutAuthParams,
+  isPkceVerifierMissingError,
+  readAuthCallbackErrorFromHref,
+} from "./auth-redirect.js?v=m11-2-1";
 
 export const SUPABASE_JS_VERSION = "2.112.3";
 export const SUPABASE_JS_ESM =
   "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.3/+esm";
 
+export {
+  canonicalizeAuthRedirectUrl,
+  isPkceVerifierMissingError,
+};
+
 let client = null;
 
-function authUrlParts() {
-  const url = new URL(window.location.href);
-  const hash = url.hash.startsWith("#") ? url.hash.slice(1) : url.hash;
-  return { url, hashParams: new URLSearchParams(hash) };
-}
-
 export function authRedirectUrl() {
-  const url = new URL(window.location.href);
-  return `${url.origin}${url.pathname}`;
+  return canonicalizeAuthRedirectUrl(window.location.href);
 }
 
 export function readAuthCallbackError() {
-  const { url, hashParams } = authUrlParts();
-  return (
-    url.searchParams.get("error_description") ||
-    url.searchParams.get("error") ||
-    hashParams.get("error_description") ||
-    hashParams.get("error") ||
-    ""
-  );
+  return readAuthCallbackErrorFromHref(window.location.href);
+}
+
+export function getAuthCallbackCode() {
+  return getAuthCallbackCodeFromHref(window.location.href);
 }
 
 export function hasAuthCodeParam() {
-  const { url, hashParams } = authUrlParts();
-  return (
-    url.searchParams.has("code") ||
-    hashParams.has("code") ||
-    hashParams.has("access_token")
-  );
+  return hasAuthCodeParamFromHref(window.location.href);
 }
 
 export function hasAuthCallbackParams() {
@@ -44,13 +42,8 @@ export function hasAuthCallbackParams() {
 }
 
 export function stripAuthParamsFromUrl() {
-  const url = new URL(window.location.href);
-  ["code", "error", "error_code", "error_description"].forEach((key) => {
-    url.searchParams.delete(key);
-  });
-  url.hash = "";
-  const next = `${url.origin}${url.pathname}${url.search}`;
-  const current = `${window.location.origin}${window.location.pathname}${window.location.search}${window.location.hash}`;
+  const next = hrefWithoutAuthParams(window.location.href);
+  const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
   if (current !== next) {
     window.history.replaceState({}, document.title, next);
   }
@@ -60,13 +53,12 @@ export function getSupabaseClient() {
   if (client) {
     return client;
   }
-  // detectSessionInUrl is required for Magic Link / PKCE return.
-  // Numeric OTP (verifyEmailOtp) does not depend on it.
   client = createClient(runtimeConfig.supabaseUrl, runtimeConfig.supabaseAnonKey, {
     auth: {
       persistSession: true,
       autoRefreshToken: true,
       detectSessionInUrl: true,
+      flowType: "pkce",
     },
   });
   return client;
@@ -80,10 +72,56 @@ export async function getSession() {
   return data.session ?? null;
 }
 
+function authCallbackFailureMessage(error) {
+  if (isPkceVerifierMissingError(error)) {
+    return "ログインリンクを、メールを送った同じブラウザで開いてください。";
+  }
+  const detail = String(error?.message ?? "").trim();
+  return detail
+    ? `ログインリンクの確認に失敗しました。${detail}`
+    : "ログインリンクの確認に失敗しました。もう一度送ってください。";
+}
+
+/**
+ * Finish PKCE Magic Link return. Does not change access / Stripe state.
+ * Auth failures are returned as { error } for the login screen, not thrown.
+ */
+export async function establishSessionFromUrl() {
+  const existing = await getSession();
+  if (existing) {
+    stripAuthParamsFromUrl();
+    return { session: existing, error: null };
+  }
+
+  const redirectError = readAuthCallbackError();
+  if (redirectError) {
+    stripAuthParamsFromUrl();
+    return {
+      session: null,
+      error: `ログインリンクを確認できませんでした。${redirectError}`,
+    };
+  }
+
+  const code = getAuthCallbackCode();
+  if (!code) {
+    return { session: null, error: null };
+  }
+
+  try {
+    const { data, error } = await getSupabaseClient().auth.exchangeCodeForSession(code);
+    stripAuthParamsFromUrl();
+    if (error) {
+      return { session: null, error: authCallbackFailureMessage(error) };
+    }
+    return { session: data.session ?? null, error: null };
+  } catch (error) {
+    stripAuthParamsFromUrl();
+    return { session: null, error: authCallbackFailureMessage(error) };
+  }
+}
+
 export async function sendEmailOtp(email) {
   const normalized = normalizeEmail(email);
-  // Temporary Magic Link: default SMTP cannot customize {{ .Token }} OTP mail.
-  // After custom SMTP, Auth UI can call verifyEmailOtp again without changing this API.
   const { error } = await getSupabaseClient().auth.signInWithOtp({
     email: normalized,
     options: {
@@ -98,7 +136,6 @@ export async function sendEmailOtp(email) {
 }
 
 export async function verifyEmailOtp(email, token) {
-  // Kept for restoring numeric OTP UI after custom SMTP (D119).
   const { data, error } = await getSupabaseClient().auth.verifyOtp({
     email: normalizeEmail(email),
     token: normalizeOtp(token),

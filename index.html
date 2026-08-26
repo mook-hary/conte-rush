@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>conte-rush</title>
-    <link rel="stylesheet" href="css/style.css?v=m11-0-2" />
+    <link rel="stylesheet" href="css/style.css?v=m11-2-1" />
   </head>
   <body data-state="idle" data-auth-state="loading">
     <div id="auth-gate" class="auth-gate">
@@ -44,10 +44,12 @@
       <section class="auth-card" data-gate-panel="denied" hidden>
         <h1>conte-rush</h1>
         <p>利用権がありません</p>
-        <p class="auth-help">
-          社内利用の場合は管理者に連絡してください。一般向けの有料公開は準備中です。
-        </p>
-        <div id="denied-upgrade-slot" class="denied-upgrade-slot"></div>
+        <p class="auth-help">社内利用の場合は管理者に連絡してください。</p>
+        <div id="denied-upgrade-slot" class="denied-upgrade-slot">
+          <p>conte-rushは月額100円（税込）で利用できます。</p>
+          <p id="denied-checkout-status" class="auth-message" role="status"></p>
+          <button id="denied-checkout" type="button">月額100円で利用する</button>
+        </div>
         <button type="button" data-gate-logout>ログアウト</button>
       </section>
       <section class="auth-card" data-gate-panel="network_error" hidden>
@@ -415,6 +417,6 @@
         status.textContent = `起動エラー: ${event.message}`;
       });
     </script>
-    <script type="module" src="js/access-gate.js?v=m11-0-2"></script>
+    <script type="module" src="js/access-gate.js?v=m11-2-1"></script>
   </body>
 </html>

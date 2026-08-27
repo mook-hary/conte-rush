@@ -186,6 +186,48 @@ export async function redeemInternalInvite(code) {
   return { ok: false, error: "invalid_code" };
 }
 
+export async function createCheckoutSession() {
+  return invokeBillingFunction("create-checkout-session");
+}
+
+export async function createPortalSession() {
+  return invokeBillingFunction("create-portal-session");
+}
+
+async function invokeBillingFunction(functionName) {
+  const { data, error } = await getSupabaseClient().functions.invoke(functionName, {
+    body: { returnUrl: authRedirectUrl() },
+  });
+  if (!error && data?.ok && data?.url) {
+    return { ok: true, action: data.action, url: data.url };
+  }
+  if (!error && data?.ok && data?.action === "existing_subscription") {
+    return {
+      ok: true,
+      action: "existing_subscription",
+      status: data.status,
+    };
+  }
+  let payload = null;
+  try {
+    payload = await error?.context?.json?.();
+  } catch {
+    payload = null;
+  }
+  const status = Number(error?.context?.status ?? 0);
+  const errorName = String(payload?.error ?? data?.error ?? "");
+  if (status === 401 || errorName === "unauthorized") {
+    return { ok: false, error: "unauthorized" };
+  }
+  if (status === 404 || errorName === "no_customer") {
+    return { ok: false, error: "no_customer" };
+  }
+  if (status >= 500 || error) {
+    throw error || new Error(errorName || "billing_error");
+  }
+  return { ok: false, error: errorName || "billing_error" };
+}
+
 export async function fetchOwnAccessRows(userId) {
   if (!userId) {
     throw new Error("userId is required");
@@ -200,7 +242,7 @@ export async function fetchOwnAccessRows(userId) {
     supabase
       .from("subscriptions")
       .select(
-        "user_id, provider, status, current_period_end, customer_id, subscription_id",
+        "user_id, provider, status, current_period_end, customer_id, subscription_id, cancel_at_period_end",
       )
       .eq("user_id", userId)
       .maybeSingle(),

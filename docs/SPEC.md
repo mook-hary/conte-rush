@@ -2675,7 +2675,7 @@ fail-closed の例外にしないこと: `network_error` を `denied`（未契�
 
 - 「利用権がありません」
 - 社内からコードを受け取った方は招待コードで登録（M11.6）。管理者の SQL 付与も残る
-- M11.2: 月額100円（税込）と［月額100円で利用する］（`#denied-upgrade-slot`）。Payment Link 未設定なら「決済設定を準備中です」
+- M11.4: 月額100円（税込）・自動更新・解約可。［月額100円で利用する］は Checkout Session。past_due 等は［契約を管理］。Payment Link 未設定メッセージは出さない
 - `checkout=success` は案内だけ。`paid` にしない
 
 `allowed` かつ `internal`:
@@ -3252,6 +3252,79 @@ denied に「社内からコードを受け取った方」と入力。一般向�
 - reload 後も社内権限を維持する。招待コードは一時的な登録手段。権限の正は DB の `internal_users`
 - GitHub Pages 公開 URL（`https://mook-hary.github.io/conte-rush/`）で一連の経路を確認済み。社内配布可能な状態。メールアドレスの事前収集は不要
 
+## M11.4（実装済み・Test Mode で実機確認済み）
+
+第一目的は **同一 Supabase user が、意図せず同一 conte-rush Price の Subscription を複数契約できないこと** である。Billing Portal はそのための契約管理である。目標モデルは 1 user → 1 Stripe Customer → 0 または 1 Subscription。
+
+```
+GitHub Pages
+  → JWT
+  → create-checkout-session
+  → pg_advisory_xact_lock を Stripe 確認〜Session 作成まで保持
+  → Customer 1 件を再利用 / 作成
+  → 既存契約があれば Checkout を作らない
+  → 無ければ Checkout Session
+  → webhook が subscriptions を更新
+```
+
+共有 Payment Link は廃止する。`effectiveAccess` / `PAID_STATUSES` / PKCE / 招待コードは変えない。
+
+### 1. モデル
+
+Supabase user 1 : Stripe Customer 1 : conte-rush Subscription 0 または 1。
+
+正の Customer 対応は `stripe_customers`。`subscriptions` は 1 user 1 行のまま。
+
+### 2. Checkout
+
+`create-checkout-session`。`verify_jwt = true`。user_id は `auth.getUser()` のみ。Price は env `STRIPE_PRICE_ID`。body の user_id / customer_id / price_id は無視。
+
+lock は Postgres トランザクション内の `pg_advisory_xact_lock`。**Stripe `subscriptions.list` と Checkout Session 作成が終わるまで COMMIT しない。** RPC だけ先に終えてから Stripe を呼ぶ実装は禁止。
+
+既存 blocking（`active` / `trialing` / `past_due` / `unpaid` / `incomplete` / `paused`、および `cancel_at_period_end` 中の active）では新しい Subscription を作らない。open Session があればその URL を返す。`canceled` のみ再契約可。
+
+Idempotency-Key: `conte-rush-checkout:{user_id}:{price_id}`。
+
+### 3. Portal
+
+`create-portal-session`。本人の `stripe_customers.customer_id`（無ければ `subscriptions.customer_id`）。共有 Portal URL は使わない。独自解約 API は作らない。`return_url` は許可 origin のみ。
+
+### 4. webhook
+
+blocking な別 `subscription_id` がある行は上書きしない。紐付けは `subscription_id` / `customer_id` / `stripe_customers` / metadata `supabase_user_id` / `client_reference_id`。
+
+### 5. access / UX
+
+paid 条件は従来どおり `active` / `trialing`。`past_due` は none。即停止し Portal で支払方法を更新する。
+
+- none / canceled: ［月額100円で利用する］。税込・自動更新・解約可・期間末まで利用、を短く出す
+- past_due / unpaid / incomplete / paused: 新規 Checkout ではなく［契約を管理］
+- paid: Account に［契約を管理］
+- internal: 優先のまま。Stripe 契約があっても自動解約しない。Customer があるときだけ［契約を管理］
+- `checkout=success` は案内だけ
+
+### 6. 完成条件
+
+- 同一 user が同一 Price の active Subscription を複数作れない
+- Customer は 1 件に再利用される
+- Payment Link URL が frontend / runtime-config に無い
+- 連打・複数タブでも新しい Session を重ねない（lock + open Session 再利用 + Idempotency-Key）
+- secret がフロントに無い
+
+実機確認（M11.4・Test Mode・記録）:
+
+- paid ユーザー: 既存 subscription を検出し `existing_subscription`。新規 Checkout を作らない。「契約を管理」→ Customer Portal → アプリへ戻る
+- 新規ユーザー: Checkout Session（¥100/月）→ Test 決済 → webhook → `paid` → 本体。再呼び出しでも `existing_subscription` で二重契約へ進まない
+- Payment Link は frontend / runtime-config から外した。Dashboard 上の旧 Link 無効化は後工程
+- Function secret の Price 不一致で Checkout が失敗することを確認し、正しい Price へ直してから上記を通した
+
+### 7. M11.4 では実装しない
+
+- Stripe 本番モード、特商法ページ、past_due 猶予
+- 重複 Test subscription / 余分な Test Customer の自動キャンセル
+- Dashboard 上の旧 Payment Link 無効化（別工程）
+- Cloudflare Functions
+
 ## UI 要件
 
 
@@ -3551,3 +3624,5 @@ M11.1 は社内利用権の運用である。管理画面は作らず、SQL Edit
 M11.3 は Stripe webhook を Supabase Edge Function で受け、`subscriptions` を更新する。GitHub Pages は静的のままである。
 
 M11.6 は招待コードによる internal セルフ登録である。平文は repo に置かない。公開環境で確認済みであり、社内配布可能な状態である。
+
+M11.4 は二重契約防止である。Payment Link をやめ、サーバーが Checkout Session を作る。Customer は 1 user 1 件。

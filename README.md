@@ -44,11 +44,13 @@
 
 **実装済み（M11.1）** は、社内 5〜6 人を管理画面なしで `internal_users` へ登録する運用です。本人が Magic Link で一度ログインしたあと、管理者が SQL Editor でメールアドレスから利用権を付けます。
 
-**実装済み（M11.2）** は、一般ユーザーが `denied` から Stripe Test Mode の月額100円 Payment Link へ進む導線です。Test Mode のみです。
+**実装済み（M11.2）** は、当時の denied → Stripe Test Payment Link 導線です。M11.4 で frontend からは外した。Test Mode のみです。
 
 **実装済み（M11.3）** は、Stripe webhook を Supabase Edge Function で受け、`subscriptions` を更新して `paid` にする処理です。Test Mode。`checkout=success` だけでは利用権は付きません。
 
-## 現状できること（M0〜M11.3・実装済み）
+**実装済み（M11.4）** は、二重請求防止です。1 user → 1 Customer → 0 または 1 Subscription。Edge Function が Checkout Session を作り、既存契約があれば新規 Checkout に進まない。Billing Portal で契約管理する。Test Mode で実機確認済み。
+
+## 現状できること（M0〜M11.4・実装済み）
 
 - ユーザーの端末上にある PDF を選んで開く
 - 1ページ目をブラウザに描画する
@@ -105,7 +107,7 @@
 - 利用権が internal または paid のときだけ本体を操作する
 - Account からログアウトすると、ブラウザ内の制作データを破棄する
 - 社内利用者は、ログイン後に配布コードで登録できる（M11.6。GitHub Pages 公開環境で確認済み。社内配布可能な状態）。管理者による SQL 付与も残る（管理画面なし）
-- 利用権がないときは、設定済みなら月額100円（税込）の Stripe Test Payment Link へ進める。決済後は webhook が利用権を付ける（M11.3）。すぐ反映されないときは「利用権を再確認」する
+- 利用権がないときは、月額100円（税込）の Stripe Checkout へ進める。決済後は webhook が利用権を付ける。既存契約があるときは新規契約せず契約管理へ。すぐ反映されないときは「利用権を再確認」する
 
 ## 現状できないこと
 
@@ -135,7 +137,7 @@ M7 では Mediabunny 1.51.0 も CDN（jsDelivr）から取得します。M9 で�
 
 M11.0 では、ログインと利用権の確認だけ Supabase を使います。PDF / Panel / Drawing / Rush / MP4 / Timesheet は Supabase へ送りません。anon key は公開前提です。service role はブラウザに置きません。
 
-M11.2 の課金は Stripe の Payment Link（Stripe がホストする Checkout）へ遷移する想定です。制作ファイルは Stripe へ送りません。Stripe secret はブラウザに置きません。
+M11.2 の課金導線は Stripe Checkout（サーバー生成 Session）である。制作ファイルは Stripe へ送りません。Stripe secret はブラウザに置きません。
 
 ## 動作環境
 
@@ -148,9 +150,9 @@ M11.2 の課金は Stripe の Payment Link（Stripe がホストする Checkout�
 - 現行は GitHub Pages の静的配信。M11.0 でログインする場合は Supabase プロジェクトが必要
 - セットアップ SQL: [docs/supabase-m11.sql](docs/supabase-m11.sql)
 - 社内利用権の付与 / 解除: [docs/supabase-m11-1-internal.sql](docs/supabase-m11-1-internal.sql)
-- M11.2 の `stripePaymentLinkUrl` は公開してよい Test Payment Link。空でも Auth / 社内利用は動く
+- M11.4 の課金は Edge Function が Checkout Session を作る。Payment Link URL は runtime-config に置かない
 
-## 使い方（M0〜M11.3）
+## 使い方（M0〜M11.4）
 
 1. このフォルダを HTTP で配信する。例:
 
@@ -161,7 +163,7 @@ M11.2 の課金は Stripe の Payment Link（Stripe がホストする Checkout�
 2. ブラウザで `http://localhost:8080/` を開く
 3. `js/runtime-config.js` に Supabase の URL と anon key が入っていれば、メールアドレスへログインリンクを送る。リンクは **送った同じブラウザ** で開く。戻り先は末尾 `/` 付き（GitHub Pages なら `https://mook-hary.github.io/conte-rush/`、ローカルなら `http://localhost:8080/`）。未設定なら「Supabase設定が未完了です」と出る。Dashboard の Redirect URLs にこれらの URL を入れる。PKCE の Magic Link は D125。これは default SMTP では OTP テンプレートを編集できないための暫定措置でもある（D119）
 4. 社内利用は、ログイン後に denied 画面の招待コードで登録できる。メールアドレスの事前収集は不要。コードは repo に置かない。権限の正は `internal_users`。管理者は [docs/supabase-m11-invite.sql](docs/supabase-m11-invite.sql) で生成・無効化する。従来どおり [docs/supabase-m11-1-internal.sql](docs/supabase-m11-1-internal.sql) で email から付けることもできる。GitHub Pages 公開環境で新規ユーザー経路まで確認済み
-5. 一般利用で利用権が無いときは「月額100円で利用する」から Stripe Test Checkout へ進む。決済後は webhook が `paid` を付ける。すぐ反映されないときは「利用権を再確認」する。`stripePaymentLinkUrl` が空なら「決済設定を準備中です」と出る。社内ユーザーは Stripe 未設定でも本体を使える
+5. 一般利用で利用権が無いときは「月額100円で利用する」から Stripe Test Checkout へ進む。決済後は webhook が `paid` を付ける。すでに契約があるときは Checkout せず「契約を管理」へ。すぐ反映されないときは「利用権を再確認」する。社内ユーザーは Stripe 未設定でも本体を使える
 6. 利用権がある場合だけ「PDFを選択」からローカルの PDF を選ぶ
 7. 「前へ」「次へ」でページを移動する
 8. 常設の選択フレームを動かして「画像取得」する。別サイズは「ドラッグ」
@@ -179,27 +181,25 @@ M11.2 の課金は Stripe の Payment Link（Stripe がホストする Checkout�
 
 GitHub Pages で公開する場合は、リポジトリのルートを配信元にしてください。PDF.js と Mediabunny、pdf-lib の取得に CDN（jsDelivr）へ接続できる必要があります。PDF 自体と生成ファイルは Pages へ送られません。
 
-### Stripe Test Mode（M11.2）
+### Stripe Test Mode（M11.4）
 
-secret key は不要です。Payment Link の URL だけを `js/runtime-config.js` の `stripePaymentLinkUrl` に入れます。
+secret key はブラウザに置きません。Checkout Session は Edge Function が作ります。
 
-1. [Stripe Dashboard](https://dashboard.stripe.com) でアカウントを作る
-2. **Test mode** がオンであることを確認する（Live にしない）
-3. **Product catalog** で製品 `conte-rush` を追加する
-4. 価格: 定期課金・毎月・JPY・`100`。トライアルなし。数量変更はオフ
-5. **Payment links** → **+ New** でその製品の Subscription Link を作る
-6. **After the payment**: 確認ページではなくウェブサイトへリダイレクトする。開発中は `http://localhost:8080/?checkout=success`。GitHub Pages 公開前に `https://mook-hary.github.io/conte-rush/?checkout=success` へ変える（1 つの Link の戻り先は 1 URL）
-7. 作成後 **Copy** で `https://buy.stripe.com/test_...` を取る。Dashboard 側に `client_reference_id` を焼き込まない
-8. その URL を `stripePaymentLinkUrl` に入れる
-9. テストカード `4242 4242 4242 4242`（将来の期限、任意 CVC）で払う。戻った直後は webhook 待ちで denied のことがある。「利用権を再確認」で `paid` になれば本体を開ける
+1. [Stripe Dashboard](https://dashboard.stripe.com) で **Test mode** をオンにする
+2. Product `conte-rush` の月額 JPY 100 Price を使う（既存 Subscription が付いている Price）
+3. Function secret に `STRIPE_SECRET_KEY` と `STRIPE_PRICE_ID` を入れる。値は Dashboard の当該 Price と一致させる
+4. Customer Portal を有効化する（支払方法更新と期間末キャンセル。プラン／数量変更はオフ）
+5. テストカード `4242 4242 4242 4242` で払う。戻った直後は webhook 待ちで denied のことがある。「利用権を再確認」で `paid` になれば本体を開ける
 
-コンビニ決済や Stripe Tax は足さない。本番 Payment Link はまだ設定しない。
+共有 Payment Link は frontend では使わない。Dashboard 上の旧 Link 無効化は後工程。本番モードはまだ設定しない。
 
-### Stripe webhook（M11.3）
+Test Mode で実機確認済み: 既存契約は Checkout せず、新規は Checkout → webhook → `paid`、再操作は既存契約検出。Portal からアプリへ戻れる。
+
+### Stripe webhook（M11.3 / M11.4）
 
 secret は Supabase Edge Function にだけ置く。`js/runtime-config.js` には置かない。セットアップ SQL は [docs/supabase-m11-3.sql](docs/supabase-m11-3.sql)。
 
-実機確認済み（Test Mode）: Payment Link 決済 → webhook が `subscriptions` を更新 → `paid` で本体へ入れる。reload 後も、`checkout` query の無い通常 URL でも維持する。
+実機確認済み（Test Mode）: Checkout 決済 → webhook が `subscriptions` を更新 → `paid` で本体へ入れる。reload 後も、`checkout` query の無い通常 URL でも維持する。`checkout=success` だけでは paid にしない。
 
 ## ドキュメント
 
@@ -213,6 +213,7 @@ secret は Supabase Edge Function にだけ置く。`js/runtime-config.js` に�
 | [docs/supabase-m11-1-internal.sql](docs/supabase-m11-1-internal.sql) | 社内利用権の付与 / 解除（SQL Editor） |
 | [docs/supabase-m11-3.sql](docs/supabase-m11-3.sql) | 既存プロジェクト向け M11.3 ALTER |
 | [docs/supabase-m11-invite.sql](docs/supabase-m11-invite.sql) | M11.6 招待コード表 / 生成 / 無効化（SQL Editor） |
+| [docs/supabase-m11-4.sql](docs/supabase-m11-4.sql) | M11.4 `stripe_customers`（SQL Editor） |
 
 ## ライセンス
 

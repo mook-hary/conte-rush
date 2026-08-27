@@ -4,10 +4,8 @@
  * webhook secret, or invite-code plaintext in this file.
  *
  * Fill in values from the Supabase project Settings > API page.
- * stripePaymentLinkUrl is a public Test Mode Payment Link base URL.
  */
 export const runtimeConfig = {
   supabaseUrl: "https://pbopfwxbxkvsibnxutkd.supabase.co",
   supabaseAnonKey: "sb_publishable_hsBqZb_E7LBARoa-2yhEGg_a3qhnFG8",
-  stripePaymentLinkUrl: "https://buy.stripe.com/test_4gM4gB5O11zA1LN4U29R600",
 };

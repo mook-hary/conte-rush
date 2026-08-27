@@ -9,6 +9,7 @@ import {
   readPriceId,
   readStripeId,
 } from "../_shared/stripe-webhook-map.js";
+import { shouldIgnoreIncomingStripeSubscription } from "../_shared/billing.js";
 
 type AdminClient = ReturnType<typeof createClient>;
 
@@ -135,8 +136,14 @@ async function handleCheckoutCompleted(
   if (session.mode && session.mode !== "subscription") {
     return;
   }
-  const userId = String(session.client_reference_id ?? "").trim();
-  if (!userId || !isAuthUserUuid(userId)) {
+  const userId =
+    (isAuthUserUuid(session.client_reference_id)
+      ? String(session.client_reference_id).trim()
+      : "") ||
+    (isAuthUserUuid(session.metadata?.supabase_user_id)
+      ? String(session.metadata.supabase_user_id).trim()
+      : "");
+  if (!userId) {
     console.warn("checkout.session.completed ignored: invalid client_reference_id");
     return;
   }
@@ -147,6 +154,17 @@ async function handleCheckoutCompleted(
     console.warn("checkout.session.completed ignored: no customer or subscription id");
     return;
   }
+
+  const existing = await readSubscriptionRowByUser(admin, userId);
+  if (shouldIgnoreIncomingStripeSubscription(existing, subscriptionId)) {
+    console.warn(
+      "checkout.session.completed ignored: blocking subscription already exists",
+      existing?.subscription_id,
+      subscriptionId,
+    );
+    return;
+  }
+
   const live = await retrieveSubscription(stripe, subscriptionId);
   const status = mapStripeStatus(live?.status) ?? "incomplete";
 
@@ -159,6 +177,7 @@ async function handleCheckoutCompleted(
     priceId: readPriceId(live),
     cancelAtPeriodEnd: readCancelAtPeriodEnd(live),
   });
+  await ensureStripeCustomer(admin, userId, customerId);
 }
 
 async function handleSubscriptionEvent(
@@ -170,7 +189,23 @@ async function handleSubscriptionEvent(
   const subscriptionId = readStripeId(payload);
   const customerId = readStripeId(payload.customer);
   const existing = await findSubscriptionRow(admin, subscriptionId, customerId);
-  if (!existing) {
+  const incomingId = subscriptionId ?? "";
+  if (existing && shouldIgnoreIncomingStripeSubscription(existing, incomingId)) {
+    console.warn(
+      "subscription event ignored: blocking subscription already exists",
+      existing.subscription_id,
+      incomingId,
+    );
+    return;
+  }
+
+  const userId =
+    existing?.user_id ||
+    (await readUserIdForCustomer(admin, customerId)) ||
+    (isAuthUserUuid(payload.metadata?.supabase_user_id)
+      ? String(payload.metadata.supabase_user_id).trim()
+      : "");
+  if (!userId) {
     return;
   }
 
@@ -185,7 +220,7 @@ async function handleSubscriptionEvent(
   const source = live ?? payload;
 
   await upsertSubscription(admin, {
-    userId: existing.user_id,
+    userId,
     customerId: readStripeId(source.customer) ?? customerId,
     subscriptionId: readStripeId(source) ?? subscriptionId,
     status,
@@ -193,6 +228,11 @@ async function handleSubscriptionEvent(
     priceId: readPriceId(source),
     cancelAtPeriodEnd: deleted ? false : readCancelAtPeriodEnd(source),
   });
+  await ensureStripeCustomer(
+    admin,
+    userId,
+    readStripeId(source.customer) ?? customerId,
+  );
 }
 
 async function retrieveSubscription(stripe: Stripe, subscriptionId: string | null) {
@@ -215,7 +255,7 @@ async function findSubscriptionRow(
   if (subscriptionId) {
     const bySubscription = await admin
       .from("subscriptions")
-      .select("user_id")
+      .select("user_id, subscription_id, status")
       .eq("subscription_id", subscriptionId)
       .maybeSingle();
     if (bySubscription.error) {
@@ -228,7 +268,7 @@ async function findSubscriptionRow(
   if (customerId) {
     const byCustomer = await admin
       .from("subscriptions")
-      .select("user_id")
+      .select("user_id, subscription_id, status")
       .eq("customer_id", customerId)
       .maybeSingle();
     if (byCustomer.error) {
@@ -239,6 +279,54 @@ async function findSubscriptionRow(
     }
   }
   return null;
+}
+
+async function readSubscriptionRowByUser(admin: AdminClient, userId: string) {
+  const { data, error } = await admin
+    .from("subscriptions")
+    .select("user_id, subscription_id, status")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error) {
+    throw error;
+  }
+  return data;
+}
+
+async function readUserIdForCustomer(admin: AdminClient, customerId: string | null) {
+  if (!customerId) {
+    return "";
+  }
+  const mapped = await admin
+    .from("stripe_customers")
+    .select("user_id")
+    .eq("customer_id", customerId)
+    .maybeSingle();
+  if (mapped.error) {
+    throw mapped.error;
+  }
+  return mapped.data?.user_id ?? "";
+}
+
+async function ensureStripeCustomer(
+  admin: AdminClient,
+  userId: string,
+  customerId: string | null,
+) {
+  if (!userId || !customerId) {
+    return;
+  }
+  const { error } = await admin.from("stripe_customers").upsert(
+    {
+      user_id: userId,
+      customer_id: customerId,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "user_id", ignoreDuplicates: true },
+  );
+  if (error && error.code !== "23505") {
+    throw error;
+  }
 }
 
 async function upsertSubscription(

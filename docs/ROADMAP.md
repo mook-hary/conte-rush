@@ -368,11 +368,15 @@ conte-rush を SNS 等で一般公開するための認証・利用権基盤。�
 - 仕様は [SPEC.md](SPEC.md) の M11.6 節を正とする
 - 公開環境で実機確認済み: 新規ユーザー → 招待コード → internal → 本体。reload 後も `internal_users` が正。社内メールの事前収集は不要。社内配布可能な状態
 
-### M11.4 解約 / 支払い失敗 / 再ログイン（未着手）
+### M11.4 二重契約防止 + Billing Portal（実装済み・Test Mode で実機確認済み）
 
-- `past_due` / `canceled` と再確認タイミング（再フォーカス、一定時間）
-- Billing Portal はここで検討する
-- ログイン 1 回の永久キャッシュはしない（M11.0 で禁止済み）
+- 第一目的は、同一 Supabase user が同一 conte-rush Price の Subscription を複数契約しないこと
+- 共有 Payment Link を frontend から外し、Edge Function が Checkout Session を作る（Dashboard の旧 Link 無効化は後工程）
+- Stripe Customer は 1 user 1 件。`stripe_customers` が正
+- Billing Portal で契約確認 / 支払方法 / 解約（期間末）
+- `past_due` は none のまま。Portal で支払方法を更新する
+- Test 実機: 既存契約は Checkout せず、新規は Checkout → webhook → paid、再操作は `existing_subscription`
+- 仕様は [SPEC.md](SPEC.md) の M11.4 節を正とする
 
 ### M11.5 Cloudflare Pages 公開（未着手）
 

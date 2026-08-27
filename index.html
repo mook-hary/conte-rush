@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>conte-rush</title>
-    <link rel="stylesheet" href="css/style.css?v=m11-6" />
+    <link rel="stylesheet" href="css/style.css?v=m11-4" />
   </head>
   <body data-state="idle" data-auth-state="loading">
     <div id="auth-gate" class="auth-gate">
@@ -61,9 +61,10 @@
           <p id="denied-invite-status" class="auth-message" role="status"></p>
         </div>
         <div id="denied-upgrade-slot" class="denied-upgrade-slot">
-          <p>conte-rushは月額100円（税込）で利用できます。</p>
+          <p>conte-rushは月額100円（税込）で利用できます。契約は自動更新され、いつでも解約できます。解約後も期間の終わりまで利用できます。</p>
           <p id="denied-checkout-status" class="auth-message" role="status"></p>
           <button id="denied-checkout" type="button">月額100円で利用する</button>
+          <button id="denied-portal" type="button" hidden>契約を管理</button>
           <button id="denied-recheck" type="button" hidden>利用権を再確認</button>
         </div>
         <button type="button" data-gate-logout>ログアウト</button>
@@ -87,6 +88,7 @@
       <div id="account-bar" class="account-bar">
         <p id="account-email" class="account-email"></p>
         <p id="account-access" class="account-access"></p>
+        <button id="account-portal" type="button" hidden>契約を管理</button>
         <button id="account-logout" type="button">ログアウト</button>
       </div>
     </header>
@@ -433,6 +435,6 @@
         status.textContent = `起動エラー: ${event.message}`;
       });
     </script>
-    <script type="module" src="js/access-gate.js?v=m11-6"></script>
+    <script type="module" src="js/access-gate.js?v=m11-4"></script>
   </body>
 </html>

@@ -1,44 +1,6 @@
-import { isPlaceholderValue } from "./access.js";
-
-export function isStripePaymentLinkReady(url) {
-  const text = String(url ?? "").trim();
-  if (isPlaceholderValue(text)) {
-    return false;
-  }
-  try {
-    const parsed = new URL(text);
-    return parsed.protocol === "https:" || parsed.protocol === "http:";
-  } catch {
-    return false;
-  }
-}
-
 /**
- * Build a Payment Link URL. userId must come from the current Auth session.
- * Does not read DOM, query, or stored ids.
+ * Checkout return helpers. Does not build Payment Links. No Stripe secrets.
  */
-export function buildStripeCheckoutUrl({
-  paymentLinkUrl,
-  userId,
-  email = "",
-} = {}) {
-  if (!isStripePaymentLinkReady(paymentLinkUrl)) {
-    throw new Error("Payment Link is not configured");
-  }
-  const id = String(userId ?? "").trim();
-  if (!id) {
-    throw new Error("user id is required");
-  }
-  const url = new URL(paymentLinkUrl);
-  url.searchParams.set("client_reference_id", id);
-  const mail = String(email ?? "").trim();
-  if (mail) {
-    url.searchParams.set("prefilled_email", mail);
-  } else {
-    url.searchParams.delete("prefilled_email");
-  }
-  return url.toString();
-}
 
 export function hasCheckoutSuccessParam(href) {
   try {

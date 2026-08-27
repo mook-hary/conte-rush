@@ -967,7 +967,7 @@
 - 判断: Test Mode の Subscription Payment Link を denied から開く。Checkout Session をフロントから作らない
 - 理由: GitHub Pages のみで、secret を置けるサーバーが無い。Payment Link URL は秘密ではない
 - 採用しなかった案: ブラウザから Checkout Session API。restricted key を JS に埋める。M11.2 で Cloudflare Functions を必須にする
-- 結果: `runtimeConfig.stripePaymentLinkUrl` にベース URL。クエリはアプリが付ける
+- 結果: `runtimeConfig.stripePaymentLinkUrl` にベース URL。クエリはアプリが付ける。**M11.4 で廃止（D133）**
 
 ## D122. Stripe と Supabase user の正の紐付けは client_reference_id とする
 
@@ -1015,7 +1015,7 @@
 - 判断: PK は `user_id` のまま。初回は `checkout.session.completed` の `client_reference_id`。以後は `subscription_id` / `customer_id`。同じユーザーの新しい Checkout は同じ行を上書きする
 - 理由: 既存 `maybeSingle()` と RLS を壊さない。Payment Link は Customer を再利用しないため、複数行の「1 つでも active なら paid」は M11.3 では採らない
 - 採用しなかった案: user あたり複数 subscription 行。email で紐付ける
-- 結果: 古い Stripe subscription のイベントは、行の ID と一致しなければ無視する。Stripe 上の二重課金の整理は M11.4
+- 結果: 古い Stripe subscription のイベントは、行の ID と一致しなければ無視する。Stripe 上の二重課金の整理は M11.4。**M11.4 で blocking 行の上書きを禁止（D134）**
 
 ## D128. M11.3 でも paid 条件は status のみとする
 
@@ -1056,6 +1056,30 @@
 - 理由: ログイン済みユーザーによる推測を遅らせる。Redis / CAPTCHA は過剰
 - 採用しなかった案: 失敗理由の細分化。匿名での試行
 - 結果: 成功時は attempts 行を消す
+
+## D133. 課金はサーバー生成の Checkout Session とし Payment Link を使わない
+
+- 状態: 採用（M11.4・実装済み）
+- 判断: Edge Function `create-checkout-session` が JWT 本人の Stripe Customer を再利用し、Checkout Session を作る。Price はサーバー固定。共有 Payment Link は廃止する
+- 理由: Payment Link は Customer を渡せない。毎回新しい Customer / Subscription が作られ、DB の 1 行上書きと組み合わさって二重請求になる
+- 採用しなかった案: Payment Link + Stripe の 1 契約制限だけ。email 一致に頼る
+- 結果: GitHub Pages は静的のまま。secret は Function のみ。`stripePaymentLinkUrl` は runtime-config から外す。Test Mode で、既存契約の検出・新規 Checkout → paid・Portal 往復を実機確認済み
+
+## D134. Checkout 作成中は advisory lock を Stripe API 完了まで保持する
+
+- 状態: 採用（M11.4・実装済み）
+- 判断: `pg_advisory_xact_lock` を Postgres トランザクション内で取り、`subscriptions.list` → open Session 再利用 → `checkout.sessions.create` が終わるまで COMMIT しない
+- 理由: lock 用 RPC が先に終わると、複数タブが並行して Session を作れる
+- 採用しなかった案: ボタン disabled を正にする。lock を Stripe 呼び出しの外に置く
+- 結果: Idempotency-Key と open Session 再利用を併用する。ボタン disabled は UX 補助だけ
+
+## D135. 既存 blocking subscription は webhook で上書きしない
+
+- 状態: 採用（M11.4・実装済み）
+- 判断: `subscriptions` 行が blocking な別 `subscription_id` を持っているとき、新しい Checkout / 古い Customer のイベントで上書きしない
+- 理由: M11.3 の「最新で上書き」が、Stripe 上の複数 active を DB から見えなくしていた
+- 採用しなかった案: 2 件目を自動キャンセルする
+- 結果: 重複の整理は管理者が Dashboard で行う。コードは一括キャンセルしない
 
 ## 未決
 

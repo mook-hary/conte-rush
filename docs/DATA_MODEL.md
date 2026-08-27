@@ -961,9 +961,9 @@ M11.0 の paid 条件（導出）:
 - `status` が `active` または `trialing`
 - `current_period_end` は補助。クライアント時計を権限の正にしない
 
-`past_due` の猶予は M11.4 で決める。M11.0 では paid にしない。
+`past_due` は paid にしない。M11.4 でも猶予は付けない。Portal で支払方法を更新する。
 
-クライアントは自分の行を SELECT できるだけとする。書き込みは service role（fixture SQL または M11.3 webhook）。M11.2 のブラウザは決済成功後もこの表を更新しない。
+クライアントは自分の行を SELECT できるだけとする。書き込みは service role（fixture SQL または M11.3 / M11.4 webhook）。M11.4 のブラウザは Checkout / Portal の URL を Function から受け取るだけで、この表を更新しない。
 
 `subscription_id` / `customer_id` は NULL 以外で unique。後続の Stripe subscription イベントはこれらの ID から `user_id` を辿る。1 ユーザー 1 行。
 
@@ -1006,22 +1006,26 @@ payload 全体は置かない。
 
 15 分で 8 回失敗すると 429。
 
-### Payment Link 導線（M11.2・実装済み。M11.3 で webhook 反映）
+### stripe_customers（M11.4・実装済み）
 
-Stripe Test Mode の Subscription Payment Link。Checkout Session をアプリが作らない。
+Supabase user と Stripe Customer の 1:1。権限の正ではない。
 
 | 項目 | 意味 |
 |---|---|
-| `stripePaymentLinkUrl` | 公開してよいベース URL。runtime-config。secret ではない |
-| `client_reference_id` | クエリ。値は `session.user.id`（UUID）だけ。M11.3 が `user_id` に使う |
-| `prefilled_email` | クエリ。session email の補助。権限の正ではない |
-| `checkout=success` | アプリへ戻ったあとの案内用 query。`paid` ではない。M11.3 では確認中表示と再確認に使う |
+| `user_id` | `auth.users.id`。主キー |
+| `customer_id` | Stripe `cus_...`。UNIQUE |
+| `created_at` / `updated_at` | 時刻 |
+
+ブラウザは読めない。service_role のみ。Checkout 作成時に作り、webhook は欠けるときだけ補う。M11.3 由来の `subscriptions.customer_id` は移行 fallback で、本人行が空のときだけ `stripe_customers` へ backfill する。別 user の `customer_id` は奪わない。`customer_id` はクライアントから受け取らない。
+
+### Payment Link 導線（M11.2。M11.4 で frontend 廃止）
+
+M11.4 から runtime-config / JS に Payment Link URL を置かない。Checkout は Edge Function が Session を作る。`checkout=success` は案内のまま `paid` ではない。
 
 持たない:
 
 - フロントの Stripe secret / restricted key / webhook secret
-- クライアントが書く `customer_id` / `subscription_id` / `status`
-- Payment Link の `cancel_url`（仕様上無い。タブを閉じる）
+- クライアントが書く `customer_id` / `subscription_id` / `status` / `price_id`
 
 `effectiveAccess` の正は従来どおり Supabase の行から導出する。success query では変えない。
 

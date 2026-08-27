@@ -6,14 +6,16 @@ import {
 } from "./access.js?v=m11-2";
 import { runtimeConfig } from "./runtime-config.js";
 import {
-  buildStripeCheckoutUrl,
   hasCheckoutSuccessParam,
-  isStripePaymentLinkReady,
   stripCheckoutSuccessFromLocation,
-} from "./stripe-checkout.js?v=m11-2";
+} from "./stripe-checkout.js?v=m11-4";
+import {
+  deniedUpgradeMode,
+  shouldShowAccountPortal,
+} from "../supabase/functions/_shared/billing.js?v=m11-4";
 
 const APP_MODULE_URL = new URL("./app.js?v=m11-2", import.meta.url).href;
-const AUTH_MODULE_URL = new URL("./auth-client.js?v=m11-6", import.meta.url).href;
+const AUTH_MODULE_URL = new URL("./auth-client.js?v=m11-4", import.meta.url).href;
 
 const gateEl = document.querySelector("#auth-gate");
 const loginForm = document.querySelector("#gate-login-form");
@@ -25,6 +27,8 @@ const accountAccessEl = document.querySelector("#account-access");
 const checkoutButton = document.querySelector("#denied-checkout");
 const checkoutRecheckButton = document.querySelector("#denied-recheck");
 const checkoutStatusEl = document.querySelector("#denied-checkout-status");
+const portalButton = document.querySelector("#denied-portal");
+const accountPortalButton = document.querySelector("#account-portal");
 const inviteCodeInput = document.querySelector("#denied-invite-code");
 const inviteSubmitButton = document.querySelector("#denied-invite-submit");
 const inviteStatusEl = document.querySelector("#denied-invite-status");
@@ -49,6 +53,9 @@ let checkoutRecheckInFlight = false;
 let openingCheckout = false;
 let deniedCheckoutError = "";
 let redeemingInvite = false;
+let openingPortal = false;
+let currentSubscription = null;
+let deniedForcePortal = false;
 
 const CHECKOUT_AUTO_RECHECK_MS = 4000;
 
@@ -87,17 +94,24 @@ function setBusy(busy) {
   }
 }
 
-function isPaymentLinkConfigured() {
-  return isStripePaymentLinkReady(runtimeConfig.stripePaymentLinkUrl);
+function deniedBillingMode() {
+  if (deniedForcePortal) {
+    return "portal";
+  }
+  return deniedUpgradeMode(currentSubscription);
 }
 
 function syncDeniedCheckoutUi({ successNote = false } = {}) {
-  const configured = isPaymentLinkConfigured();
   const showConfirming = successNote || checkoutConfirming;
+  const upgradeMode = deniedBillingMode();
+  const busy = openingCheckout || openingPortal || checkoutRecheckInFlight || redeemingInvite;
   if (checkoutButton) {
-    checkoutButton.hidden = !configured;
-    checkoutButton.disabled =
-      !configured || openingCheckout || checkoutRecheckInFlight || redeemingInvite;
+    checkoutButton.hidden = showConfirming || upgradeMode !== "checkout";
+    checkoutButton.disabled = busy;
+  }
+  if (portalButton) {
+    portalButton.hidden = showConfirming || upgradeMode !== "portal";
+    portalButton.disabled = busy;
   }
   if (checkoutRecheckButton) {
     checkoutRecheckButton.hidden = !showConfirming;
@@ -117,13 +131,17 @@ function syncDeniedCheckoutUi({ successNote = false } = {}) {
     checkoutStatusEl.classList.add("is-error");
     return;
   }
-  if (!configured) {
-    checkoutStatusEl.textContent = "決済設定を準備中です";
-    checkoutStatusEl.classList.remove("is-error");
-    return;
-  }
   checkoutStatusEl.textContent = "";
   checkoutStatusEl.classList.remove("is-error");
+}
+
+function syncAccountPortalUi(access) {
+  if (!accountPortalButton) {
+    return;
+  }
+  const show = shouldShowAccountPortal(access, currentSubscription);
+  accountPortalButton.hidden = !show;
+  accountPortalButton.disabled = openingPortal;
 }
 
 function setInviteMessage(text, isError = false) {
@@ -135,7 +153,7 @@ function setInviteMessage(text, isError = false) {
 }
 
 function syncDeniedInviteUi() {
-  const busy = redeemingInvite || openingCheckout || checkoutRecheckInFlight;
+  const busy = redeemingInvite || openingCheckout || openingPortal || checkoutRecheckInFlight;
   if (inviteCodeInput) {
     inviteCodeInput.disabled = busy;
   }
@@ -217,6 +235,7 @@ function renderAccount(session, access) {
   if (accountAccessEl) {
     accountAccessEl.textContent = `利用権: ${accessLabel(access)}`;
   }
+  syncAccountPortalUi(access);
 }
 
 async function enterUnauthenticated() {
@@ -224,6 +243,9 @@ async function enterUnauthenticated() {
   pendingEmail = pendingEmail || "";
   checkoutConfirming = false;
   redeemingInvite = false;
+  openingPortal = false;
+  currentSubscription = null;
+  deniedForcePortal = false;
   clearCheckoutAutoRecheck();
   if (inviteCodeInput) {
     inviteCodeInput.value = "";
@@ -271,6 +293,7 @@ async function checkAccess(session, { silent = false } = {}) {
 
   const access = effectiveAccess(rows);
   currentAccess = access;
+  currentSubscription = rows.subscription ?? null;
   renderAccount(session, access);
 
   if (access === "none") {
@@ -393,15 +416,12 @@ async function handleLogout() {
 async function handleDeniedCheckout() {
   if (
     openingCheckout ||
+    openingPortal ||
     redeemingInvite ||
     authState !== "denied" ||
-    currentAccess !== "none"
+    currentAccess !== "none" ||
+    deniedBillingMode() !== "checkout"
   ) {
-    return;
-  }
-  if (!isPaymentLinkConfigured()) {
-    deniedCheckoutError = "";
-    syncDeniedCheckoutUi();
     return;
   }
   openingCheckout = true;
@@ -410,17 +430,31 @@ async function handleDeniedCheckout() {
   try {
     const auth = await loadAuthApi();
     const session = await auth.getSession();
-    const userId = session?.user?.id;
-    if (!userId) {
+    if (!session) {
       openingCheckout = false;
       await enterUnauthenticated();
       return;
     }
-    window.location.href = buildStripeCheckoutUrl({
-      paymentLinkUrl: runtimeConfig.stripePaymentLinkUrl,
-      userId,
-      email: session.user?.email ?? "",
-    });
+    const result = await auth.createCheckoutSession();
+    if (result.ok && result.action === "checkout" && result.url) {
+      window.location.href = result.url;
+      return;
+    }
+    if (result.ok && result.action === "existing_subscription") {
+      deniedForcePortal = true;
+      deniedCheckoutError = "すでに契約があります。契約管理から確認してください。";
+      openingCheckout = false;
+      syncDeniedCheckoutUi();
+      return;
+    }
+    if (result.error === "unauthorized") {
+      openingCheckout = false;
+      await enterUnauthenticated();
+      return;
+    }
+    openingCheckout = false;
+    deniedCheckoutError = "決済ページを開けませんでした。";
+    syncDeniedCheckoutUi();
   } catch (error) {
     console.error(error);
     openingCheckout = false;
@@ -429,8 +463,50 @@ async function handleDeniedCheckout() {
   }
 }
 
+async function handlePortal() {
+  if (openingPortal || openingCheckout || redeemingInvite) {
+    return;
+  }
+  openingPortal = true;
+  deniedCheckoutError = "";
+  syncDeniedCheckoutUi();
+  syncAccountPortalUi(currentAccess);
+  try {
+    const auth = await loadAuthApi();
+    const session = await auth.getSession();
+    if (!session) {
+      openingPortal = false;
+      await enterUnauthenticated();
+      return;
+    }
+    const result = await auth.createPortalSession();
+    if (result.ok && result.url) {
+      window.location.href = result.url;
+      return;
+    }
+    if (result.error === "unauthorized") {
+      openingPortal = false;
+      await enterUnauthenticated();
+      return;
+    }
+    openingPortal = false;
+    deniedCheckoutError =
+      result.error === "no_customer"
+        ? "契約情報が見つかりませんでした。"
+        : "契約管理を開けませんでした。";
+    syncDeniedCheckoutUi();
+    syncAccountPortalUi(currentAccess);
+  } catch (error) {
+    console.error(error);
+    openingPortal = false;
+    deniedCheckoutError = "契約管理を開けませんでした。";
+    syncDeniedCheckoutUi();
+    syncAccountPortalUi(currentAccess);
+  }
+}
+
 async function handleDeniedInvite() {
-  if (redeemingInvite || openingCheckout || authState !== "denied" || currentAccess !== "none") {
+  if (redeemingInvite || openingCheckout || openingPortal || authState !== "denied" || currentAccess !== "none") {
     return;
   }
   const code = inviteCodeInput?.value ?? "";
@@ -477,7 +553,7 @@ async function handleDeniedInvite() {
 }
 
 async function handleDeniedAccessRecheck({ automatic = false } = {}) {
-  if (checkoutRecheckInFlight || authState !== "denied" || currentAccess !== "none") {
+  if (checkoutRecheckInFlight || openingCheckout || openingPortal || authState !== "denied" || currentAccess !== "none") {
     return;
   }
   checkoutAutoRecheckDone = true;
@@ -582,6 +658,12 @@ document.querySelectorAll("[data-gate-logout]").forEach((button) => {
 });
 checkoutButton?.addEventListener("click", () => {
   void handleDeniedCheckout();
+});
+portalButton?.addEventListener("click", () => {
+  void handlePortal();
+});
+accountPortalButton?.addEventListener("click", () => {
+  void handlePortal();
 });
 checkoutRecheckButton?.addEventListener("click", () => {
   void handleDeniedAccessRecheck({ automatic: false });

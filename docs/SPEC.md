@@ -3193,7 +3193,7 @@ M11.0 / M11.1 / M11.2 の Auth Gate、RLS SELECT-own、`PAID_STATUSES`、Payment
 - Cloudflare Functions、repo private 化
 - `effectiveAccess` / RLS の変更
 
-## M11.6（実装済み・実機確認済み）
+## M11.6（実装済み・公開環境で実機確認済み）
 
 ログイン済みユーザーが社内招待コードで自分を `internal_users` に登録する。メールの事前収集は不要。本節が実装時の正である。
 
@@ -3248,8 +3248,9 @@ denied に「社内からコードを受け取った方」と入力。一般向�
 
 実機確認（M11.6・記録）:
 
-- none → denied で招待コード入力 → `redeem-internal-invite` 成功 → `internal_users.enabled = true` → 「利用権: 社内」で本体へ入る
-- reload 後も社員権限を維持する。正は DB の `internal_users` であり、コード文字列そのものではない
+- 新規ユーザー → Magic Link / PKCE → none → denied で招待コード入力 → `redeem-internal-invite` 成功 → `internal_users.enabled = true` → 「利用権: 社内」で本体へ入る
+- reload 後も社内権限を維持する。招待コードは一時的な登録手段。権限の正は DB の `internal_users`
+- GitHub Pages 公開 URL（`https://mook-hary.github.io/conte-rush/`）で一連の経路を確認済み。社内配布可能な状態。メールアドレスの事前収集は不要
 
 ## UI 要件
 
@@ -3549,4 +3550,4 @@ M11.1 は社内利用権の運用である。管理画面は作らず、SQL Edit
 
 M11.3 は Stripe webhook を Supabase Edge Function で受け、`subscriptions` を更新する。GitHub Pages は静的のままである。
 
-M11.6 は招待コードによる internal セルフ登録である。平文は repo に置かない。
+M11.6 は招待コードによる internal セルフ登録である。平文は repo に置かない。公開環境で確認済みであり、社内配布可能な状態である。

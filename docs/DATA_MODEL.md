@@ -933,7 +933,7 @@ Supabase Auth が持つ identity。conte-rush が `profiles` を複製して正�
 - クライアントは自分の行を SELECT できるだけとする
 - 追加 / 解除 / `enabled` 変更は service role（SQL Editor。M11.1）または M11.6 の招待 Function だけ
 - M11.1 の運用: 本人が Magic Link で一度ログイン → 管理者が email から `id` を引いて登録。UID 手コピーと管理画面はしない。SQL は [supabase-m11-1-internal.sql](supabase-m11-1-internal.sql)
-- M11.6 の運用: 本人がコードを入力。hash 照合後に JWT の user_id を登録。SQL は [supabase-m11-invite.sql](supabase-m11-invite.sql)
+- M11.6 の運用: 本人がコードを入力。hash 照合後に JWT の user_id を登録。コードは一時的な登録手段。権限の正は `internal_users`。メール事前収集は不要。SQL は [supabase-m11-invite.sql](supabase-m11-invite.sql)
 
 ### subscriptions（M11.0・実装済み）
 

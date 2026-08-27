@@ -1039,7 +1039,7 @@
 - 判断: Edge Function `redeem-internal-invite` は `verify_jwt = true`。user_id は JWT（`auth.getUser`）のみ。body / query / email では付けない
 - 理由: クライアントから `internal_users` を書かせない（D110）。メール事前収集をなくす
 - 採用しなかった案: runtime-config にコードを置く。authenticated に INSERT policy を付ける
-- 結果: 成功後の正は既存 `checkAccess`。既に internal なら冪等成功で use_count は増やさない。subscription は触らない
+- 結果: 成功後の正は既存 `checkAccess`。既に internal なら冪等成功で use_count は増やさない。subscription は触らない。GitHub Pages 公開環境で新規ユーザー経路を確認済み。社内配布可能な状態
 
 ## D131. 招待コードの正は SHA-256 hash であり平文を保存しない
 

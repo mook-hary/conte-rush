@@ -158,6 +158,34 @@ export function onAuthStateChange(handler) {
   return getSupabaseClient().auth.onAuthStateChange(handler);
 }
 
+export async function redeemInternalInvite(code) {
+  const { data, error } = await getSupabaseClient().functions.invoke(
+    "redeem-internal-invite",
+    { body: { code: String(code ?? "") } },
+  );
+  if (!error) {
+    return data?.ok ? { ok: true } : { ok: false, error: "invalid_code" };
+  }
+  let payload = null;
+  try {
+    payload = await error.context?.json?.();
+  } catch {
+    payload = null;
+  }
+  const status = Number(error.context?.status ?? 0);
+  const name = String(payload?.error ?? "");
+  if (status === 401 || name === "unauthorized") {
+    return { ok: false, error: "unauthorized" };
+  }
+  if (status === 429 || name === "rate_limited") {
+    return { ok: false, error: "rate_limited" };
+  }
+  if (status >= 500) {
+    throw error;
+  }
+  return { ok: false, error: "invalid_code" };
+}
+
 export async function fetchOwnAccessRows(userId) {
   if (!userId) {
     throw new Error("userId is required");

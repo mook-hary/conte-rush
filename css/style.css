@@ -1887,6 +1887,16 @@ body[data-auth-state="allowed"] .app-shell {
   margin-top: 0.5rem;
 }
 
+.denied-invite-slot {
+  margin: 0 0 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.denied-invite-slot .auth-field {
+  margin-bottom: 0.75rem;
+}
+
 .account-bar {
   margin-left: auto;
   display: flex;

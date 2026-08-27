@@ -1,7 +1,7 @@
 /**
  * Public client settings for GitHub Pages / localhost.
  * These are not secrets. Never put service role, Stripe secret,
- * or webhook secret in this file.
+ * webhook secret, or invite-code plaintext in this file.
  *
  * Fill in values from the Supabase project Settings > API page.
  * stripePaymentLinkUrl is a public Test Mode Payment Link base URL.

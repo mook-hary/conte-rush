@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>conte-rush</title>
-    <link rel="stylesheet" href="css/style.css?v=m11-3" />
+    <link rel="stylesheet" href="css/style.css?v=m11-6" />
   </head>
   <body data-state="idle" data-auth-state="loading">
     <div id="auth-gate" class="auth-gate">
@@ -44,7 +44,22 @@
       <section class="auth-card" data-gate-panel="denied" hidden>
         <h1>conte-rush</h1>
         <p>利用権がありません</p>
-        <p class="auth-help">社内利用の場合は管理者に連絡してください。</p>
+        <p class="auth-help">社内利用の場合は、配布されたコードを入力するか、管理者に連絡してください。</p>
+        <div id="denied-invite-slot" class="denied-invite-slot">
+          <p>社内からコードを受け取った方</p>
+          <label class="auth-field">
+            招待コード
+            <input
+              id="denied-invite-code"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              inputmode="text"
+            />
+          </label>
+          <button id="denied-invite-submit" type="button">コードで利用を開始</button>
+          <p id="denied-invite-status" class="auth-message" role="status"></p>
+        </div>
         <div id="denied-upgrade-slot" class="denied-upgrade-slot">
           <p>conte-rushは月額100円（税込）で利用できます。</p>
           <p id="denied-checkout-status" class="auth-message" role="status"></p>
@@ -418,6 +433,6 @@
         status.textContent = `起動エラー: ${event.message}`;
       });
     </script>
-    <script type="module" src="js/access-gate.js?v=m11-3"></script>
+    <script type="module" src="js/access-gate.js?v=m11-6"></script>
   </body>
 </html>

@@ -2,3 +2,6 @@
 
 [functions.stripe-webhook]
 verify_jwt = false
+
+[functions.redeem-internal-invite]
+verify_jwt = true

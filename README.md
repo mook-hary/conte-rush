@@ -104,7 +104,7 @@
 - メールのログインリンクでログインする（暫定 Magic Link。Supabase 設定後）
 - 利用権が internal または paid のときだけ本体を操作する
 - Account からログアウトすると、ブラウザ内の制作データを破棄する
-- 社内利用者は、一度ログインしたあと管理者が SQL で利用権を付ける（管理画面なし）
+- 社内利用者は、ログイン後に配布コードで登録できる（M11.6）。管理者による SQL 付与も残る（管理画面なし）
 - 利用権がないときは、設定済みなら月額100円（税込）の Stripe Test Payment Link へ進める。決済後は webhook が利用権を付ける（M11.3）。すぐ反映されないときは「利用権を再確認」する
 
 ## 現状できないこと
@@ -160,7 +160,7 @@ M11.2 の課金は Stripe の Payment Link（Stripe がホストする Checkout�
 
 2. ブラウザで `http://localhost:8080/` を開く
 3. `js/runtime-config.js` に Supabase の URL と anon key が入っていれば、メールアドレスへログインリンクを送る。リンクは **送った同じブラウザ** で開く。戻り先は末尾 `/` 付き（GitHub Pages なら `https://mook-hary.github.io/conte-rush/`、ローカルなら `http://localhost:8080/`）。未設定なら「Supabase設定が未完了です」と出る。Dashboard の Redirect URLs にこれらの URL を入れる。PKCE の Magic Link は D125。これは default SMTP では OTP テンプレートを編集できないための暫定措置でもある（D119）
-4. 社内利用は、本人が一度ログインしたあと、管理者が [docs/supabase-m11-1-internal.sql](docs/supabase-m11-1-internal.sql) のメールアドレスを書き換えて SQL Editor で実行する。利用権が付くと本体を操作できる。UID の手コピーは不要
+4. 社内利用は、ログイン後に denied 画面の招待コードで登録できる。コードは repo に置かない。管理者は [docs/supabase-m11-invite.sql](docs/supabase-m11-invite.sql) で生成・無効化する。従来どおり [docs/supabase-m11-1-internal.sql](docs/supabase-m11-1-internal.sql) で email から付けることもできる
 5. 一般利用で利用権が無いときは「月額100円で利用する」から Stripe Test Checkout へ進む。決済後は webhook が `paid` を付ける。すぐ反映されないときは「利用権を再確認」する。`stripePaymentLinkUrl` が空なら「決済設定を準備中です」と出る。社内ユーザーは Stripe 未設定でも本体を使える
 6. 利用権がある場合だけ「PDFを選択」からローカルの PDF を選ぶ
 7. 「前へ」「次へ」でページを移動する
@@ -212,6 +212,7 @@ secret は Supabase Edge Function にだけ置く。`js/runtime-config.js` に�
 | [docs/supabase-m11.sql](docs/supabase-m11.sql) | M11.0 の Access DB / RLS（M11.3 列を含む） |
 | [docs/supabase-m11-1-internal.sql](docs/supabase-m11-1-internal.sql) | 社内利用権の付与 / 解除（SQL Editor） |
 | [docs/supabase-m11-3.sql](docs/supabase-m11-3.sql) | 既存プロジェクト向け M11.3 ALTER |
+| [docs/supabase-m11-invite.sql](docs/supabase-m11-invite.sql) | M11.6 招待コード表 / 生成 / 無効化（SQL Editor） |
 
 ## ライセンス
 

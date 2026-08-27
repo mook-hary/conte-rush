@@ -931,8 +931,9 @@ Supabase Auth が持つ identity。conte-rush が `profiles` を複製して正�
 
 - email 文字列は持たない。検索は Auth 側の email を使う
 - クライアントは自分の行を SELECT できるだけとする
-- 追加 / 解除 / `enabled` 変更は service role（SQL Editor。M11.1）だけ
+- 追加 / 解除 / `enabled` 変更は service role（SQL Editor。M11.1）または M11.6 の招待 Function だけ
 - M11.1 の運用: 本人が Magic Link で一度ログイン → 管理者が email から `id` を引いて登録。UID 手コピーと管理画面はしない。SQL は [supabase-m11-1-internal.sql](supabase-m11-1-internal.sql)
+- M11.6 の運用: 本人がコードを入力。hash 照合後に JWT の user_id を登録。SQL は [supabase-m11-invite.sql](supabase-m11-invite.sql)
 
 ### subscriptions（M11.0・実装済み）
 
@@ -977,6 +978,33 @@ Stripe の `event.id`（`evt_...`）の重複配信を捨てる表。ブラウ�
 | `processed_at` | 処理完了時刻 |
 
 payload 全体は置かない。
+
+### internal_invite_codes（M11.6・実装済み）
+
+社内招待コード。平文は保存しない。
+
+| 項目 | 意味 |
+|---|---|
+| `id` | uuid 主キー |
+| `code_hash` | 正規化コードの SHA-256 hex。UNIQUE |
+| `enabled` | false で無効 |
+| `max_uses` | 初期 20。NULL なら上限なし |
+| `use_count` | 成功 redeem 回数。既に internal の冪等成功では増やさない |
+| `created_at` / `updated_at` | 時刻 |
+
+ブラウザは読めない。service_role のみ。consume と internal 付与は `apply_internal_invite(p_user_id, p_code_hash)` が 1 トランザクションで行う。execute は service_role のみ。
+
+### internal_invite_attempts（M11.6・実装済み）
+
+失敗回数。コードは持たない。
+
+| 項目 | 意味 |
+|---|---|
+| `user_id` | `auth.users.id`。主キー |
+| `fail_count` | 現在窓の失敗数 |
+| `window_started_at` | 15 分窓の開始 |
+
+15 分で 8 回失敗すると 429。
 
 ### Payment Link 導線（M11.2・実装済み。M11.3 で webhook 反映）
 

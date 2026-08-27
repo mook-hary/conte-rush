@@ -2674,7 +2674,7 @@ fail-closed の例外にしないこと: `network_error` を `denied`（未契�
 `denied`（`none`）:
 
 - 「利用権がありません」
-- 社内利用は管理者へ
+- 社内からコードを受け取った方は招待コードで登録（M11.6）。管理者の SQL 付与も残る
 - M11.2: 月額100円（税込）と［月額100円で利用する］（`#denied-upgrade-slot`）。Payment Link 未設定なら「決済設定を準備中です」
 - `checkout=success` は案内だけ。`paid` にしない
 
@@ -2791,7 +2791,9 @@ Free プロジェクトは非活動で pause され得る。これは M11 の運
 | `docs/supabase-m11.sql` | テーブル / RLS / paid fixture 例。M11.3 列と event 表を含む |
 | `docs/supabase-m11-1-internal.sql` | 社内利用権の付与 / 解除（email 参照。SQL Editor のみ） |
 | `docs/supabase-m11-3.sql` | 既存プロジェクト向け M11.3 ALTER（price_id、event 表、unique index） |
+| `docs/supabase-m11-invite.sql` | M11.6 招待コード表 / 生成 / 無効化 |
 | `supabase/functions/stripe-webhook/index.ts` | Stripe webhook。secret は Function env のみ |
+| `supabase/functions/redeem-internal-invite/index.ts` | 招待コード redeem。JWT 必須。コード平文は env に置かない |
 
 `js/access-store.js` は作らない。利用権の正は Supabase。
 
@@ -3191,6 +3193,64 @@ M11.0 / M11.1 / M11.2 の Auth Gate、RLS SELECT-own、`PAID_STATUSES`、Payment
 - Cloudflare Functions、repo private 化
 - `effectiveAccess` / RLS の変更
 
+## M11.6（実装済み・実機確認済み）
+
+ログイン済みユーザーが社内招待コードで自分を `internal_users` に登録する。メールの事前収集は不要。本節が実装時の正である。
+
+```
+Magic Link
+  → none → denied
+  → 招待コード入力
+  → redeem-internal-invite（JWT）
+  → internal_users upsert（service role）
+  → checkAccess
+  → internal → allowed
+```
+
+M11.1 の SQL 付与 / 解除は残す。`effectiveAccess`、Stripe webhook、Payment Link、PKCE は変えない。
+
+### 1. 境界
+
+- コード平文は repo / runtime-config / HTML / JS に置かない
+- user_id は JWT のみ
+- `internal_users` への write policy は authenticated に付けない
+- 成功後は DB 再取得が正。local を internal にしない
+- paid の `subscriptions` は削除しない。internal が優先
+
+### 2. コード
+
+形式 `CR-XXXXX-XXXXX`。文字は `0/O/1/I/L` を除く。正規化は trim + 大文字 + ハイフン/空白削除。hash は正規化文字列の SHA-256 hex。max_uses 初期 20。expires_at なし。無効化は `enabled = false`。
+
+### 3. Function
+
+`redeem-internal-invite`。`verify_jwt = true`。user_id は `auth.getUser()` のみ。誤コードは `invalid_code`。15 分 8 回失敗で `rate_limited`。既に internal なら `{ ok: true }` で use_count 不変。consume と `internal_users` upsert は `apply_internal_invite`（service_role、1 トランザクション）で行う。subscription は触らない。
+
+### 4. UI
+
+denied に「社内からコードを受け取った方」と入力。一般向け課金ボタンは残す。
+
+### 5. セキュリティ
+
+- JWT 必須。`auth.getUser()` の id だけを使う。body / query / email の user_id は見ない
+- 招待表と `apply_internal_invite` は service_role のみ。authenticated に write policy を付けない
+- 平文コードは repo / runtime-config / Function env に置かない。DB は hash のみ
+- 失敗理由は `invalid_code` に揃える。15 分 8 回で 429
+- paid の subscription 行は変更しない
+- 成功後は既存 `checkAccess` が DB を再読込する。クライアントだけで internal にしない
+
+### 6. 完成条件
+
+- 正しいコードで none → internal → 本体
+- 誤コードでは付かない
+- 他人の user_id では付けられない
+- コードがフロントに無い
+- Stripe / PKCE が壊れていない
+
+実機確認（M11.6・記録）:
+
+- none → denied で招待コード入力 → `redeem-internal-invite` 成功 → `internal_users.enabled = true` → 「利用権: 社内」で本体へ入る
+- reload 後も社員権限を維持する。正は DB の `internal_users` であり、コード文字列そのものではない
+
 ## UI 要件
 
 
@@ -3488,3 +3548,5 @@ M11.0 は Auth / 利用権の公開基盤である。制作データのクラウ
 M11.1 は社内利用権の運用である。管理画面は作らず、SQL Editor で email から `internal_users` へ付ける。
 
 M11.3 は Stripe webhook を Supabase Edge Function で受け、`subscriptions` を更新する。GitHub Pages は静的のままである。
+
+M11.6 は招待コードによる internal セルフ登録である。平文は repo に置かない。

@@ -959,7 +959,7 @@
 - 判断: 社内 5〜6 人は専用管理画面を作らない。本人が先に Magic Link で一度ログインし、管理者が Dashboard SQL Editor（service role）で `auth.users.email` から `id` を引いて `internal_users` へ入れる。解除は `enabled = false`（行削除でも可）
 - 理由: 人数が少なく、ブラウザへ書き込み権限を出す必要がない。email は検索の手がかりであり、権限の正は従来どおり `user_id` + `enabled`（D108）。UID の手コピーは誤りやすい
 - 採用しなかった案: 管理 UI。`allowlist_emails` を正本にする。authenticated に INSERT/UPDATE を付ける。service_role をフロントへ置く。未ログイン向け invite 表
-- 結果: 手順は [supabase-m11-1-internal.sql](supabase-m11-1-internal.sql)。M11.0 の Auth Gate / RLS / 表定義は変えない
+- 結果: 手順は [supabase-m11-1-internal.sql](supabase-m11-1-internal.sql)。解除とフォールバックに使う。通常の付与は M11.6 の招待コード（D130）
 
 ## D121. M11.2 の決済導線は Stripe Payment Link とする
 
@@ -1032,6 +1032,30 @@
 - 理由: webhook 遅延があり得る。D123 を崩さない
 - 採用しなかった案: 成功 query で fixture 相当の paid を書く。数秒おきの永久 poll
 - 結果: 反映後の正は `subscriptions.status`。query は案内後に外す
+
+## D130. 社内招待は JWT 本人だけを internal にする
+
+- 状態: 採用（M11.6・実装済み）
+- 判断: Edge Function `redeem-internal-invite` は `verify_jwt = true`。user_id は JWT（`auth.getUser`）のみ。body / query / email では付けない
+- 理由: クライアントから `internal_users` を書かせない（D110）。メール事前収集をなくす
+- 採用しなかった案: runtime-config にコードを置く。authenticated に INSERT policy を付ける
+- 結果: 成功後の正は既存 `checkAccess`。既に internal なら冪等成功で use_count は増やさない。subscription は触らない
+
+## D131. 招待コードの正は SHA-256 hash であり平文を保存しない
+
+- 状態: 採用（M11.6・実装済み）
+- 判断: `internal_invite_codes.code_hash` のみ。形式は `CR-XXXXX-XXXXX`（`0/O/1/I/L` なし）。max_uses 初期 20。expires_at は持たない。無効化は `enabled = false`
+- 理由: GitHub Pages と public repo に平文を置けない。人数確認と再発行が SQL で足りる
+- 採用しなかった案: Function secret 1 個。DB に平文。管理画面
+- 結果: 生成 SQL の結果セットに平文が一度だけ出る。repo に貼らない
+
+## D132. 招待コードの総当たりはユーザー単位 15 分 8 回で止める
+
+- 状態: 採用（M11.6・実装済み）
+- 判断: JWT 必須に加え、`internal_invite_attempts` で失敗を数える。超過は 429。誤コードも無効コードも同じ `invalid_code`
+- 理由: ログイン済みユーザーによる推測を遅らせる。Redis / CAPTCHA は過剰
+- 採用しなかった案: 失敗理由の細分化。匿名での試行
+- 結果: 成功時は attempts 行を消す
 
 ## 未決
 

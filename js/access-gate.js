@@ -13,7 +13,7 @@ import {
 } from "./stripe-checkout.js?v=m11-2";
 
 const APP_MODULE_URL = new URL("./app.js?v=m11-2", import.meta.url).href;
-const AUTH_MODULE_URL = new URL("./auth-client.js?v=m11-3", import.meta.url).href;
+const AUTH_MODULE_URL = new URL("./auth-client.js?v=m11-6", import.meta.url).href;
 
 const gateEl = document.querySelector("#auth-gate");
 const loginForm = document.querySelector("#gate-login-form");
@@ -25,6 +25,9 @@ const accountAccessEl = document.querySelector("#account-access");
 const checkoutButton = document.querySelector("#denied-checkout");
 const checkoutRecheckButton = document.querySelector("#denied-recheck");
 const checkoutStatusEl = document.querySelector("#denied-checkout-status");
+const inviteCodeInput = document.querySelector("#denied-invite-code");
+const inviteSubmitButton = document.querySelector("#denied-invite-submit");
+const inviteStatusEl = document.querySelector("#denied-invite-status");
 
 let authState = "loading";
 let appModule = null;
@@ -45,6 +48,7 @@ let checkoutAutoRecheckTimer = null;
 let checkoutRecheckInFlight = false;
 let openingCheckout = false;
 let deniedCheckoutError = "";
+let redeemingInvite = false;
 
 const CHECKOUT_AUTO_RECHECK_MS = 4000;
 
@@ -92,7 +96,8 @@ function syncDeniedCheckoutUi({ successNote = false } = {}) {
   const showConfirming = successNote || checkoutConfirming;
   if (checkoutButton) {
     checkoutButton.hidden = !configured;
-    checkoutButton.disabled = !configured || openingCheckout || checkoutRecheckInFlight;
+    checkoutButton.disabled =
+      !configured || openingCheckout || checkoutRecheckInFlight || redeemingInvite;
   }
   if (checkoutRecheckButton) {
     checkoutRecheckButton.hidden = !showConfirming;
@@ -119,6 +124,24 @@ function syncDeniedCheckoutUi({ successNote = false } = {}) {
   }
   checkoutStatusEl.textContent = "";
   checkoutStatusEl.classList.remove("is-error");
+}
+
+function setInviteMessage(text, isError = false) {
+  if (!inviteStatusEl) {
+    return;
+  }
+  inviteStatusEl.textContent = text;
+  inviteStatusEl.classList.toggle("is-error", Boolean(isError && text));
+}
+
+function syncDeniedInviteUi() {
+  const busy = redeemingInvite || openingCheckout || checkoutRecheckInFlight;
+  if (inviteCodeInput) {
+    inviteCodeInput.disabled = busy;
+  }
+  if (inviteSubmitButton) {
+    inviteSubmitButton.disabled = busy;
+  }
 }
 
 function settleCheckoutSuccessQuery() {
@@ -200,7 +223,12 @@ async function enterUnauthenticated() {
   currentAccess = "none";
   pendingEmail = pendingEmail || "";
   checkoutConfirming = false;
+  redeemingInvite = false;
   clearCheckoutAutoRecheck();
+  if (inviteCodeInput) {
+    inviteCodeInput.value = "";
+  }
+  setInviteMessage("");
   await teardownApp();
   setAuthState("unauthenticated");
   setBusy(false);
@@ -251,6 +279,7 @@ async function checkAccess(session, { silent = false } = {}) {
     setBusy(false);
     deniedCheckoutError = "";
     syncDeniedCheckoutUi();
+    syncDeniedInviteUi();
     settleCheckoutSuccessQuery();
     return;
   }
@@ -362,7 +391,12 @@ async function handleLogout() {
 }
 
 async function handleDeniedCheckout() {
-  if (openingCheckout || authState !== "denied" || currentAccess !== "none") {
+  if (
+    openingCheckout ||
+    redeemingInvite ||
+    authState !== "denied" ||
+    currentAccess !== "none"
+  ) {
     return;
   }
   if (!isPaymentLinkConfigured()) {
@@ -395,6 +429,53 @@ async function handleDeniedCheckout() {
   }
 }
 
+async function handleDeniedInvite() {
+  if (redeemingInvite || openingCheckout || authState !== "denied" || currentAccess !== "none") {
+    return;
+  }
+  const code = inviteCodeInput?.value ?? "";
+  if (!String(code).trim()) {
+    setInviteMessage("招待コードを入力してください。", true);
+    return;
+  }
+  redeemingInvite = true;
+  setInviteMessage("コードを確認しています…");
+  syncDeniedInviteUi();
+  syncDeniedCheckoutUi();
+  try {
+    const auth = await loadAuthApi();
+    const session = await auth.getSession();
+    if (!session) {
+      await enterUnauthenticated();
+      return;
+    }
+    const result = await auth.redeemInternalInvite(code);
+    if (result.ok) {
+      setInviteMessage("");
+      await checkAccess(session);
+      return;
+    }
+    if (result.error === "rate_limited") {
+      setInviteMessage("試行回数が多すぎます。しばらく時間をおいてから試してください。", true);
+      return;
+    }
+    if (result.error === "unauthorized") {
+      await enterUnauthenticated();
+      return;
+    }
+    setInviteMessage("コードを確認できませんでした。", true);
+  } catch (error) {
+    console.error(error);
+    setInviteMessage("コードを確認できませんでした。ネットワークを確認してください。", true);
+  } finally {
+    redeemingInvite = false;
+    if (authState === "denied") {
+      syncDeniedInviteUi();
+      syncDeniedCheckoutUi();
+    }
+  }
+}
+
 async function handleDeniedAccessRecheck({ automatic = false } = {}) {
   if (checkoutRecheckInFlight || authState !== "denied" || currentAccess !== "none") {
     return;
@@ -419,6 +500,7 @@ async function handleDeniedAccessRecheck({ automatic = false } = {}) {
     checkoutRecheckInFlight = false;
     if (authState === "denied") {
       syncDeniedCheckoutUi();
+      syncDeniedInviteUi();
     }
   }
 }
@@ -503,6 +585,15 @@ checkoutButton?.addEventListener("click", () => {
 });
 checkoutRecheckButton?.addEventListener("click", () => {
   void handleDeniedAccessRecheck({ automatic: false });
+});
+inviteSubmitButton?.addEventListener("click", () => {
+  void handleDeniedInvite();
+});
+inviteCodeInput?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    void handleDeniedInvite();
+  }
 });
 document.querySelector("#gate-retry")?.addEventListener("click", () => {
   void handleRetryAccess();

@@ -336,8 +336,9 @@ conte-rush を SNS 等で一般公開するための認証・利用権基盤。�
 - 本人が Magic Link で一度ログインしたあと、管理者が SQL Editor で email から `internal_users` へ付与する
 - 正は `user_id` + `enabled`。email は検索の手がかりだけ（D108 / D120）
 - 付与・解除 SQL は [supabase-m11-1-internal.sql](supabase-m11-1-internal.sql)
-- Auth / Gate / RLS は変更しない。ブラウザから internal_users を書けない
+- Auth / Gate の SELECT-own RLS は変更しない。ブラウザから internal_users を書けない
 - 仕様は [SPEC.md](SPEC.md) の M11.1 節を正とする
+- 通常の付与経路は M11.6 の招待コード。本 SQL は解除とフォールバック
 
 ### M11.2 Stripe Test Mode・月額 100 円 Checkout（実装済み。paid 反映は M11.3）
 
@@ -356,6 +357,16 @@ conte-rush を SNS 等で一般公開するための認証・利用権基盤。�
 - GitHub Pages は静的のまま。Cloudflare Functions は使わない
 - 仕様は [SPEC.md](SPEC.md) の M11.3 節を正とする
 - 実機確認済み（Test Mode）: none → Payment Link 決済 → webhook で `subscriptions` 更新 → `paid` で本体へ入れる。reload 後も、`checkout` query 無しの通常 URL でも維持する
+
+### M11.6 Internal invite self-serve（実装済み・実機確認済み）
+
+- ログイン済みユーザーが招待コードで自分を `internal_users` に登録する
+- コードの平文は DB に置かず SHA-256 hash のみ。repo / runtime-config に置かない
+- Edge Function `redeem-internal-invite` は JWT 必須。user_id は JWT のみ
+- 専用管理画面は作らない。生成・無効化は SQL Editor
+- M11.4 / M11.5 より先に入れてよい。M11.1 の代替経路
+- 仕様は [SPEC.md](SPEC.md) の M11.6 節を正とする
+- 実機確認済み: none → denied で招待コード → redeem 成功 → internal → 本体。reload 後も `internal_users` が正として維持する
 
 ### M11.4 解約 / 支払い失敗 / 再ログイン（未着手）
 

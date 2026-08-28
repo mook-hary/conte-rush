@@ -314,9 +314,34 @@ PDF 以外からも Panel 素材を足せるようにする。お絵描きソフ
 
 ## M11（公開基盤）
 
-conte-rush を SNS 等で一般公開するための認証・利用権基盤。制作素材はブラウザ内のまま。社内ユーザーは無料、一般ユーザーは月額約 100 円を後続マイルストーンで足す。
+conte-rush を SNS 等で一般公開するための認証・利用権基盤。制作素材はブラウザ内のまま。社内ユーザーは無料、一般ユーザーは月額約 100 円。
 
 同じコードベースを使う。`internal` と `paid` で機能を分けない。
+
+現行の課金経路（M11.4・Test Mode で実機確認済み）:
+
+```
+frontend
+  → create-checkout-session Edge Function
+  → Stripe Checkout Session
+  → webhook（stripe-webhook）
+  → subscriptions
+  → access gate
+```
+
+`past_due` / `unpaid` / `incomplete` / `paused` は paid access を与えない。猶予期間は設けない。Portal へ導く。internal が paid より優先する。
+
+最短の正式有料公開ルート:
+
+```
+M11.7 正式公開前の法務・表示
+  → M11.8 Stripe 本番モード切替
+  → 正式有料公開（GitHub Pages のまま可）
+```
+
+M11.5 Cloudflare Pages はこの経路に入れない。公開ブロッカーではない。M12 以降は公開後の機能拡張。
+
+番号順と実装順: M11.6 は M11.4 より先に実装した。番号はそのまま使う。
 
 ### M11.0 Supabase Auth + 利用権基盤（実装済み）
 
@@ -325,7 +350,7 @@ conte-rush を SNS 等で一般公開するための認証・利用権基盤。�
 - RLS: 自分の利用権の SELECT のみ。クライアントから internal / paid を書けない
 - Auth Gate を既存アプリ初期化の前に置く
 - GitHub Pages の静的配信 + Supabase Auth で動く構造。Cloudflare 移行は必須にしない
-- Stripe / Checkout / webhook / 管理画面 / OAuth / クラウド素材保存は入れない
+- 当時は Stripe / Checkout / webhook / 管理画面 / OAuth / クラウド素材保存は入れない。課金は後続（現行は M11.4）
 - セットアップ SQL は [supabase-m11.sql](supabase-m11.sql)
 - 仕様は [SPEC.md](SPEC.md) の M11.0 節を正とする
 - 実接続確認: Magic Link 送信・復帰・session 取得、利用権なしは `denied`、`internal_users.enabled=true` のあと本体へ入れること
@@ -340,14 +365,15 @@ conte-rush を SNS 等で一般公開するための認証・利用権基盤。�
 - 仕様は [SPEC.md](SPEC.md) の M11.1 節を正とする
 - 通常の付与経路は M11.6 の招待コード。本 SQL は解除とフォールバック
 
-### M11.2 Stripe Test Mode・月額 100 円 Checkout（実装済み。paid 反映は M11.3）
+### M11.2 Stripe Test Mode・月額 100 円 Payment Link（実装済み。歴史。現行経路としては廃止）
 
-- Test Mode の **Payment Link**（Checkout Session API は使わない）
+当時の入口は Test Mode の **Payment Link**。Checkout Session API は使わなかった。paid 反映は M11.3。
+
 - Product `conte-rush` / 月額 100 JPY / quantity 1。トライアルなし
 - `none` の denied 画面へ「月額100円で利用する」。`client_reference_id` は Supabase user UUID
-- 決済後も M11.2 だけでは `paid` にしない。webhook は M11.3
-- クライアントに Stripe secret を置かない。Payment Link URL は公開設定でよい
-- 仕様は [SPEC.md](SPEC.md) の M11.2 節を正とする
+- 決済後も M11.2 だけでは `paid` にしない
+- 現行の課金経路は M11.4。frontend の Payment Link 依存は撤去済み。Dashboard の旧 Link も無効化済み
+- 仕様は [SPEC.md](SPEC.md) の M11.2 節（当時の正）を参照する
 
 ### M11.3 Stripe webhook → Supabase subscription 反映（実装済み・Test Mode）
 
@@ -356,7 +382,31 @@ conte-rush を SNS 等で一般公開するための認証・利用権基盤。�
 - ブラウザへ webhook secret / Stripe secret を置かない
 - GitHub Pages は静的のまま。Cloudflare Functions は使わない
 - 仕様は [SPEC.md](SPEC.md) の M11.3 節を正とする
-- 実機確認済み（Test Mode）: none → Payment Link 決済 → webhook で `subscriptions` 更新 → `paid` で本体へ入れる。reload 後も、`checkout` query 無しの通常 URL でも維持する
+- 当時の実機確認（Test Mode）: none → Payment Link 決済 → webhook で `subscriptions` 更新 → `paid`
+- 現行の決済入口は M11.4 の Checkout Session。webhook の役割は同じ。Live 切替は M11.8
+
+### M11.4 二重契約防止 + Billing Portal（実装済み・Test Mode 実機確認済み・post-cleanup 済み）
+
+現行の課金経路。第一目的は、同一 Supabase user が同一 conte-rush Price の Subscription を複数契約しないこと。
+
+- frontend は旧 Payment Link に依存しない。Edge Function `create-checkout-session` が Checkout Session を作る
+- Stripe Dashboard の旧 Payment Link も無効化済み
+- Stripe Customer は 1 user 1 件。`stripe_customers` が正。Checkout 時に再利用する
+- blocking subscription があれば新規 Checkout を作らない。`canceled` のみ再契約可
+- webhook は別 blocking `subscription_id` で既存行を上書きしない
+- Billing Portal は DB の Customer mapping を使う
+- `past_due` は none。猶予は設けない。Portal で支払方法を更新する
+- internal が paid より優先する
+- Test 実機: Customer 1:1、新規 Checkout → webhook → paid、`existing_subscription` による二重契約防止、Portal
+- post-cleanup: orphan Test Customer を削除し、DB 参照は残っていない。残る mapping は 1:1 で blocking 重複なし
+- 仕様は [SPEC.md](SPEC.md) の M11.4 節を正とする
+
+### M11.5 Cloudflare Pages 公開（未着手。公開ブロッカーではない）
+
+- 静的アプリの公開先を Cloudflare Pages へ移す検討
+- 正式有料公開は GitHub Pages のままでよい
+- Cloudflare Pages / Functions は公開後の移行候補
+- Stripe 本番切替（M11.8）は本マイルストーンを待たない
 
 ### M11.6 Internal invite self-serve（実装済み・公開環境で実機確認済み）
 
@@ -364,31 +414,85 @@ conte-rush を SNS 等で一般公開するための認証・利用権基盤。�
 - コードの平文は DB に置かず SHA-256 hash のみ。repo / runtime-config に置かない
 - Edge Function `redeem-internal-invite` は JWT 必須。user_id は JWT のみ
 - 専用管理画面は作らない。生成・無効化は SQL Editor
-- M11.4 / M11.5 より先に入れてよい。M11.1 の代替経路
+- 番号順では M11.4 の後だが、実装は M11.4 より先。M11.1 の代替経路
+- 通常の社内付与は招待コード。SQL 付与は fallback / 管理用途
 - 仕様は [SPEC.md](SPEC.md) の M11.6 節を正とする
 - 公開環境で実機確認済み: 新規ユーザー → 招待コード → internal → 本体。reload 後も `internal_users` が正。社内メールの事前収集は不要。社内配布可能な状態
 
-### M11.4 二重契約防止 + Billing Portal（実装済み・Test Mode で実機確認済み）
+### M11.7 正式公開前の法務・表示（未着手。正式公開 blocker）
 
-- 第一目的は、同一 Supabase user が同一 conte-rush Price の Subscription を複数契約しないこと
-- 共有 Payment Link を frontend から外し、Edge Function が Checkout Session を作る（Dashboard の旧 Link 無効化は後工程）
-- Stripe Customer は 1 user 1 件。`stripe_customers` が正
-- Billing Portal で契約確認 / 支払方法 / 解約（期間末）
-- `past_due` は none のまま。Portal で支払方法を更新する
-- Test 実機: 既存契約は Checkout せず、新規は Checkout → webhook → paid、再操作は `existing_subscription`
-- 仕様は [SPEC.md](SPEC.md) の M11.4 節を正とする
+有料サービスとして正式公開する前に必要な表示・文書を揃える。
 
-### M11.5 Cloudflare Pages 公開（未着手）
+Must:
 
-- 静的アプリの公開先を Cloudflare Pages へ移す検討
-- GitHub Pages を M11.0〜M11.4 の開発中も使ってよい
+- 特定商取引法に基づく表記
+- 利用規約
+- プライバシーポリシー
+- 解約方法
+- 税込価格表示
+- 問い合わせ先
+- Gate / Account 等から必要文書へ到達できる導線
+- 税務 / 会計上の確認事項を docs 上で明示
 
-### M11 の後工程
+完了条件:
 
+- 各文書が公開 URL で閲覧可能
+- 課金前に価格・自動更新・解約条件が確認できる
+- 必要な画面から法務文書へ到達できる
+- Test 用の仮表示が本番課金画面に残らない
+
+仕様は [SPEC.md](SPEC.md) の M11.7 節を正とする。
+
+### M11.8 Stripe 本番モード切替（未着手。正式公開 blocker）
+
+M11.4 で完成した課金モデルを Stripe Live Mode へ移行する。コードの課金モデルは変えない。
+
+予定作業:
+
+- Live Product / Live Price
+- Live webhook endpoint / Live webhook secret / Live Stripe secret
+- `STRIPE_PRICE_ID` の Live 化
+- Checkout Session / Billing Portal / webhook → subscriptions / access gate の Live 確認
+
+Live E2E:
+
+1. 新規一般ユーザー
+2. Checkout
+3. 実カード決済
+4. webhook
+5. paid access
+6. `existing_subscription` による二重契約防止
+7. Billing Portal
+8. `cancel_at_period_end`
+9. 期間終了 → none
+10. canceled 後の再契約
+
+`past_due` / `unpaid` は可能な範囲で確認する。grace period は実装しない。
+
+完了条件:
+
+- Live で 1 user : 1 customer : 0/1 blocking subscription
+- 実決済から利用権反映まで確認
+- 解約と再契約確認
+- secret が frontend / tracked files に存在しない
+- Test Mode の ID / secret を本番経路で参照しない
+
+依存: M11.4（済）、M11.7。仕様は [SPEC.md](SPEC.md) の M11.8 節を正とする。
+
+### 正式有料公開
+
+M11.7 と M11.8 の完了後、既存 GitHub Pages（`https://mook-hary.github.io/conte-rush/`）を本番課金の入口にする。新規ホスト移行は必須にしない。
+
+### 公開後（launch blocker ではない）
+
+- M11.5 Cloudflare Pages / Functions
 - GitHub repository の private 化
-- Stripe 本番モード
-- 正式有料公開で Auth の安定が必要になった段階で、Supabase Free から Pro への移行を検討する。Free の pause は運用リスクとして残る。「時々使えば絶対 pause しない」とはしない
-- **正式有料公開前の Must（M11.2 では実装しない）:** 特定商取引法に基づく表記、利用規約、プライバシーポリシー、解約方法の案内、価格（税）表示、税務 / 会計の確認。Test Mode の「税込100円」は仮の見せ方である
+- 正式有料公開後、Auth の安定が必要になった段階での Supabase Pro 検討。Free の pause は運用リスクとして残る
+- past_due 猶予
+- 管理画面、invite 管理 UI、Customer 管理 UI
+- `expires_at`、高度な rate limit
+- 自動 Panel 検出、OCR、高度な Rush 編集、分析 / ログ基盤、スマホ最適化
+- M12 以降
 
 ## 以降（構想）
 

@@ -855,7 +855,7 @@
 - 判断: 表示名やアバター用の `profiles` は置かない。Account UI のメールは `auth.users` / session から読む
 - 理由: M11.0 が必要なのは identity と利用権だけである。profiles を足すと「誰が正か」が増える
 - 採用しなかった案: 全ユーザーに profiles を作り `access_type` を置く
-- 結果: Access DB は `internal_users` と `subscriptions` のみ
+- 結果: M11.0 の Access DB は `internal_users` と `subscriptions`。後続で `stripe_webhook_events`（M11.3）、招待表（M11.6）、`stripe_customers`（M11.4）を足した。権限の正は従来どおり `effectiveAccess` の導出。`profiles` は作らない
 
 ## D108. 社内権限の正は user_id であり、email 文字列だけにしない
 
@@ -887,7 +887,7 @@
 - 判断: Supabase URL と anon/public key は `js/runtime-config.js` に書いてよい。service role、Stripe secret、webhook secret は M11.0 では導入せず、導入後もブラウザへ出さない
 - 理由: anon key は RLS 前提の公開鍵である。service role は RLS を迂回する。GitHub が public のままでも、秘密鍵が無ければ漏洩して困る資格情報は増えない
 - 採用しなかった案: service role を GitHub Pages の JS に埋め、クライアントから利用権を書く。`.env` に秘密鍵を置いて Pages へ載せる
-- 結果: M11.0 で秘密鍵ファイルは作らない。repo private 化は後工程
+- 結果: M11.0 で秘密鍵ファイルは作らない。repo private 化は公開後の候補であり、正式公開の blocker ではない
 
 ## D112. Auth Gate を app.js の外に置く
 
@@ -943,7 +943,7 @@
 - 判断: M11.0 の paid は `status` が `active` または `trialing` のときだけ。`current_period_end` は補助列として保持するが、ブラウザの現在時刻と比較して利用不可にはしない
 - 理由: クライアント時計はユーザーがずらせる。期間終了の正は将来の webhook が書く `status` とする
 - 採用しなかった案: `current_period_end < Date.now()` なら none にする
-- 結果: `past_due` は利用不可のまま。期限切れの反映は M11.3 / M11.4
+- 結果: `past_due` は利用不可のまま。猶予期間は設けない。期限切れの反映は webhook が書く `status`（M11.3 / M11.4）。Portal で支払方法を更新する
 
 ## D119. Auth UI は default SMTP 制約のため暫定 Magic Link とする
 
@@ -983,7 +983,7 @@
 - 判断: Payment Link の `after_completion` で Pages（または localhost）へ `?checkout=success` で戻す。M11.2 ではこの query と `{CHECKOUT_SESSION_ID}` のどちらでも `allowed` にしない
 - 理由: `subscriptions` の正は M11.3 webhook。Payment Link に Checkout Session の `cancel_url` は無い
 - 採用しなかった案: 成功 query で fixture 相当の paid をクライアントが書く。session id をフロントから Stripe へ取りに行く
-- 結果: テスト案内を出したあと query を外す。本番ではこの案内を残さない
+- 結果: テスト案内を出したあと query を外す。query では paid にしない（現行も同じ）。案内コピーは Test 向け。本番表示は M11.7 で整える
 
 ## D124. M11.2 のブラウザは subscriptions を書かない
 
@@ -1021,7 +1021,7 @@
 
 - 状態: 採用（M11.3・実装済み）
 - 判断: `effectiveAccess` と `PAID_STATUSES`（`active` / `trialing`）を変えない。`past_due` / `canceled` / `unpaid` は none。`cancel_at_period_end` は保存するが、status が `active` なら paid のまま
-- 理由: D118。猶予と解約 UX は M11.4
+- 理由: D118。解約 UX は M11.4 の Billing Portal。past_due 猶予は採用しない（D136）
 - 採用しなかった案: webhook 導入と同時に past_due 猶予を入れる。クライアント時計で period end を切る
 - 結果: internal は従来どおり課金より優先
 
@@ -1063,7 +1063,7 @@
 - 判断: Edge Function `create-checkout-session` が JWT 本人の Stripe Customer を再利用し、Checkout Session を作る。Price はサーバー固定。共有 Payment Link は廃止する
 - 理由: Payment Link は Customer を渡せない。毎回新しい Customer / Subscription が作られ、DB の 1 行上書きと組み合わさって二重請求になる
 - 採用しなかった案: Payment Link + Stripe の 1 契約制限だけ。email 一致に頼る
-- 結果: GitHub Pages は静的のまま。secret は Function のみ。`stripePaymentLinkUrl` は runtime-config から外す。Test Mode で、既存契約の検出・新規 Checkout → paid・Portal 往復を実機確認済み
+- 結果: GitHub Pages は静的のまま。secret は Function のみ。`stripePaymentLinkUrl` は runtime-config から外す。Stripe Dashboard の旧 Payment Link も無効化済み。Test Mode で、既存契約の検出・新規 Checkout → paid・Portal 往復を実機確認済み。post-cleanup 済み
 
 ## D134. Checkout 作成中は advisory lock を Stripe API 完了まで保持する
 
@@ -1079,12 +1079,26 @@
 - 判断: `subscriptions` 行が blocking な別 `subscription_id` を持っているとき、新しい Checkout / 古い Customer のイベントで上書きしない
 - 理由: M11.3 の「最新で上書き」が、Stripe 上の複数 active を DB から見えなくしていた
 - 採用しなかった案: 2 件目を自動キャンセルする
-- 結果: 重複の整理は管理者が Dashboard で行う。コードは一括キャンセルしない
+- 結果: 重複の整理は管理者が Dashboard で行う。コードは一括キャンセルしない。M11.4 post-cleanup で orphan Test Customer は削除済み
+
+## D136. past_due に猶予期間を設けない
+
+- 状態: 採用（M11.4 で確定）
+- 判断: paid access は `active` / `trialing` のみ。`past_due` / `unpaid` / `incomplete` / `paused` は none。Portal へ導く。grace period は付けない
+- 理由: クライアント時計で期間を延ばさない（D118）。失敗中も本体を開けると未払い利用になる
+- 採用しなかった案: past_due を一定期間 paid にする。M11.4 で猶予を足す
+- 結果: M11.8 Live でも猶予は実装しない
+
+## D137. 正式有料公開は GitHub Pages のままで行い、Cloudflare 移行は公開ブロッカーにしない
+
+- 状態: 採用
+- 判断: 正式有料公開のホストは現行 GitHub Pages（`https://mook-hary.github.io/conte-rush/`）。M11.5 Cloudflare Pages は公開後の移行候補
+- 理由: D1。M11.0〜M11.6 は Pages + Supabase Auth / Edge Function で成立している。Cloudflare Functions は必須にしていない
+- 採用しなかった案: Stripe Live を M11.5 のあとに限る。公開前にホストを移す
+- 結果: 最短公開ルートは M11.7 → M11.8 → 正式有料公開。M11.5 はこの経路に入れない
 
 ## 未決
 
 - ライセンス
-- GitHub Pages の公開 URL / リポジトリ公開範囲
-- Stripe 本番モードへの切替時期（M11.5 のあと。M11.2 は Test Mode のみ）
-- 正式有料公開時の税表示・特商法・利用規約（M11 後工程の Must。M11.2 では実装しない）
-- 正式有料公開時の Supabase Pro 移行時期（Free pause は運用リスク。保証はしない）
+- GitHub repository の公開範囲（public のままでよい。private 化は公開後の候補）
+- 正式有料公開後の Supabase Pro 移行時期（Free pause は運用リスク。保証はしない。公開ブロッカーではない）

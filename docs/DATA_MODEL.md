@@ -6,7 +6,7 @@
 
 制作データはサーバーを持たない。Panel / Cut / Timeline / Motion / Rush / 画像 / MP4 / Timesheet はブラウザのメモリ上にだけ存在する。リロードすると消える。
 
-M11.0 で足す Auth / 利用権は Supabase 側の最小データである。制作素材とは別境界とする。M11.0 は実装済み。
+M11.0 で足す Auth / 利用権は Supabase 側の最小データである。制作素材とは別境界とする。M11.0〜M11.4 と M11.6 は実装済み。現行の課金経路は M11.4（Checkout Session → webhook → subscriptions）。
 
 責務の境界:
 
@@ -961,7 +961,7 @@ M11.0 の paid 条件（導出）:
 - `status` が `active` または `trialing`
 - `current_period_end` は補助。クライアント時計を権限の正にしない
 
-`past_due` は paid にしない。M11.4 でも猶予は付けない。Portal で支払方法を更新する。
+`past_due` / `unpaid` / `incomplete` / `paused` は paid にしない。猶予期間は設けない。Portal で支払方法を更新する。
 
 クライアントは自分の行を SELECT できるだけとする。書き込みは service role（fixture SQL または M11.3 / M11.4 webhook）。M11.4 のブラウザは Checkout / Portal の URL を Function から受け取るだけで、この表を更新しない。
 
@@ -1018,9 +1018,22 @@ Supabase user と Stripe Customer の 1:1。権限の正ではない。
 
 ブラウザは読めない。service_role のみ。Checkout 作成時に作り、webhook は欠けるときだけ補う。M11.3 由来の `subscriptions.customer_id` は移行 fallback で、本人行が空のときだけ `stripe_customers` へ backfill する。別 user の `customer_id` は奪わない。`customer_id` はクライアントから受け取らない。
 
-### Payment Link 導線（M11.2。M11.4 で frontend 廃止）
+### 現行課金経路（M11.4・実装済み）
 
-M11.4 から runtime-config / JS に Payment Link URL を置かない。Checkout は Edge Function が Session を作る。`checkout=success` は案内のまま `paid` ではない。
+```
+frontend
+  → create-checkout-session Edge Function
+  → Stripe Checkout Session
+  → webhook（stripe-webhook）
+  → subscriptions
+  → access gate（effectiveAccess）
+```
+
+Billing Portal は `create-portal-session` が DB の Customer mapping を使う。blocking subscription があれば新規 Checkout を作らない。`canceled` のみ再契約可。webhook は別 blocking `subscription_id` で既存行を上書きしない。
+
+### Payment Link 導線（M11.2。歴史。現行経路としては廃止）
+
+M11.2 当時は runtime-config の Payment Link URL から Checkout へ進んだ。M11.4 で frontend / runtime-config から外した。Stripe Dashboard の旧 Link も無効化済み。`checkout=success` は案内のまま `paid` ではない。
 
 持たない:
 
@@ -1114,4 +1127,4 @@ M9 では Timesheet View Model を導出するだけとする。Panel / Cut / Ti
 
 M10 では Panel の `source` に `"drawing"` / `"upload"` を足す。画像バイトは PanelMediaStore。Timeline / Motion / Rush / タイムシートの保存項目は増やさない。Onion（M10.2）は UI 状態だけとする。M10.3で保存構造変更なし。M10.4で永続構造変更なし。InsertionContextはUI状態のみ。
 
-M11.0 では Auth / 利用権だけを Supabase に置く。制作データの保存項目は増やさない。プロジェクト保存とクラウド素材保存はまだ定義しない。
+M11.0 では Auth / 利用権だけを Supabase に置く。制作データの保存項目は増やさない。プロジェクト保存とクラウド素材保存はまだ定義しない。M11.4 の `stripe_customers` は利用権の正ではない。M11.7 / M11.8 は法務表示と Live 切替であり、制作データの保存項目は増やさない。

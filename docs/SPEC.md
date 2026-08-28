@@ -1,6 +1,6 @@
 # 仕様
 
-この文書は、実装済みとして扱う仕様と、扱わない範囲を分けて書きます。M10.0 / M10.1 / M10.2 / M10.3 / M10.4 は実装済みです。M11.0 は実装済みです。将来構想は「将来」節に限ります。
+この文書は、実装済みとして扱う仕様と、扱わない範囲を分けて書きます。M10.0 / M10.1 / M10.2 / M10.3 / M10.4 は実装済みです。M11.0〜M11.4 と M11.6 は実装済みです。M11.7 / M11.8 は計画です。将来構想は「将来」節に限ります。
 
 対象マイルストーン:
 
@@ -19,7 +19,15 @@
 - **M8**: 実装済み
 - **M9**: 実装済み
 - **M10**: M10.0 / M10.1 / M10.2 / M10.3 / M10.4 実装済み
-- **M11.0**: 実装済み（Auth / 利用権基盤。Stripe と Cloudflare 移行は後続）
+- **M11.0**: 実装済み（Auth / 利用権基盤）
+- **M11.1**: 実装済み（社内 SQL 付与。通常付与は M11.6）
+- **M11.2**: 実装済み（歴史。当時の Test Payment Link。現行課金経路としては廃止）
+- **M11.3**: 実装済み（webhook → subscriptions。Test Mode）
+- **M11.4**: 実装済み（現行課金経路。Checkout Session + Portal。Test Mode。post-cleanup 済み）
+- **M11.5**: 未着手（Cloudflare Pages。正式公開の blocker ではない）
+- **M11.6**: 実装済み（internal invite self-serve）
+- **M11.7**: 計画（正式公開前の法務・表示。公開 blocker）
+- **M11.8**: 計画（Stripe 本番モード切替。公開 blocker）
 
 ## 目的
 
@@ -38,7 +46,7 @@
 - M8: 同一 Panel を Cut 内で複数 placement できるようにし、所属順の Repeat 展開を編集コマンドとして Timeline へ書き込む。再生モードは増やさない
 - M9: 最終 Timeline と Motion から、印刷用の B4 縦タイムシート PDF を一方向に出力する。タイムシートは正本にしない
 - M10: PDF 以外（手描き / ローカル画像）からも Panel 素材を足す。お絵描きソフトにはしない。実装は M10.0 / M10.1 / M10.2 / M10.3 / M10.4
-- M11.0: ログインと利用権（internal / paid / none）を Supabase に分離する。制作素材は送らない。Stripe 決済はまだ実装しない
+- M11.0: ログインと利用権（internal / paid / none）を Supabase に分離する。制作素材は送らない。当時は Stripe 決済を実装しない（現行の課金は M11.4）
 
 責務の境界:
 
@@ -47,7 +55,7 @@
 - Timeline = Cut 内で各 Panel がいつ始まるか
 - Motion = ある Panel 表示区間内で、出力フレームへどこを crop して出すか
 - Rush = Timeline + Motion を時間軸に沿って再生したもの（M6 はブラウザ再生。M7 は同じ描画結果の MP4）
-- Auth / Access（M11.0）= ログインと利用権。制作データの正ではない。Stripe はまだ実装しない
+- Auth / Access（M11.0）= ログインと利用権。制作データの正ではない。現行の課金経路は M11.4
 
 M1 の Panel は絵コンテ上の 1 つのコマ候補である。CUT 番号でも尺でもない。
 
@@ -73,10 +81,10 @@ M7 の MP4 は実行時の書き出しである。Panel / Cut / Timeline / Motio
 
 ## 制約
 
-- GitHub Pages で動作する静的 Web アプリとする（M11.0〜M11.4 の開発中も可）
+- GitHub Pages で動作する静的 Web アプリとする。正式有料公開も GitHub Pages のままでよい（M11.5 Cloudflare は公開ブロッカーではない）
 - HTML / CSS / JavaScript を使う
 - ビルドツールは使わない
-- M11.0 の Auth / 利用権だけ hosted Supabase を使う。独自サーバーと Cloudflare Functions は M11.0 では必須にしない
+- Auth / 利用権は hosted Supabase を使う。独自サーバーと Cloudflare Functions は必須にしない
 - PDF はユーザーが選んだローカルファイルのみを対象とする
 - PDF / Panel 画像 / Drawing / Upload / Rush / MP4 / Timesheet をサーバーや Supabase へ送信しない
 - 生成した MP4 もサーバーへ送信しない。ブラウザ内の Blob として保存する
@@ -2454,7 +2462,7 @@ AI 検出、OCR、自動中割、レイヤー作画、色塗り、筆圧、音�
 
 ## M11.0（実装済み）
 
-一般公開に向けて、Login / User identity / Access entitlement / 本体へのアクセス制御だけを安全に分離する。Stripe 決済は実装しない。本節が実装時の正である。
+一般公開に向けて、Login / User identity / Access entitlement / 本体へのアクセス制御だけを安全に分離する。本節は M11.0 実装時の正である。当時は Stripe 決済を実装しない。現行の課金経路は M11.4。
 
 公開後の扱い:
 
@@ -2462,7 +2470,7 @@ AI 検出、OCR、自動中割、レイヤー作画、色塗り、筆圧、音�
 - 一般ユーザー → 月額約 100 円（`paid`。M11.2 以降）
 - どちらでもない → 利用不可（`none`）
 
-GitHub repository は public のままでよい。GitHub Pages での社内利用も続ける。private 化は後工程。
+GitHub repository は public のままでよい。GitHub Pages での利用を続ける。private 化は公開後の候補であり、正式公開の blocker ではない。
 
 ### 1. 境界
 
@@ -2583,7 +2591,7 @@ M11.0 の paid 条件:
 - `status` が `active` または `trialing`
 - `current_period_end` は補助情報であり、クライアント時計だけで利用不可にしない
 
-`past_due` は M11.0 では paid にしない。猶予は M11.4。
+`past_due` は paid にしない。猶予期間は設けない（M11.4 で確定。M11.8 でも猶予しない）。Portal で支払方法を更新する。
 
 fixture: Supabase SQL editor（service role）で `provider='manual_fixture'` かつ `status='active'` の行を入れる。production でクライアントから `paid=true` を書けないこと。
 
@@ -2763,7 +2771,7 @@ supabase-js は PDF.js / Mediabunny と同様、**ピン止めした CDN ESM** �
 
 M11.0 では GitHub Pages を維持する。repo が public でも、runtime config に秘密鍵が無ければ「漏洩して困る資格情報」は増えない。anon key は公開前提である。
 
-repository private 化は M11.5 のあと。M11.0 で Cloudflare 移行を必須にしない。
+repository private 化は公開後の候補であり、正式公開の blocker ではない。M11.0 で Cloudflare 移行を必須にしない。正式有料公開も GitHub Pages のままでよい（M11.5 は公開後の移行候補）。
 
 M11.0 のゲートは Pages + Supabase Auth だけで成立させる。Stripe webhook のサーバー処理は M11.3 で Supabase Edge Function とした（Cloudflare Functions は使わない）。
 
@@ -2773,7 +2781,7 @@ Free プロジェクトは非活動で pause され得る。これは M11 の運
 
 社内ユーザーや自分自身が通常利用して Auth / DB アクセスが続けば、活動として寄与し得る。ただし「時々使えば絶対 pause しない」とはしない。
 
-正式有料公開で Auth の安定が必要になった段階で、Supabase Pro への移行を検討する。時期は [ROADMAP.md](ROADMAP.md) の M11 後工程。
+正式有料公開で Auth の安定が必要になった段階で、Supabase Pro への移行を検討する。公開ブロッカーではない。時期は [ROADMAP.md](ROADMAP.md) の公開後項目。
 
 ### 18. モジュール
 
@@ -2814,6 +2822,8 @@ Free プロジェクトは非活動で pause され得る。これは M11 の運
 
 ### 20. 完成条件（実装時）
 
+当時の M11.0 完成条件。課金の現行は M11.4。Live は M11.8。
+
 - Magic Link でログインできる（暫定。D119 / D125。custom SMTP 後は数字 OTP へ戻せる）
 - リロード後、既存 session があればログイン画面を必須にしない
 - `internal` fixture で本体を使える
@@ -2836,7 +2846,7 @@ Free プロジェクトは非活動で pause され得る。これは M11 の運
 
 ### 21. M11.0 では実装しない
 
-- Stripe、クレジットカード、月 100 円商品、Checkout、webhook、解約、Billing Portal
+- Stripe、クレジットカード、月 100 円商品、Checkout、webhook、解約、Billing Portal（後続 M11.2〜M11.4。Live は M11.8）
 - Cloudflare 移行、GitHub private 化
 - 管理画面、Google OAuth
 - プロジェクト保存、クラウド素材保存
@@ -2849,14 +2859,30 @@ Free プロジェクトは非活動で pause され得る。これは M11 の運
 | 後続 | M11.0 が空けておくもの |
 |---|---|
 | M11.1 | `internal_users` スキーマと RLS。行の追加は SQL Editor（管理 UI は作らない） |
-| M11.2 | `denied` 画面の `#denied-upgrade-slot`。Checkout Session API はまだ置かない |
+| M11.2 | `denied` 画面の `#denied-upgrade-slot`。当時は Checkout Session API を置かない（現行入口は M11.4） |
 | M11.3 | `subscriptions` の列と正規化 status。webhook は service role だけが書く |
-| M11.4 | 再確認のフック（起動と session change 以外を足せる） |
-| M11.5 | アプリは静的ファイルのまま。Pages 前提を崩さない |
+| M11.4 | 現行課金経路。Checkout Session + Portal。再確認のフック |
+| M11.5 | アプリは静的ファイルのまま。Pages 前提を崩さない。公開ブロッカーではない |
+| M11.6 | 招待コード。SQL 付与は残す |
+| M11.7 | 法務・表示。公開 blocker |
+| M11.8 | Stripe Live。公開 blocker |
 
-## M11.2（実装済み・Test Mode。webhook / paid 反映は未実装）
+## M11.2（実装済み・歴史。当時 Test Mode Payment Link。現行課金経路としては廃止）
 
-一般ユーザーが Magic Link ログイン → `effectiveAccess = none` →「月額100円で利用する」→ Stripe Test Mode の Subscription Payment Link へ進む導線だけを足す。本節が実装時の正である。
+本節は **M11.2 実装時の正** である。当時の入口は Stripe Test Mode の Subscription Payment Link。
+
+**現行の正は M11.4。** frontend は Payment Link に依存しない。Stripe Dashboard の旧 Link も無効化済み。現行経路:
+
+```
+frontend
+  → create-checkout-session Edge Function
+  → Stripe Checkout Session
+  → webhook
+  → subscriptions
+  → access gate
+```
+
+一般ユーザーが Magic Link ログイン → `effectiveAccess = none` →「月額100円で利用する」→ 当時は Test Payment Link へ進む導線だけを足した。
 
 M11.0 / M11.1 の Auth・利用権・RLS は変えない。決済完了後に `subscriptions` へ `active` を書く処理は **M11.3 の webhook** である。M11.2 では支払い成功しても `paid` にしない。
 
@@ -3024,7 +3050,7 @@ M11.2 では none ユーザーがリンクを何度も開けることを完全�
 - Customer 再利用なし
 - サーバー側 Checkout 生成なし
 
-M11.3 以降の進化余地: 既存 subscription 確認、Customer 再利用、Checkout Session をサーバー（Cloudflare Functions 等）で作る。M11.2 ではサーバー処理を足さない。
+M11.3 以降の進化余地: 既存 subscription 確認、Customer 再利用、Checkout Session をサーバーで作る。これは M11.4 で Supabase Edge Function として実装した（Cloudflare Functions は使わない）。M11.2 ではサーバー処理を足さない。
 
 ### 13. 支払方法
 
@@ -3036,15 +3062,7 @@ Stripe Tax / 自動税計算は導入しない。Adaptive Pricing（Payment Link
 
 M11.2 Test Mode の見せ方: **税込 100 円** として UI に書く。インボイス・軽減税率・課税事業者の扱いは決めない。
 
-正式有料公開前の Must（ROADMAP の M11 後工程。M11.2 では実装しない）:
-
-- 特定商取引法に基づく表記
-- 利用規約
-- プライバシーポリシー
-- 解約方法の案内
-- 価格表示（税）
-- 税務 / 会計の確認
-- Stripe 本番モード切替
+正式有料公開前の Must は M11.7（法務・表示）と M11.8（Stripe 本番モード）。M11.2 では実装しない。Test Mode の「税込100円」は仮の見せ方である。
 
 ### 15. セキュリティ
 
@@ -3108,23 +3126,23 @@ M11.2 Test Mode の見せ方: **税込 100 円** として UI に書く。イン
 - 本番決済、GitHub private 化
 - custom SMTP、数字 OTP 復帰
 - Stripe Tax、コンビニ決済の追加、年額プラン
-- 特商法・利用規約ページ（公開前 Must。実装は後）
+- 特商法・利用規約ページ（公開前 Must。実装は M11.7）
 
 ## M11.3（実装済み・Test Mode）
 
-Stripe の Subscription Payment Link 決済を webhook で受け、`public.subscriptions` をサーバー側で更新する。既存の `effectiveAccess` が `paid` を返せるようにする。本節が実装時の正である。
+Stripe の Subscription 決済を webhook で受け、`public.subscriptions` をサーバー側で更新する。既存の `effectiveAccess` が `paid` を返せるようにする。本節が実装時の正である。
+
+当時の入口は M11.2 Payment Link。**現行の入口は M11.4 の Checkout Session。** webhook の役割は同じ。Live 切替は M11.8。
 
 ```
-Payment Link（M11.2）
-  → Stripe Test Checkout
-  → Edge Function stripe-webhook（署名検証）
-  → subscriptions upsert（service role）
+当時: Payment Link（M11.2）→ Stripe Test Checkout → stripe-webhook → subscriptions
+現行: create-checkout-session（M11.4）→ Stripe Checkout Session → stripe-webhook → subscriptions
   → ユーザーが ?checkout=success で戻る
   → 通常の access check（query では paid にしない）
   → none なら「決済確認中」+ 再確認（自動は 1 回）
 ```
 
-M11.0 / M11.1 / M11.2 の Auth Gate、RLS SELECT-own、`PAID_STATUSES`、Payment Link URL 生成、`clearSessionData`、app initialize 条件は変えない。
+M11.0 / M11.1 の Auth Gate、RLS SELECT-own、`PAID_STATUSES`、`clearSessionData`、app initialize 条件は変えない。M11.2 当時の Payment Link URL 生成は M11.4 で frontend から外した。
 
 ### 1. 境界
 
@@ -3181,14 +3199,14 @@ M11.0 / M11.1 / M11.2 の Auth Gate、RLS SELECT-own、`PAID_STATUSES`、Payment
 
 実機確認（M11.3・Test Mode・記録）:
 
-- none ユーザーの Magic Link / PKCE ログイン、denied、Test Payment Link、Test Card 決済成功
+- none ユーザーの Magic Link / PKCE ログイン、denied、当時は Test Payment Link、Test Card 決済成功。現行入口は M11.4 Checkout Session
 - Stripe webhook が Edge Function に到達し `public.subscriptions` を更新
 - `paid` で本体へ入れる。reload 後も、`checkout` query 無しの通常 URL でも維持する
 - `checkout=success` は案内であり、権限の正ではない
 
 ### 8. M11.3 では実装しない
 
-- Stripe 本番モード、Billing Portal、past_due 猶予
+- Stripe 本番モード（M11.8）、Billing Portal（M11.4 で実装）、past_due 猶予（採用しない）
 - invoice イベント処理、Customer 再利用、サーバー側 Checkout Session
 - Cloudflare Functions、repo private 化
 - `effectiveAccess` / RLS の変更
@@ -3207,7 +3225,7 @@ Magic Link
   → internal → allowed
 ```
 
-M11.1 の SQL 付与 / 解除は残す。`effectiveAccess`、Stripe webhook、Payment Link、PKCE は変えない。
+M11.1 の SQL 付与 / 解除は残す。`effectiveAccess`、Stripe webhook、PKCE は変えない。課金経路は M11.4（本マイルストーンでは触らない）。
 
 ### 1. 境界
 
@@ -3267,7 +3285,7 @@ GitHub Pages
   → webhook が subscriptions を更新
 ```
 
-共有 Payment Link は廃止する。`effectiveAccess` / `PAID_STATUSES` / PKCE / 招待コードは変えない。
+共有 Payment Link は廃止する（frontend 撤去済み。Dashboard の旧 Link も無効化済み）。`effectiveAccess` / `PAID_STATUSES` / PKCE / 招待コードは変えない。
 
 ### 1. モデル
 
@@ -3295,7 +3313,7 @@ blocking な別 `subscription_id` がある行は上書きしない。紐付け�
 
 ### 5. access / UX
 
-paid 条件は従来どおり `active` / `trialing`。`past_due` は none。即停止し Portal で支払方法を更新する。
+paid 条件は従来どおり `active` / `trialing`。`past_due` / `unpaid` / `incomplete` / `paused` は none。猶予期間は設けない。Portal で支払方法を更新する。
 
 - none / canceled: ［月額100円で利用する］。税込・自動更新・解約可・期間末まで利用、を短く出す
 - past_due / unpaid / incomplete / paused: 新規 Checkout ではなく［契約を管理］
@@ -3315,15 +3333,88 @@ paid 条件は従来どおり `active` / `trialing`。`past_due` は none。即�
 
 - paid ユーザー: 既存 subscription を検出し `existing_subscription`。新規 Checkout を作らない。「契約を管理」→ Customer Portal → アプリへ戻る
 - 新規ユーザー: Checkout Session（¥100/月）→ Test 決済 → webhook → `paid` → 本体。再呼び出しでも `existing_subscription` で二重契約へ進まない
-- Payment Link は frontend / runtime-config から外した。Dashboard 上の旧 Link 無効化は後工程
+- Payment Link は frontend / runtime-config から外した。Stripe Dashboard の旧 Link も無効化済み
 - Function secret の Price 不一致で Checkout が失敗することを確認し、正しい Price へ直してから上記を通した
+- post-cleanup: orphan Test Customer を Dashboard で削除し、DB 参照は残っていない。残る `stripe_customers` / `subscriptions` は 1:1 で blocking 重複なし
 
 ### 7. M11.4 では実装しない
 
-- Stripe 本番モード、特商法ページ、past_due 猶予
-- 重複 Test subscription / 余分な Test Customer の自動キャンセル
-- Dashboard 上の旧 Payment Link 無効化（別工程）
+- Stripe 本番モード（M11.8）、特商法ページ（M11.7）
+- past_due 猶予（採用しない。M11.8 でも実装しない）
+- 重複 Test subscription / 余分な Test Customer の自動キャンセル（整理は Dashboard。post-cleanup で orphan は削除済み）
 - Cloudflare Functions
+
+## M11.7（計画。未着手。正式公開 blocker）
+
+有料サービスとして正式公開する前に必要な表示・文書を揃える。課金モデル（M11.4）は変えない。本節は計画であり、この同期では実装しない。
+
+### 1. Must
+
+- 特定商取引法に基づく表記
+- 利用規約
+- プライバシーポリシー
+- 解約方法
+- 税込価格表示
+- 問い合わせ先
+- Gate / Account 等から必要文書へ到達できる導線
+- 税務 / 会計上の確認事項を docs 上で明示
+
+### 2. 完了条件
+
+- 各文書が公開 URL で閲覧可能
+- 課金前に価格・自動更新・解約条件が確認できる
+- 必要な画面から法務文書へ到達できる
+- Test 用の仮表示が本番課金画面に残らない
+
+### 3. M11.7 では実装しない
+
+- Stripe Live 切替（M11.8）
+- Cloudflare Pages（M11.5）
+- past_due 猶予
+- 管理画面
+
+## M11.8（計画。未着手。正式公開 blocker）
+
+M11.4 で完成した課金モデルを Stripe Live Mode へ移行する。`PAID_STATUSES`、Customer 1:1、blocking による二重契約防止、past_due 非猶予は変えない。本節は計画であり、この同期では実装しない。
+
+依存: M11.4（済）、M11.7。
+
+### 1. 予定作業
+
+- Live Product / Live Price
+- Live webhook endpoint / Live webhook secret / Live Stripe secret
+- `STRIPE_PRICE_ID` の Live 化
+- Checkout Session / Billing Portal / webhook → subscriptions / access gate の Live 確認
+
+### 2. Live E2E
+
+1. 新規一般ユーザー
+2. Checkout
+3. 実カード決済
+4. webhook
+5. paid access
+6. `existing_subscription` による二重契約防止
+7. Billing Portal
+8. `cancel_at_period_end`
+9. 期間終了 → none
+10. canceled 後の再契約
+
+`past_due` / `unpaid` は可能な範囲で確認する。grace period は実装しない。
+
+### 3. 完了条件
+
+- Live で 1 user : 1 customer : 0/1 blocking subscription
+- 実決済から利用権反映まで確認
+- 解約と再契約確認
+- secret が frontend / tracked files に存在しない
+- Test Mode の ID / secret を本番経路で参照しない
+
+### 4. M11.8 では実装しない
+
+- past_due 猶予
+- Cloudflare Pages / Functions（M11.5）
+- 法務文書の新規起草（M11.7）
+- Test データの一括自動キャンセル
 
 ## UI 要件
 
@@ -3478,7 +3569,7 @@ paid 条件は従来どおり `active` / `trialing`。`past_due` は none。即�
 
 - 未ログイン時の Auth Gate（conte-rush 見出しと Magic Link フォーム。D119）。本体ワークスペースは出さない
 - 利用権確認中 / ネットワークエラー / 利用権なし の各表示。未契約と通信失敗を混ぜない
-- `denied` の仮案内。月 100 円ボタンは置かない
+- `denied` の仮案内。月 100 円ボタンは置かない（当時。現行ボタンは M11.4）
 - `allowed` 時の小さい Account（メール、利用権ラベル、ログアウト）
 - 「社内版」の常時バナーは置かない
 
@@ -3491,12 +3582,30 @@ paid 条件は従来どおり `active` / `trialing`。`past_due` は none。即�
 - 解除は `enabled = false`（行削除でも可）
 - Auth Gate / RLS / ブラウザからの書き込み禁止は M11.0 のまま。service_role をフロントへ置かない
 
-### M11.2（実装済み・Test Mode。webhook / paid 反映は未実装）
+### M11.2（実装済み・歴史。当時 Test Mode Payment Link）
 
-- `denied` の「conte-rushは月額100円（税込）で利用できます。」と［月額100円で利用する］
-- none かつ session あり、Payment Link 設定済みのときだけ遷移。internal / paid には出さない
+- 当時: `denied` の「conte-rushは月額100円（税込）で利用できます。」と［月額100円で利用する］
+- 当時: none かつ session あり、Payment Link 設定済みのときだけ遷移。internal / paid には出さない
 - 決済後 `?checkout=success` のテスト案内。これだけでは本体を開かない
-- 無料トライアル、Billing Portal、解約 UI は置かない
+- 当時は Billing Portal を置かない。現行の Portal 導線は M11.4
+
+### M11.4（実装済み・Test Mode）
+
+- ［月額100円で利用する］は Checkout Session（Edge Function）。Payment Link は出さない
+- past_due 等は［契約を管理］（Portal）。新規 Checkout に進まない
+- paid / Customer がある internal は Account から Portal
+
+### M11.6（実装済み）
+
+- denied の招待コード入力。通常の社内付与経路。SQL は fallback
+
+### M11.7（計画）
+
+- 特商法 / 利用規約 / プライバシー / 解約 / 税込価格 / 問い合わせへ、Gate / Account から到達できる
+
+### M11.8（計画）
+
+- Live 課金。Test 用の仮表示を本番画面に残さない
 
 ## 非対象
 
@@ -3625,4 +3734,10 @@ M11.3 は Stripe webhook を Supabase Edge Function で受け、`subscriptions` 
 
 M11.6 は招待コードによる internal セルフ登録である。平文は repo に置かない。公開環境で確認済みであり、社内配布可能な状態である。
 
-M11.4 は二重契約防止である。Payment Link をやめ、サーバーが Checkout Session を作る。Customer は 1 user 1 件。
+M11.4 は現行の課金経路である。Payment Link をやめ、サーバーが Checkout Session を作る。Customer は 1 user 1 件。Dashboard の旧 Link は無効化済み。post-cleanup 済み。
+
+M11.5 は Cloudflare Pages の検討である。正式有料公開の blocker ではない。GitHub Pages のまま公開してよい。
+
+M11.7 は正式公開前の法務・表示である。公開 blocker。
+
+M11.8 は Stripe 本番モード切替である。公開 blocker。最短公開ルートは M11.7 → M11.8 → 正式有料公開。

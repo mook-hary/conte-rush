@@ -40,17 +40,19 @@
 
 **実装済み（M10.4）** は、横 Timeline の「＋」から既存 Panel または手描き Panel を候補 frame へ挿入し、手描きでは左右を Onion Skin として最初から見せることです。保存構造は変えません。
 
-**実装済み（M11.0）** は、Supabase Auth と利用権（internal / paid / none）を制作アプリの外側に置くことです。Stripe 決済と制作素材のクラウド保存は含みません。
+**実装済み（M11.0）** は、Supabase Auth と利用権（internal / paid / none）を制作アプリの外側に置くことです。制作素材のクラウド保存は含みません。
 
-**実装済み（M11.1）** は、社内 5〜6 人を管理画面なしで `internal_users` へ登録する運用です。本人が Magic Link で一度ログインしたあと、管理者が SQL Editor でメールアドレスから利用権を付けます。
+**実装済み（M11.1）** は、社内 5〜6 人を管理画面なしで `internal_users` へ登録する運用です。通常の付与は M11.6 の招待コード。SQL は解除とフォールバックです。
 
-**実装済み（M11.2）** は、当時の denied → Stripe Test Payment Link 導線です。M11.4 で frontend からは外した。Test Mode のみです。
+**実装済み（M11.2）** は、当時の denied → Stripe Test Payment Link 導線です。歴史的には COMPLETE。現行の課金経路としては廃止し、M11.4 の Checkout Session に置換済みです。
 
-**実装済み（M11.3）** は、Stripe webhook を Supabase Edge Function で受け、`subscriptions` を更新して `paid` にする処理です。Test Mode。`checkout=success` だけでは利用権は付きません。
+**実装済み（M11.3）** は、Stripe webhook を Supabase Edge Function で受け、`subscriptions` を更新して `paid` にする処理です。Test Mode。`checkout=success` だけでは利用権は付きません。現行の決済入口は M11.4 です。
 
-**実装済み（M11.4）** は、二重請求防止です。1 user → 1 Customer → 0 または 1 Subscription。Edge Function が Checkout Session を作り、既存契約があれば新規 Checkout に進まない。Billing Portal で契約管理する。Test Mode で実機確認済み。
+**実装済み（M11.6）** は、ログイン済みユーザーが招待コードで自分を `internal_users` に登録することです。GitHub Pages 公開環境で確認済み。社内配布可能な状態です。
 
-## 現状できること（M0〜M11.4・実装済み）
+**実装済み（M11.4）** は、現行の課金経路です。frontend → `create-checkout-session` → Stripe Checkout Session → webhook → `subscriptions` → access gate。1 user → 1 Customer → 0 または 1 blocking Subscription。Billing Portal で契約管理する。旧 Payment Link は frontend から外し、Stripe Dashboard でも無効化済み。Test Mode 実機確認と post-cleanup 済みです。
+
+## 現状できること（M0〜M11.4 / M11.6・実装済み）
 
 - ユーザーの端末上にある PDF を選んで開く
 - 1ページ目をブラウザに描画する
@@ -107,14 +109,16 @@
 - 利用権が internal または paid のときだけ本体を操作する
 - Account からログアウトすると、ブラウザ内の制作データを破棄する
 - 社内利用者は、ログイン後に配布コードで登録できる（M11.6。GitHub Pages 公開環境で確認済み。社内配布可能な状態）。管理者による SQL 付与も残る（管理画面なし）
-- 利用権がないときは、月額100円（税込）の Stripe Checkout へ進める。決済後は webhook が利用権を付ける。既存契約があるときは新規契約せず契約管理へ。すぐ反映されないときは「利用権を再確認」する
+- 利用権がないときは、月額100円（税込）の Stripe Checkout Session へ進める（Test Mode）。決済後は webhook が利用権を付ける。既存契約があるときは新規契約せず契約管理へ。すぐ反映されないときは「利用権を再確認」する
 
 ## 現状できないこと
 
 次は構想または仕様のみであり、実装していません。
 
-- ログイン / 利用権ゲート（M11.0 は実装済み。Supabase プロジェクト設定が必要）
-- 社内ユーザー管理画面（M11.1 は SQL Editor 運用。UI は作らない）
+- 正式公開前の法務・表示（M11.7。特商法、利用規約、プライバシー、解約案内、税込価格、問い合わせ）
+- Stripe 本番モード切替（M11.8。Live Product / Price / webhook / 実決済）
+- 社内ユーザー管理画面（M11.1 / M11.6 は SQL と招待コード。UI は作らない）
+- Cloudflare Pages 移行（M11.5。公開ブロッカーではない）
 - Panel の自動検出
 - CUT 番号の OCR / 自動認識
 - 秒+コマ形式による開始フレームの直接入力
@@ -124,7 +128,6 @@
 - カメラワークの自動解析
 - ラッシュの自動生成
 - プロジェクト保存
-- Stripe 本番モード / Billing Portal / 解約のアプリ内案内（M11.3 は Test Mode の paid 反映まで）
 - 制作データのクラウド保存
 
 ## プライバシー
@@ -137,7 +140,7 @@ M7 では Mediabunny 1.51.0 も CDN（jsDelivr）から取得します。M9 で�
 
 M11.0 では、ログインと利用権の確認だけ Supabase を使います。PDF / Panel / Drawing / Rush / MP4 / Timesheet は Supabase へ送りません。anon key は公開前提です。service role はブラウザに置きません。
 
-M11.2 の課金導線は Stripe Checkout（サーバー生成 Session）である。制作ファイルは Stripe へ送りません。Stripe secret はブラウザに置きません。
+現行の課金経路は M11.4 の Stripe Checkout Session（Edge Function 生成）です。制作ファイルは Stripe へ送りません。Stripe secret はブラウザに置きません。
 
 ## 動作環境
 
@@ -147,12 +150,12 @@ M11.2 の課金導線は Stripe Checkout（サーバー生成 Session）であ�
 - PDF.js 4.10.38（CDN）
 - MP4 書き出し: WebCodecs が使えるブラウザ。Mediabunny 1.51.0（CDN）
 - タイムシート PDF: pdf-lib 1.17.1（CDN）
-- 現行は GitHub Pages の静的配信。M11.0 でログインする場合は Supabase プロジェクトが必要
+- 現行は GitHub Pages の静的配信。正式有料公開も GitHub Pages のままでよい（M11.5 Cloudflare は公開後の移行候補）
 - セットアップ SQL: [docs/supabase-m11.sql](docs/supabase-m11.sql)
 - 社内利用権の付与 / 解除: [docs/supabase-m11-1-internal.sql](docs/supabase-m11-1-internal.sql)
-- M11.4 の課金は Edge Function が Checkout Session を作る。Payment Link URL は runtime-config に置かない
+- 現行の課金は Edge Function が Checkout Session を作る。Payment Link URL は runtime-config に置かない。Dashboard の旧 Link も無効化済み
 
-## 使い方（M0〜M11.4）
+## 使い方（M0〜M11.4 / M11.6）
 
 1. このフォルダを HTTP で配信する。例:
 
@@ -191,15 +194,15 @@ secret key はブラウザに置きません。Checkout Session は Edge Functio
 4. Customer Portal を有効化する（支払方法更新と期間末キャンセル。プラン／数量変更はオフ）
 5. テストカード `4242 4242 4242 4242` で払う。戻った直後は webhook 待ちで denied のことがある。「利用権を再確認」で `paid` になれば本体を開ける
 
-共有 Payment Link は frontend では使わない。Dashboard 上の旧 Link 無効化は後工程。本番モードはまだ設定しない。
+共有 Payment Link は使わない。frontend から外し、Stripe Dashboard でも無効化済み。本番モードは M11.8。法務表示は M11.7。
 
-Test Mode で実機確認済み: 既存契約は Checkout せず、新規は Checkout → webhook → `paid`、再操作は既存契約検出。Portal からアプリへ戻れる。
+Test Mode で実機確認済み: 既存契約は Checkout せず、新規は Checkout → webhook → `paid`、再操作は既存契約検出。Portal からアプリへ戻れる。post-cleanup 済み（orphan Test Customer を削除し、DB 参照は残っていない）。
 
 ### Stripe webhook（M11.3 / M11.4）
 
 secret は Supabase Edge Function にだけ置く。`js/runtime-config.js` には置かない。セットアップ SQL は [docs/supabase-m11-3.sql](docs/supabase-m11-3.sql)。
 
-実機確認済み（Test Mode）: Checkout 決済 → webhook が `subscriptions` を更新 → `paid` で本体へ入れる。reload 後も、`checkout` query の無い通常 URL でも維持する。`checkout=success` だけでは paid にしない。
+実機確認済み（Test Mode）: Checkout Session 決済 → webhook が `subscriptions` を更新 → `paid` で本体へ入れる。reload 後も、`checkout` query の無い通常 URL でも維持する。`checkout=success` だけでは paid にしない。当時 M11.3 の入口は Payment Link だった。現行の入口は M11.4 の Checkout Session である。
 
 ## ドキュメント
 

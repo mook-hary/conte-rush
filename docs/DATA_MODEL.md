@@ -1127,4 +1127,4 @@ M9 では Timesheet View Model を導出するだけとする。Panel / Cut / Ti
 
 M10 では Panel の `source` に `"drawing"` / `"upload"` を足す。画像バイトは PanelMediaStore。Timeline / Motion / Rush / タイムシートの保存項目は増やさない。Onion（M10.2）は UI 状態だけとする。M10.3で保存構造変更なし。M10.4で永続構造変更なし。InsertionContextはUI状態のみ。
 
-M11.0 では Auth / 利用権だけを Supabase に置く。制作データの保存項目は増やさない。プロジェクト保存とクラウド素材保存はまだ定義しない。M11.4 の `stripe_customers` は利用権の正ではない。M11.7 / M11.8 は法務表示と Live 切替であり、制作データの保存項目は増やさない。
+M11.0 では Auth / 利用権だけを Supabase に置く。制作データの保存項目は増やさない。プロジェクト保存とクラウド素材保存はまだ定義しない。M11.4 の `stripe_customers` は利用権の正ではない。M11.7 は COMPLETE。法務ページは静的 HTML であり、新しい保存項目は増やさない。M11.8 は Live 切替であり、制作データの保存項目は増やさない。

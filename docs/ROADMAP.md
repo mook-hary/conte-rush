@@ -334,8 +334,8 @@ frontend
 最短の正式有料公開ルート:
 
 ```
-M11.7 正式公開前の法務・表示
-  → M11.8 Stripe 本番モード切替
+M11.7 正式公開前の法務・表示（COMPLETE）
+  → M11.8 Stripe 本番モード切替（未着手。残る正式公開 blocker）
   → 正式有料公開（GitHub Pages のまま可）
 ```
 
@@ -419,29 +419,22 @@ M11.5 Cloudflare Pages はこの経路に入れない。公開ブロッカーで
 - 仕様は [SPEC.md](SPEC.md) の M11.6 節を正とする
 - 公開環境で実機確認済み: 新規ユーザー → 招待コード → internal → 本体。reload 後も `internal_users` が正。社内メールの事前収集は不要。社内配布可能な状態
 
-### M11.7 正式公開前の法務・表示（未着手。正式公開 blocker）
+### M11.7 正式公開前の法務・表示（実装済み。COMPLETE）
 
-有料サービスとして正式公開する前に必要な表示・文書を揃える。
+静的 HTML（Auth Gate の外）。料金は月額 100 円（税込）。ブラウザ実機確認済み。
 
-Must:
-
-- 特定商取引法に基づく表記
-- 利用規約
-- プライバシーポリシー
-- 解約方法
-- 税込価格表示
-- 問い合わせ先
-- Gate / Account 等から必要文書へ到達できる導線
-- 税務 / 会計上の確認事項を docs 上で明示
-
-完了条件:
-
-- 各文書が公開 URL で閲覧可能
-- 課金前に価格・自動更新・解約条件が確認できる
-- 必要な画面から法務文書へ到達できる
-- Test 用の仮表示が本番課金画面に残らない
-
-仕様は [SPEC.md](SPEC.md) の M11.7 節を正とする。
+- `legal/index.html` ご利用案内。Account の「解約・表記」の行き先
+- `legal/tokusho.html` 特定商取引法に基づく表記
+- `legal/terms.html` 利用規約
+- `legal/privacy.html` プライバシーポリシー
+- `legal/cancel.html` 解約について
+- denied の購入直前に規約 / プライバシー / 特商法 / 解約について。ログインにプライバシー / 規約
+- 月額 100 円（税込）確定。毎月自動更新。期間の定めのない契約。年間 1,200 円（税込）は目安
+- 氏名・住所・電話番号は公開 HTML へ直接掲載せず、請求があれば遅滞なく開示。公開問い合わせ先設定済み（アドレスは本ファイルへ書かない）
+- owner placeholder 0
+- 税務 / 会計の運用確認済み。法務ページへ課税 / 免税の推測は書かない。インボイス発行事業者としては未登録。公開表示は月額 100 円（税込）を維持。会計では Stripe 入金額だけを売上とせず、売上総額 / Stripe 手数料 / 実際の入金額を区分して追跡する。免税事業者であるとは断定しない。課税事業者該当性は売上規模等に応じて継続確認する（公開ブロッカーではない）
+- Stripe Checkout / Portal への規約 URL は M11.8
+- 仕様は [SPEC.md](SPEC.md) の M11.7 節を正とする
 
 ### M11.8 Stripe 本番モード切替（未着手。正式公開 blocker）
 
@@ -453,6 +446,7 @@ M11.4 で完成した課金モデルを Stripe Live Mode へ移行する。コ�
 - Live webhook endpoint / Live webhook secret / Live Stripe secret
 - `STRIPE_PRICE_ID` の Live 化
 - Checkout Session / Billing Portal / webhook → subscriptions / access gate の Live 確認
+- Checkout / Customer Portal への利用規約 URL 設定（M11.7 ではアプリ側リンクのみ）
 
 Live E2E:
 
@@ -477,11 +471,11 @@ Live E2E:
 - secret が frontend / tracked files に存在しない
 - Test Mode の ID / secret を本番経路で参照しない
 
-依存: M11.4（済）、M11.7。仕様は [SPEC.md](SPEC.md) の M11.8 節を正とする。
+依存: M11.4（済）、M11.7（済）。仕様は [SPEC.md](SPEC.md) の M11.8 節を正とする。
 
 ### 正式有料公開
 
-M11.7 と M11.8 の完了後、既存 GitHub Pages（`https://mook-hary.github.io/conte-rush/`）を本番課金の入口にする。新規ホスト移行は必須にしない。
+M11.8 の完了後、既存 GitHub Pages（`https://mook-hary.github.io/conte-rush/`）を本番課金の入口にする。新規ホスト移行は必須にしない。M11.5 Cloudflare Pages は公開後の候補であり、正式公開の blocker ではない。
 
 ### 公開後（launch blocker ではない）
 

@@ -1883,6 +1883,39 @@ body[data-auth-state="allowed"] .app-shell {
   margin: 0 0 0.75rem;
 }
 
+.denied-plan-title {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+.denied-plan-facts {
+  margin: 0 0 0.85rem;
+  padding-left: 1.2rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.denied-plan-facts li + li {
+  margin-top: 0.3rem;
+}
+
+.legal-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.75rem;
+  margin: 0 0 0.75rem;
+  font-size: 0.8rem;
+}
+
+.legal-nav a,
+.account-legal-link {
+  color: var(--muted);
+}
+
+.account-legal-link {
+  font-size: 0.8rem;
+}
+
 #denied-recheck,
 #denied-portal {
   margin-top: 0.5rem;

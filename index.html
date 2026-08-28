@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>conte-rush</title>
-    <link rel="stylesheet" href="css/style.css?v=m11-4" />
+    <link rel="stylesheet" href="css/style.css?v=m11-7" />
   </head>
   <body data-state="idle" data-auth-state="loading">
     <div id="auth-gate" class="auth-gate">
@@ -36,6 +36,11 @@
           <button id="gate-send-link" type="submit">ログインリンクを送る</button>
           <p id="gate-login-message" class="auth-message" role="status"></p>
         </form>
+        <nav class="legal-nav" aria-label="ご利用案内">
+          <a href="legal/privacy.html">プライバシー</a>
+          <a href="legal/terms.html">利用規約</a>
+          <a href="legal/index.html">ご利用案内</a>
+        </nav>
       </section>
       <section class="auth-card" data-gate-panel="checking_access" hidden>
         <h1>conte-rush</h1>
@@ -61,7 +66,22 @@
           <p id="denied-invite-status" class="auth-message" role="status"></p>
         </div>
         <div id="denied-upgrade-slot" class="denied-upgrade-slot">
-          <p>conte-rushは月額100円（税込）で利用できます。契約は自動更新され、いつでも解約できます。解約後も期間の終わりまで利用できます。</p>
+          <h2 class="denied-plan-title">conte-rush 月額プラン</h2>
+          <ul class="denied-plan-facts">
+            <li>月額100円（税込）</li>
+            <li>毎月自動更新される、期間の定めのない契約です</li>
+            <li>初回申込時に支払い、その後は毎月支払いが発生します</li>
+            <li>1年間継続した場合の支払額の目安: 1,200円（税込）</li>
+            <li>決済完了後、利用権が反映されてから利用できます</li>
+            <li>Account の「契約を管理」から、いつでも次回更新を停止できます</li>
+            <li>解約後も、現在の契約期間終了まで利用できます</li>
+          </ul>
+          <nav class="legal-nav" aria-label="購入前の確認">
+            <a href="legal/terms.html">利用規約</a>
+            <a href="legal/privacy.html">プライバシーポリシー</a>
+            <a href="legal/tokusho.html">特定商取引法に基づく表記</a>
+            <a href="legal/cancel.html">解約について</a>
+          </nav>
           <p id="denied-checkout-status" class="auth-message" role="status"></p>
           <button id="denied-checkout" type="button">月額100円で利用する</button>
           <button id="denied-portal" type="button" hidden>契約を管理</button>
@@ -88,6 +108,7 @@
       <div id="account-bar" class="account-bar">
         <p id="account-email" class="account-email"></p>
         <p id="account-access" class="account-access"></p>
+        <a id="account-legal" class="account-legal-link" href="legal/index.html">解約・表記</a>
         <button id="account-portal" type="button" hidden>契約を管理</button>
         <button id="account-logout" type="button">ログアウト</button>
       </div>

@@ -1,6 +1,6 @@
 # 仕様
 
-この文書は、実装済みとして扱う仕様と、扱わない範囲を分けて書きます。M10.0 / M10.1 / M10.2 / M10.3 / M10.4 は実装済みです。M11.0〜M11.4 と M11.6 は実装済みです。M11.7 / M11.8 は計画です。将来構想は「将来」節に限ります。
+この文書は、実装済みとして扱う仕様と、扱わない範囲を分けて書きます。M10.0 / M10.1 / M10.2 / M10.3 / M10.4 は実装済みです。M11.0〜M11.4 と M11.6 / M11.7 は実装済みです。M11.8 は計画です。将来構想は「将来」節に限ります。
 
 対象マイルストーン:
 
@@ -26,7 +26,7 @@
 - **M11.4**: 実装済み（現行課金経路。Checkout Session + Portal。Test Mode。post-cleanup 済み）
 - **M11.5**: 未着手（Cloudflare Pages。正式公開の blocker ではない）
 - **M11.6**: 実装済み（internal invite self-serve）
-- **M11.7**: 計画（正式公開前の法務・表示。公開 blocker）
+- **M11.7**: 実装済み（COMPLETE。正式公開前の法務・表示。ブラウザ実機確認済み。税務 / 会計の運用確認済み）
 - **M11.8**: 計画（Stripe 本番モード切替。公開 blocker）
 
 ## 目的
@@ -2864,8 +2864,8 @@ Free プロジェクトは非活動で pause され得る。これは M11 の運
 | M11.4 | 現行課金経路。Checkout Session + Portal。再確認のフック |
 | M11.5 | アプリは静的ファイルのまま。Pages 前提を崩さない。公開ブロッカーではない |
 | M11.6 | 招待コード。SQL 付与は残す |
-| M11.7 | 法務・表示。公開 blocker |
-| M11.8 | Stripe Live。公開 blocker |
+| M11.7 | 法務・表示。静的 `legal/`。COMPLETE |
+| M11.8 | Stripe Live。公開 blocker。Checkout への規約 URL はここで設定 |
 
 ## M11.2（実装済み・歴史。当時 Test Mode Payment Link。現行課金経路としては廃止）
 
@@ -3315,7 +3315,7 @@ blocking な別 `subscription_id` がある行は上書きしない。紐付け�
 
 paid 条件は従来どおり `active` / `trialing`。`past_due` / `unpaid` / `incomplete` / `paused` は none。猶予期間は設けない。Portal で支払方法を更新する。
 
-- none / canceled: ［月額100円で利用する］。税込・自動更新・解約可・期間末まで利用、を短く出す
+- none / canceled: ［月額100円で利用する］。購入直前の表示は M11.7（税込・無期限・自動更新・支払時期・提供時期・年間目安・解約条件、および法務 4 リンク）
 - past_due / unpaid / incomplete / paused: 新規 Checkout ではなく［契約を管理］
 - paid: Account に［契約を管理］
 - internal: 優先のまま。Stripe 契約があっても自動解約しない。Customer があるときだけ［契約を管理］
@@ -3344,40 +3344,77 @@ paid 条件は従来どおり `active` / `trialing`。`past_due` / `unpaid` / `i
 - 重複 Test subscription / 余分な Test Customer の自動キャンセル（整理は Dashboard。post-cleanup で orphan は削除済み）
 - Cloudflare Functions
 
-## M11.7（計画。未着手。正式公開 blocker）
+## M11.7（実装済み。COMPLETE）
 
-有料サービスとして正式公開する前に必要な表示・文書を揃える。課金モデル（M11.4）は変えない。本節は計画であり、この同期では実装しない。
+有料サービスとして正式公開する前に必要な表示・文書。課金モデル（M11.4）は変えない。Stripe Checkout / Portal への規約 URL 設定は M11.8。ブラウザ実機確認済み。税務 / 会計の運用確認済み。
 
-### 1. Must
+公開ページ（GitHub Pages、Auth Gate の外）:
+
+| 文書 | パス |
+|---|---|
+| ご利用案内 | `legal/index.html` |
+| 特定商取引法に基づく表記 | `legal/tokusho.html` |
+| 利用規約 | `legal/terms.html` |
+| プライバシーポリシー | `legal/privacy.html` |
+| 解約について | `legal/cancel.html` |
+
+導線:
+
+- 未ログイン: プライバシー / 利用規約 / ご利用案内
+- denied の購入直前: 月額 100 円（税込）・期間の定めのない契約・毎月自動更新・支払時期・提供時期・年間目安 1,200 円（税込）・次回更新停止・期間末まで利用。リンクは利用規約 / プライバシー / 特定商取引法 / 解約について
+- Account: 「解約・表記」→ `legal/index.html`
+
+記録（COMPLETE）:
+
+- legal 5 ページ実装済み。ブラウザ実機確認済み（ログイン外閲覧、購入前 denied、ログイン前、Account「解約・表記」、狭い幅）
+- purchase disclosure 導線実装済み（解約ページへの購入前リンクを含む）
+- Account / login 導線実装済み
+- 月額 100 円（税込）確定。毎月自動更新。期間の定めのない契約
+- 年間支払額 1,200 円（税込）は目安表示
+- 氏名・住所・電話番号は公開 HTML へ直接掲載せず、請求があれば遅滞なく開示
+- 公開問い合わせ先設定済み（アドレスは正本へ複製しない）
+- owner placeholder 0
+- 特商法に追加料金・送料なしの説明あり
+- 税務 / 会計の運用確認済み（法務ページへ課税 / 免税の推測は書かない）
+- Checkout / Portal の規約 URL は M11.8
+- 氏名・住所・電話番号は正本へ複製しない
+
+### 1. Must（満たすもの）
 
 - 特定商取引法に基づく表記
 - 利用規約
 - プライバシーポリシー
 - 解約方法
 - 税込価格表示
-- 問い合わせ先
-- Gate / Account 等から必要文書へ到達できる導線
-- 税務 / 会計上の確認事項を docs 上で明示
+- 問い合わせ先の欄（公開問い合わせ先設定済み）
+- Gate / Account から文書へ到達できる導線
+- 税務 / 会計の運用確認済み（法務ページへ課税 / 免税の推測は書かない）
 
-### 2. 完了条件
+### 2. 完成条件（満た済み）
 
-- 各文書が公開 URL で閲覧可能
+- 各文書が公開 URL で閲覧可能（ログイン不要）
 - 課金前に価格・自動更新・解約条件が確認できる
 - 必要な画面から法務文書へ到達できる
-- Test 用の仮表示が本番課金画面に残らない
+- 購入画面に Test 専用の仮コピーを残さない（税込100円は正式公開価格）
+- 法務ページが Auth Gate に遮断されない
+- ユーザー向け HTML に開発用プレースホルダーが 0 件
+- ブラウザで導線を実機確認済み
+- 税務 / 会計の運用確認済み
 
 ### 3. M11.7 では実装しない
 
 - Stripe Live 切替（M11.8）
+- Stripe Checkout への利用規約 URL 設定（M11.8）
 - Cloudflare Pages（M11.5）
 - past_due 猶予
 - 管理画面
+- 課税 / 免税の断定（売上規模等に応じた継続確認は運用。公開ブロッカーではない）
 
 ## M11.8（計画。未着手。正式公開 blocker）
 
 M11.4 で完成した課金モデルを Stripe Live Mode へ移行する。`PAID_STATUSES`、Customer 1:1、blocking による二重契約防止、past_due 非猶予は変えない。本節は計画であり、この同期では実装しない。
 
-依存: M11.4（済）、M11.7。
+依存: M11.4（済）、M11.7（済）。
 
 ### 1. 予定作業
 
@@ -3385,6 +3422,7 @@ M11.4 で完成した課金モデルを Stripe Live Mode へ移行する。`PAID
 - Live webhook endpoint / Live webhook secret / Live Stripe secret
 - `STRIPE_PRICE_ID` の Live 化
 - Checkout Session / Billing Portal / webhook → subscriptions / access gate の Live 確認
+- Checkout および Customer Portal への利用規約 URL 設定（M11.7 ではアプリ側の購入直前リンクのみ）
 
 ### 2. Live E2E
 
@@ -3599,9 +3637,13 @@ M11.4 で完成した課金モデルを Stripe Live Mode へ移行する。`PAID
 
 - denied の招待コード入力。通常の社内付与経路。SQL は fallback
 
-### M11.7（計画）
+### M11.7（実装済み。COMPLETE）
 
-- 特商法 / 利用規約 / プライバシー / 解約 / 税込価格 / 問い合わせへ、Gate / Account から到達できる
+- ログイン: プライバシー / 利用規約 / ご利用案内
+- denied の購入直前: 価格・自動更新・支払時期・提供時期・解約条件。利用規約 / プライバシー / 特定商取引法 / 解約について
+- Account の「解約・表記」→ `legal/index.html`
+- 法務ページは静的 HTML。Gate の外
+- 氏名・住所・電話は請求開示。公開問い合わせ先設定済み
 
 ### M11.8（計画）
 
@@ -3738,6 +3780,6 @@ M11.4 は現行の課金経路である。Payment Link をやめ、サーバー�
 
 M11.5 は Cloudflare Pages の検討である。正式有料公開の blocker ではない。GitHub Pages のまま公開してよい。
 
-M11.7 は正式公開前の法務・表示である。公開 blocker。
+M11.7 は正式公開前の法務・表示である。静的 HTML。COMPLETE。ブラウザ実機確認済み。税務 / 会計の運用確認済み。
 
-M11.8 は Stripe 本番モード切替である。公開 blocker。最短公開ルートは M11.7 → M11.8 → 正式有料公開。
+M11.8 は Stripe 本番モード切替である。残る正式公開 blocker。最短公開ルートは M11.8 → 正式有料公開（GitHub Pages のまま可）。

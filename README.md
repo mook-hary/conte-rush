@@ -52,7 +52,9 @@
 
 **実装済み（M11.4）** は、現行の課金経路です。frontend → `create-checkout-session` → Stripe Checkout Session → webhook → `subscriptions` → access gate。1 user → 1 Customer → 0 または 1 blocking Subscription。Billing Portal で契約管理する。旧 Payment Link は frontend から外し、Stripe Dashboard でも無効化済み。Test Mode 実機確認と post-cleanup 済みです。
 
-## 現状できること（M0〜M11.4 / M11.6・実装済み）
+**実装済み（M11.7）** は、特定商取引法に基づく表記、利用規約、プライバシーポリシー、解約案内を静的ページとして置き、Gate / Account から辿れるようにすることです。COMPLETE。ブラウザ実機確認済み。氏名・住所・電話番号は公開 HTML へ直接掲載せず、請求があれば遅滞なく開示します。公開問い合わせ先は設定済みです。税務 / 会計の運用確認済み（法務ページへは書かない。氏名・住所・電話番号・問い合わせメールは README に書きません）。
+
+## 現状できること（M0〜M11.4 / M11.6 / M11.7・実装済み）
 
 - ユーザーの端末上にある PDF を選んで開く
 - 1ページ目をブラウザに描画する
@@ -110,13 +112,13 @@
 - Account からログアウトすると、ブラウザ内の制作データを破棄する
 - 社内利用者は、ログイン後に配布コードで登録できる（M11.6。GitHub Pages 公開環境で確認済み。社内配布可能な状態）。管理者による SQL 付与も残る（管理画面なし）
 - 利用権がないときは、月額100円（税込）の Stripe Checkout Session へ進める（Test Mode）。決済後は webhook が利用権を付ける。既存契約があるときは新規契約せず契約管理へ。すぐ反映されないときは「利用権を再確認」する
+- ログイン画面、購入前、Account の「解約・表記」から法務ページ（`legal/`）を開ける。ログインは不要
 
 ## 現状できないこと
 
 次は構想または仕様のみであり、実装していません。
 
-- 正式公開前の法務・表示（M11.7。特商法、利用規約、プライバシー、解約案内、税込価格、問い合わせ）
-- Stripe 本番モード切替（M11.8。Live Product / Price / webhook / 実決済）
+- Stripe 本番モード切替（M11.8。Live Product / Price / webhook / 実決済。Checkout / Portal への規約 URL もここ。残る正式公開 blocker）
 - 社内ユーザー管理画面（M11.1 / M11.6 は SQL と招待コード。UI は作らない）
 - Cloudflare Pages 移行（M11.5。公開ブロッカーではない）
 - Panel の自動検出
@@ -132,7 +134,7 @@
 
 ## プライバシー
 
-PDF と Upload 画像はユーザーのローカルファイルから読み込み、ブラウザ内だけで処理します。サーバーや外部サービスへアップロードしません。
+法務ページは [legal/index.html](legal/index.html) です。PDF と Upload 画像はユーザーのローカルファイルから読み込み、ブラウザ内だけで処理します。サーバーや外部サービスへアップロードしません。
 
 PDF.js のライブラリ本体は CDN から取得する想定です。PDF の中身はその通信に含めません。
 
@@ -155,7 +157,7 @@ M11.0 では、ログインと利用権の確認だけ Supabase を使います�
 - 社内利用権の付与 / 解除: [docs/supabase-m11-1-internal.sql](docs/supabase-m11-1-internal.sql)
 - 現行の課金は Edge Function が Checkout Session を作る。Payment Link URL は runtime-config に置かない。Dashboard の旧 Link も無効化済み
 
-## 使い方（M0〜M11.4 / M11.6）
+## 使い方（M0〜M11.4 / M11.6 / M11.7）
 
 1. このフォルダを HTTP で配信する。例:
 
@@ -166,7 +168,7 @@ M11.0 では、ログインと利用権の確認だけ Supabase を使います�
 2. ブラウザで `http://localhost:8080/` を開く
 3. `js/runtime-config.js` に Supabase の URL と anon key が入っていれば、メールアドレスへログインリンクを送る。リンクは **送った同じブラウザ** で開く。戻り先は末尾 `/` 付き（GitHub Pages なら `https://mook-hary.github.io/conte-rush/`、ローカルなら `http://localhost:8080/`）。未設定なら「Supabase設定が未完了です」と出る。Dashboard の Redirect URLs にこれらの URL を入れる。PKCE の Magic Link は D125。これは default SMTP では OTP テンプレートを編集できないための暫定措置でもある（D119）
 4. 社内利用は、ログイン後に denied 画面の招待コードで登録できる。メールアドレスの事前収集は不要。コードは repo に置かない。権限の正は `internal_users`。管理者は [docs/supabase-m11-invite.sql](docs/supabase-m11-invite.sql) で生成・無効化する。従来どおり [docs/supabase-m11-1-internal.sql](docs/supabase-m11-1-internal.sql) で email から付けることもできる。GitHub Pages 公開環境で新規ユーザー経路まで確認済み
-5. 一般利用で利用権が無いときは「月額100円で利用する」から Stripe Test Checkout へ進む。決済後は webhook が `paid` を付ける。すでに契約があるときは Checkout せず「契約を管理」へ。すぐ反映されないときは「利用権を再確認」する。社内ユーザーは Stripe 未設定でも本体を使える
+5. 一般利用で利用権が無いときは「月額100円で利用する」の直前で、月額・自動更新・支払時期・提供時期・年間目安・解約条件と、利用規約・プライバシー・特定商取引法・解約についてのリンクを確認できる。Stripe Test Checkout へ進む。決済後は webhook が `paid` を付ける。すでに契約があるときは Checkout せず「契約を管理」へ。すぐ反映されないときは「利用権を再確認」する。社内ユーザーは Stripe 未設定でも本体を使える。Account の「解約・表記」からご利用案内へ進める
 6. 利用権がある場合だけ「PDFを選択」からローカルの PDF を選ぶ
 7. 「前へ」「次へ」でページを移動する
 8. 常設の選択フレームを動かして「画像取得」する。別サイズは「ドラッグ」
@@ -216,7 +218,7 @@ secret は Supabase Edge Function にだけ置く。`js/runtime-config.js` に�
 | [docs/supabase-m11-1-internal.sql](docs/supabase-m11-1-internal.sql) | 社内利用権の付与 / 解除（SQL Editor） |
 | [docs/supabase-m11-3.sql](docs/supabase-m11-3.sql) | 既存プロジェクト向け M11.3 ALTER |
 | [docs/supabase-m11-invite.sql](docs/supabase-m11-invite.sql) | M11.6 招待コード表 / 生成 / 無効化（SQL Editor） |
-| [docs/supabase-m11-4.sql](docs/supabase-m11-4.sql) | M11.4 `stripe_customers`（SQL Editor） |
+| [legal/index.html](legal/index.html) | M11.7 ご利用案内（特商法 / 規約 / プライバシー / 解約） |
 
 ## ライセンス
 

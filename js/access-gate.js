@@ -12,7 +12,7 @@ import {
 import {
   deniedUpgradeMode,
   shouldShowAccountPortal,
-} from "../supabase/functions/_shared/billing.js?v=m11-4";
+} from "./billing-ui.js?v=m11-8-gate-fix";
 
 const APP_MODULE_URL = new URL("./app.js?v=m11-2", import.meta.url).href;
 const AUTH_MODULE_URL = new URL("./auth-client.js?v=m11-4", import.meta.url).href;

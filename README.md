@@ -50,7 +50,7 @@
 
 **実装済み（M11.6）** は、ログイン済みユーザーが招待コードで自分を `internal_users` に登録することです。GitHub Pages 公開環境で確認済み。社内配布可能な状態です。
 
-**実装済み（M11.4）** は、現行の課金経路です。frontend → `create-checkout-session` → Stripe Checkout Session → webhook → `subscriptions` → access gate。1 user → 1 Customer → 0 または 1 blocking Subscription。Billing Portal で契約管理する。旧 Payment Link は frontend から外し、Stripe Dashboard でも無効化済み。Test Mode 実機確認と post-cleanup 済みです。
+**実装済み（M11.4）** は、現行の課金経路です。frontend → `create-checkout-session` → Stripe Checkout Session → webhook → `subscriptions` → access gate。1 user → 1 Customer → 0 または 1 blocking Subscription。Billing Portal で契約管理する。旧 Payment Link は frontend から外し、Stripe Dashboard でも無効化済み。Test Mode 実機確認と post-cleanup 済みです。Gate のブラウザ JS は `js/billing-ui.js` を使い、Edge Function の `_shared` は import しません（GitHub Pages が `_shared` を配信しないため）。
 
 **実装済み（M11.7）** は、特定商取引法に基づく表記、利用規約、プライバシーポリシー、解約案内を静的ページとして置き、Gate / Account から辿れるようにすることです。COMPLETE。ブラウザ実機確認済み。氏名・住所・電話番号は公開 HTML へ直接掲載せず、請求があれば遅滞なく開示します。公開問い合わせ先は設定済みです。税務 / 会計の運用確認済み（法務ページへは書かない。氏名・住所・電話番号・問い合わせメールは README に書きません）。
 

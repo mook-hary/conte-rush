@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { hasCheckoutSuccessParam, hrefWithoutCheckoutSuccess } from "./stripe-checkout.js";
 import {
+  deniedUpgradeMode as browserDeniedUpgradeMode,
+  shouldShowAccountPortal as browserShouldShowAccountPortal,
+} from "./billing-ui.js";
+import {
   canStartNewSubscription,
   checkoutFailureLog,
   checkoutIdempotencyKey,
@@ -81,6 +85,12 @@ test("denied upgrade mode sends past_due to portal", () => {
   assert.equal(deniedUpgradeMode({ status: "past_due" }), "portal");
   assert.equal(deniedUpgradeMode({ status: "canceled" }), "checkout");
   assert.equal(deniedUpgradeMode(null), "checkout");
+  assert.equal(browserDeniedUpgradeMode({ status: "past_due" }), "portal");
+  assert.equal(browserDeniedUpgradeMode({ status: "unpaid" }), "portal");
+  assert.equal(browserDeniedUpgradeMode({ status: "incomplete" }), "portal");
+  assert.equal(browserDeniedUpgradeMode({ status: "paused" }), "portal");
+  assert.equal(browserDeniedUpgradeMode({ status: "canceled" }), "checkout");
+  assert.equal(browserDeniedUpgradeMode(null), "checkout");
 });
 
 test("account portal is shown for paid and for internal with a customer", () => {
@@ -88,6 +98,21 @@ test("account portal is shown for paid and for internal with a customer", () => 
   assert.equal(shouldShowAccountPortal("internal", { customer_id: "cus_1" }), true);
   assert.equal(shouldShowAccountPortal("internal", {}), false);
   assert.equal(shouldShowAccountPortal("none", { customer_id: "cus_1" }), false);
+  assert.equal(browserShouldShowAccountPortal("paid", { status: "active" }), true);
+  assert.equal(browserShouldShowAccountPortal("internal", { customer_id: "cus_1" }), true);
+  assert.equal(
+    browserShouldShowAccountPortal("internal", { subscription_id: "sub_1" }),
+    true,
+  );
+  assert.equal(browserShouldShowAccountPortal("internal", {}), false);
+  assert.equal(browserShouldShowAccountPortal("none", { customer_id: "cus_1" }), false);
+});
+
+test("access-gate does not import Edge Function _shared billing", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const gate = await readFile(new URL("./access-gate.js", import.meta.url), "utf8");
+  assert.match(gate, /from "\.\/billing-ui\.js\?v=m11-8-gate-fix"/);
+  assert.equal(gate.includes("supabase/functions/_shared/billing.js"), false);
 });
 
 test("webhook does not overwrite a different blocking subscription", () => {

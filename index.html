@@ -456,6 +456,16 @@
         status.textContent = `起動エラー: ${event.message}`;
       });
     </script>
-    <script type="module" src="js/access-gate.js?v=m11-4"></script>
+    <script type="module">
+      import("./js/access-gate.js?v=m11-8-gate-fix").catch((error) => {
+        console.error(error);
+        const loading = document.querySelector(
+          '#auth-gate [data-gate-panel="loading"] p',
+        );
+        if (loading) {
+          loading.textContent = "起動に失敗しました。ページを再読み込みしてください。";
+        }
+      });
+    </script>
   </body>
 </html>

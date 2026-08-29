@@ -1121,6 +1121,14 @@
 - 採用しなかった案: 法務ページへ免税 / 課税を書く。Stripe 入金額だけを売上として扱う
 - 結果: この確認をもって M11.7 の税務 / 会計運用確認済みとする。継続確認は公開ブロッカーではない
 
+## D141. Gate のブラウザ JS は Edge Function の `_shared` を import しない
+
+- 状態: 採用（本番 Pages の Gate 停止バグ修正。M11.8 COMPLETE ではない）
+- 判断: `deniedUpgradeMode` / `shouldShowAccountPortal` は `js/billing-ui.js` に置く。`access-gate.js` はそこから読む。`supabase/functions/_shared/billing.js` は Edge Function 用のまま変えない
+- 理由: GitHub Pages の Jekyll は `_shared` を公開しない。静的 import が 404 だと module が評価されず `start()` が走らず、「確認しています…」のまま止まる
+- 採用しなかった案: `.nojekyll` で `_shared` を公開する
+- 結果: ブラウザは Function 内部パスに依存しない。M11.8 の Stripe Live 切替とは別件
+
 ## 未決
 
 - ライセンス

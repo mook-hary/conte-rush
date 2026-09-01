@@ -1966,6 +1966,16 @@ body[data-auth-state="allowed"] .app-shell {
   margin: 0;
 }
 
+.dev-mode-badge {
+  margin: 0;
+  padding: 0.1rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+}
+
 .account-bar button {
   padding: 0.25rem 0.55rem;
   border: 1px solid var(--border);

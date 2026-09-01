@@ -475,7 +475,7 @@ Live E2E:
 
 ### 端末内クラッシュ保護（実装済み。クラウド保存ではない）
 
-ログインユーザーごとに、PDF / Panel / Cut / Timeline / Motion / 手描き・Upload を端末内 IndexedDB へ自動保存する。Gate 通過後の起動で前回状態を自動復元する。サーバーへ制作データは送らない。ログアウトでその端末のドラフトを削除する。境界は [DATA_MODEL.md](DATA_MODEL.md) と D142。
+ログインユーザーごとに、PDF / Panel / Cut / Timeline / Motion / 手描き・Upload を端末内 IndexedDB へ自動保存する。Gate 通過後の起動で前回状態を自動復元する。サーバーへ制作データは送らない。明示ログアウトでその端末のドラフトを削除する。境界は [DATA_MODEL.md](DATA_MODEL.md) と D142 / D145。
 
 ### 正式有料公開
 

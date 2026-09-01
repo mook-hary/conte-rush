@@ -2667,7 +2667,7 @@ fail-closed の例外にしないこと: `network_error` を `denied`（未契�
 - `allowed` になるまで PDF 選択 / Panel / Timeline / Rush を隠すか disabled
 - 初期化前に操作イベントで制作データを作らない
 
-ログアウト後は制作データと端末内ドラフトを捨てて Gate へ戻る。再 `allowed` なら改めて initialize してよい。
+ログアウト（Account からの明示操作）後は制作データと端末内ドラフトを捨てて Gate へ戻る。再 `allowed` なら改めて initialize してよい。token 失効や通信失敗ではドラフトを残す。
 
 ### 11. UI
 
@@ -2813,9 +2813,9 @@ Free プロジェクトは非活動で pause され得る。これは M11 の運
 | クライアントから自分を internal にできないか | RLS で INSERT/UPDATE なし。`enabled` を JS で変えても表は変わらない |
 | クライアントから paid を書けないか | 同上。fixture は service role / SQL のみ |
 | service role 漏洩 | ブラウザと repo に置かない。M11.0 では導入しない |
-| Auth なしで app initialization できないか | Gate が `allowed` になるまで initialize しない |
-| access check 失敗時に fail-open しないか | `network_error` ではアプリを開かない。ただし `denied` にもしない |
-| ログアウト後に前ユーザーの制作データが残らないか | `clearSessionData` + PDF 破棄 + その user id の IndexedDB ドラフト削除 |
+| Auth なしで app initialization できないか | Gate が `allowed` になるまで initialize しない。localhost の `devBypass=1` だけ例外（D143）。本番 hostname では無効 |
+| access check 失敗時に fail-open しないか | `network_error` ではアプリを開かない。ただし `denied` にもしない。IndexedDB ドラフトは消さない |
+| ログアウト後に前ユーザーの制作データが残らないか | 明示ログアウトだけ `clearSessionData` + PDF 破棄 + その user id の IndexedDB ドラフト削除 |
 
 原則は fail-closed。`network_error` を未契約と誤表示しない。
 

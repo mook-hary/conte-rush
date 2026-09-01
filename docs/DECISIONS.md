@@ -1135,7 +1135,31 @@
 - 判断: PDF Blob / Panel / Cut / Timeline / Motion / 手描き・Upload 画像を IndexedDB に自動保存し、Gate 通過後の起動で同じ user id のドラフトを自動復元する。localStorage / sessionStorage は使わない。確認ダイアログは出さない
 - 理由: タブ discard や手動 reload でメモリ上の制作状態が消える。PDF を含むため容量の小さい Web Storage は不適。サーバーへ制作データを送る機能ではない
 - 採用しなかった案: クラウドプロジェクト保存。複数プロジェクト。Undo 履歴の保存。タブ間ロック
-- 結果: 編集は debounce（750ms）で state を書く。PDF Blob は読み込み成功時だけ置き換える。`pagehide` / `visibilitychange`（hidden）では未保存があれば flush するがメモリは消さない。ログアウトと別 PDF 読み込み成功でドラフトを置き換えるか削除する。壊れた schema は破棄して空画面。保存失敗は作業を止めず短い通知にする。同一ユーザーの複数タブは last-write-wins
+- 結果: 編集は debounce（750ms）で state を書く。PDF Blob は読み込み成功時だけ置き換える。`pagehide` / `visibilitychange`（hidden）では未保存があれば flush するがメモリは消さない。明示ログアウトと別 PDF 読み込み成功でドラフトを置き換えるか削除する。Auth 異常ではドラフトを残す（D145）。壊れた schema は破棄して空画面。保存失敗は作業を止めず短い通知にする。同一ユーザーの複数タブは last-write-wins
+
+## D143. localhost の Gate bypass は hostname と query の両方を必須にする
+
+- 状態: 採用（開発者向け。本番では無効）
+- 判断: `hostname` が `localhost` または `127.0.0.1` かつ `devBypass=1` のときだけ Gate を飛ばし、安定 id `dev-local-user` で本体を開く
+- 理由: 本番 Auth を通さずに UI と IndexedDB 復元を確認する。GitHub Pages の hostname では query だけでは動かない
+- 採用しなかった案: 常時 bypass。`*.localhost` を許可する。user id を毎回乱数にする
+- 結果: 本番の利用権判定と Stripe は変えない。bypass 中のログアウトは Supabase signOut せず、ローカルのメモリと `dev-local-user` のドラフトだけ捨てて空の本体に戻す
+
+## D144. 同じ user のタブ復帰 SIGNED_IN は silent にする
+
+- 状態: 採用
+- 判断: すでに `allowed` で `initializedUserId` が一致する `SIGNED_IN` は `TOKEN_REFRESHED` と同じく silent。`checking_access` に落とさない。利用権の再取得は続ける
+- 理由: supabase-js が `visibilitychange` で有効セッションを `SIGNED_IN` として通知する。Gate を出すと本体が隠れ、失敗時は制作メモリまで消え得る
+- 採用しなかった案: 復帰のたびに Gate を出す。利用権再取得自体をやめる
+- 結果: 新規ログインの `SIGNED_IN` は silent にしない
+
+## D145. IndexedDB ドラフトは明示ログアウトのときだけ消す
+
+- 状態: 採用
+- 判断: Account ログアウトだけ `clearPersistence: true`。token 失効、想定外の SIGNED_OUT、`network_error`、`access === none` ではメモリを閉じてもドラフトは残す
+- 理由: 一時的な Auth / 通信失敗で制作物まで失わない。支払い復旧や再ログインで復元できるようにする
+- 採用しなかった案: session 消失のたびにドラフト削除。利用不可のままアプリを操作させる
+- 結果: 利用不可とドラフト削除を分ける。fail-closed の表示は維持する
 
 ## 未決
 

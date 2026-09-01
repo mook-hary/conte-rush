@@ -187,6 +187,16 @@ M11.0 では、ログインと利用権の確認だけ Supabase を使います�
 
 GitHub Pages で公開する場合は、リポジトリのルートを配信元にしてください。PDF.js と Mediabunny、pdf-lib の取得に CDN（jsDelivr）へ接続できる必要があります。PDF 自体と生成ファイルは Pages へ送られません。
 
+### ローカル検証（開発者向け）
+
+本番の Auth Gate を通さず UI を見るときは、hostname が `localhost` または `127.0.0.1` のときだけ:
+
+```text
+http://localhost:8080/?devBypass=1
+```
+
+`dev-local-user` として IndexedDB の自動保存 / 復元が動きます。GitHub Pages など本番相当の hostname に `?devBypass=1` を付けても無効です。Account のログアウトは Supabase を呼ばず、このローカル id の制作データだけ捨てます。
+
 ### Stripe Test Mode（M11.4）
 
 secret key はブラウザに置きません。Checkout Session は Edge Function が作ります。

@@ -13,6 +13,11 @@ import {
   deniedUpgradeMode,
   shouldShowAccountPortal,
 } from "./billing-ui.js?v=m11-8-gate-fix";
+import {
+  DEV_BYPASS_USER_ID,
+  isLocalDevBypassEnabled,
+  isSilentAuthRecheck,
+} from "./gate-policy.js?v=draft-2";
 
 const APP_MODULE_URL = new URL("./app.js?v=draft-1", import.meta.url).href;
 const AUTH_MODULE_URL = new URL("./auth-client.js?v=m11-4", import.meta.url).href;
@@ -56,6 +61,7 @@ let redeemingInvite = false;
 let openingPortal = false;
 let currentSubscription = null;
 let deniedForcePortal = false;
+let devBypassActive = false;
 
 const CHECKOUT_AUTO_RECHECK_MS = 4000;
 
@@ -137,6 +143,11 @@ function syncDeniedCheckoutUi({ successNote = false } = {}) {
 
 function syncAccountPortalUi(access) {
   if (!accountPortalButton) {
+    return;
+  }
+  if (devBypassActive) {
+    accountPortalButton.hidden = true;
+    accountPortalButton.disabled = true;
     return;
   }
   const show = shouldShowAccountPortal(access, currentSubscription);
@@ -227,14 +238,29 @@ async function teardownApp({ clearPersistence = false } = {}) {
   initializedUserId = null;
 }
 
+function syncDevModeBadge() {
+  const badge = document.querySelector("#dev-mode-badge");
+  if (!badge) {
+    return;
+  }
+  badge.hidden = !devBypassActive;
+}
+
 function renderAccount(session, access) {
   const email = session?.user?.email ?? "";
   if (accountEmailEl) {
-    accountEmailEl.textContent = email ? `ログイン中: ${email}` : "";
+    accountEmailEl.textContent = devBypassActive
+      ? "ローカル検証モード"
+      : email
+        ? `ログイン中: ${email}`
+        : "";
   }
   if (accountAccessEl) {
-    accountAccessEl.textContent = `利用権: ${accessLabel(access)}`;
+    accountAccessEl.textContent = devBypassActive
+      ? "利用権: 開発bypass"
+      : `利用権: ${accessLabel(access)}`;
   }
+  syncDevModeBadge();
   syncAccountPortalUi(access);
 }
 
@@ -251,7 +277,7 @@ async function enterUnauthenticated() {
     inviteCodeInput.value = "";
   }
   setInviteMessage("");
-  await teardownApp({ clearPersistence: true });
+  await teardownApp({ clearPersistence: false });
   setAuthState("unauthenticated");
   setBusy(false);
   settleCheckoutSuccessQuery();
@@ -354,7 +380,14 @@ async function handleAuthEvent(event, session) {
   const auth = await loadAuthApi();
   awaitingAuthCallback = false;
   auth.stripAuthParamsFromUrl();
-  const silent = event === "TOKEN_REFRESHED" && appInitialized;
+  const userId = session?.user?.id ?? null;
+  const silent = isSilentAuthRecheck({
+    event,
+    appInitialized,
+    authState,
+    initializedUserId,
+    sessionUserId: userId,
+  });
   await checkAccess(session, { silent });
 }
 
@@ -390,6 +423,18 @@ async function handleSendLoginLink(event) {
   }
 }
 
+async function enterDevBypass() {
+  devBypassActive = true;
+  currentAccess = "internal";
+  currentSubscription = null;
+  deniedForcePortal = false;
+  clearCheckoutAutoRecheck();
+  await initializeAppIfNeeded(DEV_BYPASS_USER_ID);
+  renderAccount(null, "internal");
+  setAuthState("allowed");
+  setBusy(false);
+}
+
 async function handleLogout() {
   if (signingOut) {
     return;
@@ -398,10 +443,18 @@ async function handleLogout() {
   setBusy(true);
   try {
     await teardownApp({ clearPersistence: true });
+    if (devBypassActive) {
+      await enterDevBypass();
+      return;
+    }
     const auth = await loadAuthApi();
     await auth.signOut();
   } catch (error) {
     console.error(error);
+    if (devBypassActive) {
+      await enterDevBypass();
+      return;
+    }
     await enterUnauthenticated();
     setLoginMessage(
       "ログアウトに失敗したため、この端末の制作データは破棄しました。",
@@ -598,6 +651,21 @@ async function handleRetryAccess() {
 }
 
 async function start() {
+  if (
+    isLocalDevBypassEnabled({
+      hostname: window.location.hostname,
+      search: window.location.search,
+    })
+  ) {
+    try {
+      await enterDevBypass();
+    } catch (error) {
+      console.error(error);
+      setAuthState("network_error");
+    }
+    return;
+  }
+
   if (!isSupabaseRuntimeConfigReady(runtimeConfig)) {
     setAuthState("unconfigured");
     return;

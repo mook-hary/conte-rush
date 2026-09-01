@@ -87,7 +87,7 @@
 - 判断: 作業中の正本はメモリ上。新しい PDF の読み込み成功時に破棄する。クラウドのプロジェクト保存はしない
 - 理由: 目的は操作を成立させることであり、複数プロジェクト管理ではない
 - 採用しなかった案: JSON エクスポート、サーバー保存
-- 結果: 読み込み失敗で直前 PDF を維持する場合は、Panel も残す。M2 のキャッシュ、M3 の Cut、M4 の Timeline、M5 の Rush 画像キャッシュも同じ寿命にする。再読み込み用の端末内ドラフトは D142
+- 結果: 読み込み失敗で直前 PDF を維持する場合は、Panel も残す。M2 のキャッシュ、M3 の Cut、M4 の Timeline、M5 の Rush 画像キャッシュも同じ寿命にする。新しい PDF のメモリ破棄は従来どおり。IndexedDB 上の直前 project は D147 で残す。再読み込み用の端末内保存は D142 / D147
 
 ## D12. 切り出しは表示用 canvas を使わない
 
@@ -907,11 +907,11 @@
 
 ## D114. ログアウトは制作セッションを破棄してから Auth Gate へ戻る
 
-- 状態: 採用（M11.0・実装済み）
-- 判断: ログアウト時は既存 `clearSessionData()` に加え、開いている PDF document の破棄と idle UI 復帰を行い、そのあと Supabase signOut する
-- 理由: 制作データはメモリ上だけなので、別ユーザーが同じタブを使うと前の PDF / Panel が見える。D98 の「新しいセッションは全クリア」と同じ事故を防ぐ
-- 採用しなかった案: ログアウト後も PDF を残す。Auth だけ切って制作データは残す
-- 結果: `clearSessionData` は MediaStore / Cut / Timeline / Motion / Rush / 履歴を既に消す。PDF session 破棄は呼び出し側が足す
+- 状態: 改訂（D147。メモリだけ消す）
+- 判断: ログアウト時は `clearSessionData()` と PDF document 破棄と idle UI 復帰のあと Supabase signOut する。IndexedDB の project は消さない
+- 理由: 別ユーザーが同じタブを使うと前の PDF / Panel が見える事故はメモリを消せば防げる。制作物を logout のたびに捨てると 1000 Cut 規模で致命的
+- 採用しなかった案: ログアウトで IndexedDB も全削除する（旧 D145）
+- 結果: 再ログインすれば `lastActiveProjectId` を復元できる。削除は将来の Delete Project
 
 ## D115. access は永久キャッシュせず、通信失敗と none を分けない
 
@@ -1131,11 +1131,11 @@
 
 ## D142. 制作ドラフトはログインユーザーごとの端末内 IndexedDB に置く
 
-- 状態: 採用（クラッシュ保護。クラウド保存ではない）
-- 判断: PDF Blob / Panel / Cut / Timeline / Motion / 手描き・Upload 画像を IndexedDB に自動保存し、Gate 通過後の起動で同じ user id のドラフトを自動復元する。localStorage / sessionStorage は使わない。確認ダイアログは出さない
+- 状態: 改訂（D147。1 user = 複数 project）
+- 判断: PDF Blob / Panel / Cut / Timeline / Motion / 手描き・Upload 画像を IndexedDB に自動保存し、Gate 通過後の起動で `lastActiveProjectId` を自動復元する。localStorage / sessionStorage は使わない。確認ダイアログは出さない
 - 理由: タブ discard や手動 reload でメモリ上の制作状態が消える。PDF を含むため容量の小さい Web Storage は不適。サーバーへ制作データを送る機能ではない
-- 採用しなかった案: クラウドプロジェクト保存。複数プロジェクト。Undo 履歴の保存。タブ間ロック
-- 結果: 編集は debounce（750ms）で state を書く。PDF Blob は読み込み成功時だけ置き換える。`pagehide` / `visibilitychange`（hidden）では未保存があれば flush するがメモリは消さない。明示ログアウトと **別** PDF 読み込み成功でドラフトを置き換える。同じ `fileName` + `fileSize` の再選択は PDF 再接続とし、Panel / Cut は消さない。Auth 異常ではドラフトを残す（D145）。復元失敗でも IndexedDB は消さず空画面にする。PDF 描画は app-shell 表示後に行う（D146）。保存失敗は作業を止めず短い通知にする。同一ユーザーの複数タブは last-write-wins
+- 採用しなかった案: クラウドプロジェクト保存。Undo 履歴の保存。タブ間ロック
+- 結果: 編集は debounce（750ms）で state を書く。PDF Blob は読み込み成功時だけ置き換える。`pagehide` / `visibilitychange`（hidden）では未保存があれば flush するがメモリは消さない。**別 PDF の新規読み込みは新しい project を作り、旧 project は残す。** 同じ `fileName` + `fileSize` の再選択は PDF 再接続とし、Panel / Cut は消さない。Auth 異常でも IndexedDB は残す（D145）。復元失敗でも IndexedDB を消さず空画面にする。PDF 描画は app-shell 表示後に行う（D146）。保存失敗は作業を止めず短い通知にする。同一ユーザーの複数タブは last-write-wins
 
 ## D143. localhost の Gate bypass は hostname と query の両方を必須にする
 
@@ -1143,7 +1143,7 @@
 - 判断: `hostname` が `localhost` または `127.0.0.1` かつ `devBypass=1` のときだけ Gate を飛ばし、安定 id `dev-local-user` で本体を開く
 - 理由: 本番 Auth を通さずに UI と IndexedDB 復元を確認する。GitHub Pages の hostname では query だけでは動かない
 - 採用しなかった案: 常時 bypass。`*.localhost` を許可する。user id を毎回乱数にする
-- 結果: 本番の利用権判定と Stripe は変えない。bypass 中のログアウトは Supabase signOut せず、ローカルのメモリと `dev-local-user` のドラフトだけ捨てて空の本体に戻す
+- 結果: 本番の利用権判定と Stripe は変えない。bypass 中のログアウトは Supabase signOut せず、メモリだけ閉じて同じ `dev-local-user` で本体に戻る。IndexedDB の project は消さない
 
 ## D144. 同じ user のタブ復帰 SIGNED_IN は silent にする
 
@@ -1153,13 +1153,13 @@
 - 採用しなかった案: 復帰のたびに Gate を出す。利用権再取得自体をやめる
 - 結果: 新規ログインの `SIGNED_IN` は silent にしない
 
-## D145. IndexedDB ドラフトは明示ログアウトのときだけ消す
+## D145. IndexedDB の project はログアウトでも消さない
 
-- 状態: 採用
-- 判断: Account ログアウトだけ `clearPersistence: true`。token 失効、想定外の SIGNED_OUT、`network_error`、`access === none` ではメモリを閉じてもドラフトは残す
-- 理由: 一時的な Auth / 通信失敗で制作物まで失わない。支払い復旧や再ログインで復元できるようにする
-- 採用しなかった案: session 消失のたびにドラフト削除。利用不可のままアプリを操作させる
-- 結果: 利用不可とドラフト削除を分ける。fail-closed の表示は維持する
+- 状態: 改訂（D147）
+- 判断: Account ログアウトも Auth 異常も IndexedDB を消さない。メモリだけ閉じる
+- 理由: 複数 project と大きな PDF を logout で捨てると制作物を失う
+- 採用しなかった案: 明示ログアウトだけ draft 削除（旧 D145）
+- 結果: 削除は将来の Delete Project。再ログインで `lastActiveProjectId` を復元する
 
 ## D146. reload 復元は app-shell を出してから PDF を描画する
 
@@ -1167,7 +1167,15 @@
 - 判断: `allowed` にして本体レイアウトを取ってから IndexedDB の PDF Blob を `loadPdfFromFile(file, { restoring: true })` する。通常のファイル選択経路とは分ける
 - 理由: Gate 表示中は `.app-shell` が `display: none` のため、先に描画すると PDF.js が約 1px の canvas を塗り、Panel だけ残って PDF が見えない状態になる
 - 採用しなかった案: Blob 未保存とみなして PDF を捨てる。復元失敗で IndexedDB を消す
-- 結果: 復元用 load は `clearSessionData` のあと保存済み draft を stores へ戻すだけ。新しいプロジェクトにはしない。描画失敗時はメモリを空にし、保存データは残す
+- 結果: 復元用 load はメモリを空にしてから保存済み project を stores へ戻す。描画失敗時はメモリを空にし、保存データは残す
+
+## D147. 1 user は複数 project を IndexedDB に持てる
+
+- 状態: 採用（P1。一覧 UI はまだ無い）
+- 判断: DB version 2。key は `userId::projectId`。同時オープンは 1。起動は `lastActiveProjectId`。新規 PDF は新 project。version 1 の user 単位 draft は Recovered Project へ移行する
+- 理由: 1 draft 上書きでは PDF を差し替えるたびに制作物が消える。P2 の一覧の土台が必要
+- 採用しなかった案: まだ 1 user = 1 draft のまま。entity store 分割。常時二重 recovery copy
+- 結果: autosave は開いている project が正本。logout で消さない。Cut / Panel 内部 schema は変えない
 
 ## 未決
 

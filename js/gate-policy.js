@@ -33,6 +33,6 @@ export function isSilentAuthRecheck({
   return authState === "allowed" && initializedUserId === sessionUserId;
 }
 
-export function shouldClearIndexedDbDraft({ explicitLogout } = {}) {
-  return explicitLogout === true;
+export function shouldClearIndexedDbDraft() {
+  return false;
 }

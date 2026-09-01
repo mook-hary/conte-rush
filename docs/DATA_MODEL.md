@@ -4,7 +4,7 @@
 
 ## 現行
 
-制作データはサーバーを持たない。作業中の正本はブラウザのメモリ上にある。クラッシュや再読み込みに備えて、ログインユーザーごとの端末内 IndexedDB にドラフトを置く（クラウド保存ではない）。**明示ログアウト**のときだけ、その端末のドラフトを削除する。token 失効や通信失敗などの Auth 異常ではドラフトを残し、復旧後に復元できるようにする。
+制作データはサーバーを持たない。作業中の正本はブラウザのメモリ上にある。端末内 IndexedDB には **user ごとに複数 project** を autosave する（クラウド保存ではない）。同時に開く project は 1 つ。起動時は `lastActiveProjectId` を復元する。**ログアウトはメモリだけ消し、IndexedDB の project は残す。** token 失効や通信失敗でも IndexedDB は残す。project の削除は将来の明示 Delete だけとする。
 
 M11.0 で足す Auth / 利用権は Supabase 側の最小データである。制作素材とは別境界とする。M11.0〜M11.4 と M11.6 は実装済み。現行の課金経路は M11.4（Checkout Session → webhook → subscriptions）。
 
@@ -31,22 +31,25 @@ M11.0 で足す Auth / 利用権は Supabase 側の最小データである。�
 補足:
 
 - ブラウザはローカルファイルのフルパスを渡さない。パスは持たない
-- PDF のバイト列は表示のためにメモリ上へ読む。クラッシュ保護として、同一ユーザーの端末内 IndexedDB にも置く（D142）。サーバーへは送らない
-- 別 PDF を開いたら、直前の `PdfSession` は破棄する。端末内ドラフトも新しい PDF の状態へ置き換える
-- 同じ `fileName` + `fileSize` の再選択は PDF の再接続とし、Panel / Cut / Timeline は消さない
+- PDF のバイト列は表示のためにメモリ上へ読む。クラッシュ保護として、同一ユーザーの端末内 IndexedDB にも置く（D142 / D147）。サーバーへは送らない
+- 別 PDF を開いて新規制作を始めると、新しい `projectId` を作り `lastActiveProjectId` を切り替える。直前の project は IndexedDB に残る
+- 同じ `fileName` + `fileSize` の再選択は PDF の再接続とし、Panel / Cut / Timeline は消さない。新しい project は増やさない
 
-### DraftSnapshot（端末内クラッシュ保護）
+### DraftSnapshot / Project（端末内保存）
 
-クラウドのプロジェクト保存ではない。Gate 通過後、app-shell を表示してから同じ user id のドラフトを自動復元する（D146）。
+クラウドのプロジェクト保存ではない。Gate 通過後、app-shell を表示してから `lastActiveProjectId` の project を自動復元する（D146 / D147）。P1 では一覧 UI は無い。
 
 IndexedDB:
 
 - DB 名: `conte-rush-draft`
-- object store: `pdf`（key = user id。Blob + fileName + fileSize + pageCount）
-- object store: `state`（key = user id。schemaVersion 付きの Panel / Cut / Timeline / Motion / 話数・タイトル / selectedCutId / currentPage）
-- object store: `media`（key = `userId::panelId`。手描き / Upload の Blob）
+- version: `2`
+- object store: `meta`（key = user id。`lastActiveProjectId` + schemaVersion）
+- object store: `projects`（key = `userId::projectId`。一覧用メタ）
+- object store: `pdf`（key = `userId::projectId`。Blob + fileName + fileSize + pageCount）
+- object store: `state`（key = `userId::projectId`。schemaVersion 付きの Panel / Cut / Timeline / Motion / 話数・タイトル / selectedCutId / currentPage / projectId）
+- object store: `media`（key = `userId::projectId::panelId`。手描き / Upload の Blob）
 
-`schemaVersion` は 1。未対応バージョンや PDF 復元失敗では IndexedDB を消さず、メモリだけ空画面にする。PDF.js の `document`、ObjectURL、Undo、Rush 再生位置、各種キャッシュは保存しない。復元時は保存済み Blob から File を組み立て、`loadPdfFromFile(file, { restoring: true })` する。
+`schemaVersion` は 2（state / project 包み）。Cut / Panel / Timeline / Motion の内部形は 1 のまま。未対応バージョンや PDF 復元失敗では IndexedDB を消さず、メモリだけ空画面にする。PDF.js の `document`、ObjectURL、Undo、Rush 再生位置、各種キャッシュは保存しない。version 1 の `pdf[userId]` / `state[userId]` / `media[userId::panelId]` は初回起動で新しい `projectId` へコピーし、検証成功後に旧 key を消す。projectName は timesheetTitle → PDF fileName → `"Recovered Project"`。途中失敗では旧 records を残し、不完全な新 project を消して次回再試行する。
 
 ### Panel（M1）
 
@@ -911,7 +914,7 @@ Play 時だけ持つ Motion の複製。RushPlayback snapshot の項目ではな
 - タイムシート View Model の永続化（話数 / タイトルは端末内ドラフトの metadata として復元してよい）
 - Storyboard Data の完全なスキーマ
 - 制作データの localStorage（Auth session の保持は M11。制作データではない）
-- 制作データのクラウド保存 / 複数プロジェクト管理
+- 制作データのクラウド保存。P2 の Project 一覧 UI
 - PDF / Panel / Cut / Timeline / Motion / Drawing / Upload / Rush / MP4 / Timesheet の Supabase 保存
 
 Panel は後に Storyboard Data へ入り得るが、Storyboard Data 自体は未定義のままとする。
@@ -929,7 +932,7 @@ Supabase Auth が持つ identity。conte-rush が `profiles` を複製して正�
 
 - セッションは supabase-js の既定 storage（通常は localStorage）に残してよい
 - リロード後も session があれば access を再確認してからアプリへ進む
-- 制作 Store とは寿命が違う。明示ログアウト時は制作データを先に破棄し、その user id の IndexedDB ドラフトも削除する。Auth 異常や利用権なしではメモリを閉じてもドラフトは残す
+- 制作 Store とは寿命が違う。明示ログアウト時はメモリ上の制作データを破棄する。その user id の IndexedDB project は残す。Auth 異常や利用権なしでもメモリを閉じても project は残す
 
 ### internal_users（M11.0・実装済み）
 

@@ -11,10 +11,31 @@ import {
 import { createTimelineStore } from "./timeline-store.js";
 import {
   applyDraftToStores,
+  buildProjectSummary,
+  chooseRecoveredProjectName,
+  createDraftController,
+  createProjectId,
   DRAFT_SCHEMA_VERSION,
+  isLegacyMediaKeyForUser,
+  isProjectMediaKeyFor,
   isQuotaError,
+  listUserProjects,
+  migrateLegacyUserDraft,
+  projectMediaKey,
+  projectRecordKey,
+  readActiveProject,
+  readLegacyDraft,
+  readProject,
+  readUserMeta,
+  resetDraftDbForTests,
   serializeProjectState,
+  setDraftDbForTests,
+  syncProjectMedia,
   validateDraft,
+  writeProjectPdf,
+  writeProjectState,
+  writeProjectSummary,
+  writeUserMeta,
 } from "./project-persistence.js";
 
 function pdfBlob() {
@@ -360,6 +381,7 @@ test("validateDraft accepts PDF-only empty editing state", () => {
 test("serializeProjectState stamps schemaVersion", () => {
   const state = serializeProjectState({
     userId: "user-1",
+    projectId: "project-1",
     currentPage: 1,
     panels: [],
     cuts: [],
@@ -369,4 +391,531 @@ test("serializeProjectState stamps schemaVersion", () => {
   });
   assert.equal(state.schemaVersion, DRAFT_SCHEMA_VERSION);
   assert.equal(state.userId, "user-1");
+  assert.equal(state.projectId, "project-1");
 });
+
+if (typeof globalThis.IDBKeyRange === "undefined") {
+  globalThis.IDBKeyRange = {
+    bound(lower, upper) {
+      return { lower, upper };
+    },
+  };
+}
+
+function createMemoryDraftDb() {
+  const maps = {
+    pdf: new Map(),
+    state: new Map(),
+    media: new Map(),
+    meta: new Map(),
+    projects: new Map(),
+  };
+
+  function inRange(key, range) {
+    if (!range) {
+      return true;
+    }
+    const value = String(key);
+    return value >= range.lower && value <= range.upper;
+  }
+
+  return {
+    objectStoreNames: {
+      contains(name) {
+        return Object.hasOwn(maps, name);
+      },
+    },
+    transaction() {
+      let pending = 0;
+      const tx = { onerror: null, onabort: null, _oncomplete: null };
+      function maybeComplete() {
+        if (pending !== 0 || !tx._oncomplete) {
+          return;
+        }
+        const cb = tx._oncomplete;
+        queueMicrotask(() => {
+          if (pending === 0 && tx._oncomplete === cb) {
+            cb();
+          }
+        });
+      }
+      Object.defineProperty(tx, "oncomplete", {
+        get() {
+          return tx._oncomplete;
+        },
+        set(cb) {
+          tx._oncomplete = cb;
+          maybeComplete();
+        },
+      });
+      function run(fn) {
+        pending += 1;
+        const request = { result: undefined, error: null, onsuccess: null, onerror: null };
+        queueMicrotask(() => {
+          try {
+            request.result = fn();
+            pending -= 1;
+            request.onsuccess?.({ target: request });
+            maybeComplete();
+          } catch (error) {
+            pending -= 1;
+            request.error = error;
+            request.onerror?.({ target: request });
+          }
+        });
+        return request;
+      }
+      tx.objectStore = (name) => {
+        const map = maps[name];
+        return {
+          get(key) {
+            return run(() => map.get(key));
+          },
+          put(value, key) {
+            return run(() => {
+              map.set(key, value);
+            });
+          },
+          delete(key) {
+            return run(() => {
+              map.delete(key);
+            });
+          },
+          openCursor(range) {
+            pending += 1;
+            const keys = [...map.keys()].filter((key) => inRange(key, range)).sort();
+            let index = 0;
+            const request = { result: undefined, onsuccess: null, onerror: null };
+            function emit() {
+              queueMicrotask(() => {
+                if (index >= keys.length) {
+                  request.result = null;
+                  pending -= 1;
+                  request.onsuccess?.({ target: request });
+                  maybeComplete();
+                  return;
+                }
+                const key = keys[index];
+                request.result = {
+                  key,
+                  value: map.get(key),
+                  continue() {
+                    index += 1;
+                    emit();
+                  },
+                  delete() {
+                    map.delete(key);
+                  },
+                };
+                request.onsuccess?.({ target: request });
+              });
+            }
+            emit();
+            return request;
+          },
+        };
+      };
+      return tx;
+    },
+    maps,
+  };
+}
+
+function legacyState(draft) {
+  return {
+    ...draft.state,
+    schemaVersion: 1,
+    projectId: undefined,
+  };
+}
+
+function seedLegacy(db, userId, draft) {
+  db.maps.pdf.set(userId, draft.pdf);
+  db.maps.state.set(userId, legacyState(draft));
+  for (const entry of draft.media ?? []) {
+    db.maps.media.set(`${userId}::${entry.panelId}`, {
+      userId,
+      panelId: entry.panelId,
+      kind: entry.kind,
+      blob: entry.blob,
+      mimeType: entry.mimeType,
+      width: entry.width,
+      height: entry.height,
+    });
+  }
+}
+
+async function writeCompleteProject(userId, projectId, draft) {
+  const state = {
+    ...draft.state,
+    userId,
+    projectId,
+    schemaVersion: DRAFT_SCHEMA_VERSION,
+  };
+  await writeProjectPdf(userId, projectId, draft.pdf);
+  await writeProjectState(userId, projectId, state);
+  const mediaEntries = (draft.media ?? []).map((entry) => ({
+    panelId: entry.panelId,
+    media: {
+      kind: entry.kind,
+      blob: entry.blob,
+      mimeType: entry.mimeType,
+      width: entry.width,
+      height: entry.height,
+    },
+  }));
+  await syncProjectMedia(userId, projectId, mediaEntries, new Map());
+  await writeProjectSummary(
+    userId,
+    projectId,
+    buildProjectSummary({
+      userId,
+      projectId,
+      pdf: draft.pdf,
+      state,
+      media: draft.media,
+    }),
+  );
+  await writeUserMeta(userId, { lastActiveProjectId: projectId });
+}
+
+test("chooseRecoveredProjectName prefers timesheet title then PDF name", () => {
+  assert.equal(
+    chooseRecoveredProjectName({
+      state: { metadata: { timesheetTitle: " OP " } },
+      pdf: { fileName: "board.pdf" },
+    }),
+    "OP",
+  );
+  assert.equal(
+    chooseRecoveredProjectName({
+      state: { metadata: { timesheetTitle: "" } },
+      pdf: { fileName: "board.pdf" },
+    }),
+    "board.pdf",
+  );
+  assert.equal(chooseRecoveredProjectName({}), "Recovered Project");
+});
+
+test("media keys distinguish legacy user drafts from project media", () => {
+  assert.equal(isLegacyMediaKeyForUser("user-1::panel-1", "user-1"), true);
+  assert.equal(
+    isProjectMediaKeyFor("user-1::proj-1::panel-1", "user-1", "proj-1"),
+    true,
+  );
+  assert.equal(isLegacyMediaKeyForUser("user-1::proj-1::panel-1", "user-1"), false);
+});
+
+test("Test 1: version 1 draft migrates to a version 2 project", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    const draft = validDraft({
+      media: [
+        {
+          panelId: "draw-1",
+          kind: "drawing",
+          blob: imageBlob(),
+          mimeType: "image/png",
+          width: 1280,
+          height: 720,
+        },
+      ],
+      panels: [
+        {
+          id: "panel-1",
+          pageNumber: 1,
+          x: 0.1,
+          y: 0.1,
+          width: 0.4,
+          height: 0.4,
+          source: PANEL_SOURCE_MANUAL,
+        },
+        { id: "draw-1", source: PANEL_SOURCE_DRAWING },
+      ],
+      cuts: [
+        {
+          id: "cut-1",
+          cutNumber: "1",
+          durationFrames: 24,
+          panelIds: ["panel-1", "draw-1"],
+        },
+      ],
+      timelines: [
+        {
+          cutId: "cut-1",
+          placements: [
+            { id: "pl-1", panelId: "panel-1", startFrame: 0 },
+            { id: "pl-2", panelId: "draw-1", startFrame: 12 },
+          ],
+        },
+      ],
+    });
+    seedLegacy(db, "user-1", draft);
+    const result = await migrateLegacyUserDraft("user-1", {
+      createProjectId: () => "recovered-1",
+    });
+    assert.equal(result.migrated, true);
+    assert.equal(result.projectId, "recovered-1");
+    assert.equal(await readLegacyDraft("user-1"), null);
+    const project = await readProject("user-1", "recovered-1");
+    assert.equal(project.pdf.fileName, "board.pdf");
+    assert.equal(project.state.projectId, "recovered-1");
+    assert.equal(project.state.schemaVersion, DRAFT_SCHEMA_VERSION);
+    assert.equal(project.media.length, 1);
+    assert.equal(project.media[0].panelId, "draw-1");
+    assert.equal(project.summary.projectName, "OP");
+    const meta = await readUserMeta("user-1");
+    assert.equal(meta.lastActiveProjectId, "recovered-1");
+  } finally {
+    resetDraftDbForTests();
+  }
+});
+
+test("Test 2: failed migration keeps the legacy draft and can retry", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    const draft = validDraft();
+    seedLegacy(db, "user-1", draft);
+    await assert.rejects(
+      () =>
+        migrateLegacyUserDraft("user-1", {
+          createProjectId: () => "broken-1",
+          afterCopy() {
+            throw new Error("copy interrupted");
+          },
+        }),
+      /copy interrupted/,
+    );
+    const legacy = await readLegacyDraft("user-1");
+    assert.equal(legacy.pdf.fileName, "board.pdf");
+    assert.equal(await readProject("user-1", "broken-1"), null);
+    assert.equal((await listUserProjects("user-1")).length, 0);
+    const retry = await migrateLegacyUserDraft("user-1", {
+      createProjectId: () => "recovered-2",
+    });
+    assert.equal(retry.migrated, true);
+    assert.equal(retry.projectId, "recovered-2");
+    assert.equal((await readProject("user-1", "recovered-2")).pdf.fileName, "board.pdf");
+  } finally {
+    resetDraftDbForTests();
+  }
+});
+
+test("Test 3: reload restores lastActiveProjectId", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    await writeCompleteProject("user-1", "active-1", validDraft());
+    const active = await readActiveProject("user-1");
+    assert.equal(active.projectId, "active-1");
+    assert.equal(active.state.cuts[0].id, "cut-1");
+    assert.equal(active.pdf.pageCount, 3);
+  } finally {
+    resetDraftDbForTests();
+  }
+});
+
+test("Test 4-6: a new PDF becomes a second project and reload opens B", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    const draftA = validDraft({ pdf: { fileName: "a.pdf", fileSize: 4, pageCount: 3 } });
+    const draftB = validDraft({
+      pdf: { fileName: "b.pdf", fileSize: 8, pageCount: 2, blob: pdfBlob() },
+      cuts: [
+        {
+          id: "cut-b",
+          cutNumber: "2",
+          durationFrames: 24,
+          panelIds: ["panel-1"],
+        },
+      ],
+      timelines: [
+        {
+          cutId: "cut-b",
+          placements: [{ id: "pl-b", panelId: "panel-1", startFrame: 0 }],
+        },
+      ],
+      motions: [],
+    });
+    await writeCompleteProject("user-1", "project-a", draftA);
+    await writeCompleteProject("user-1", "project-b", draftB);
+    const listed = await listUserProjects("user-1");
+    assert.equal(listed.length, 2);
+    assert.equal(
+      listed.some((item) => item.projectId === "project-a" && item.fileName === "a.pdf"),
+      true,
+    );
+    assert.equal(
+      listed.some((item) => item.projectId === "project-b" && item.fileName === "b.pdf"),
+      true,
+    );
+    const active = await readActiveProject("user-1");
+    assert.equal(active.projectId, "project-b");
+    assert.equal(active.pdf.fileName, "b.pdf");
+    assert.equal((await readProject("user-1", "project-a")).pdf.fileName, "a.pdf");
+  } finally {
+    resetDraftDbForTests();
+  }
+});
+
+test("Test 7: replacing PDF on the same project does not add a project", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    const draft = validDraft();
+    await writeCompleteProject("user-1", "same-1", draft);
+    let currentId = "same-1";
+    const controller = createDraftController({
+      getUserId: () => "user-1",
+      getProjectId: () => currentId,
+      hasSession: () => true,
+      collectState: () => ({
+        ...draft.state,
+        userId: "user-1",
+        projectId: currentId,
+        schemaVersion: DRAFT_SCHEMA_VERSION,
+      }),
+      collectMedia: () => [],
+    });
+    await controller.replacePdf({
+      blob: pdfBlob(),
+      fileName: "board.pdf",
+      fileSize: 4,
+      pageCount: 3,
+    });
+    await controller.replacePdf({
+      blob: pdfBlob(),
+      fileName: "board.pdf",
+      fileSize: 4,
+      pageCount: 3,
+    });
+    const listed = await listUserProjects("user-1");
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0].projectId, "same-1");
+    const kept = await readProject("user-1", "same-1");
+    assert.equal(kept.state.cuts[0].id, "cut-1");
+    assert.equal(kept.state.panels[0].id, "panel-1");
+  } finally {
+    resetDraftDbForTests();
+  }
+});
+
+test("Test 8-9: logout policy keeps projects and same user can restore", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    await writeCompleteProject("user-1", "keep-1", validDraft());
+    assert.equal((await listUserProjects("user-1")).length, 1);
+    const again = await readActiveProject("user-1");
+    assert.equal(again.projectId, "keep-1");
+  } finally {
+    resetDraftDbForTests();
+  }
+});
+
+test("Test 10: a different user cannot see or restore another user's project", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    await writeCompleteProject("user-1", "private-1", validDraft());
+    assert.equal((await listUserProjects("user-2")).length, 0);
+    assert.equal(await readProject("user-2", "private-1"), null);
+    assert.equal(await readActiveProject("user-2"), null);
+    assert.equal((await readProject("user-1", "private-1")).pdf.fileName, "board.pdf");
+  } finally {
+    resetDraftDbForTests();
+  }
+});
+
+test("Test 11: drawing media stays scoped to projectId", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    const blobA = imageBlob();
+    const blobB = new Blob([new Uint8Array([9, 9, 9, 9])], { type: "image/png" });
+    const draftA = validDraft({
+      panels: [{ id: "draw-a", source: PANEL_SOURCE_DRAWING }],
+      cuts: [],
+      timelines: [],
+      motions: [],
+      media: [
+        {
+          panelId: "draw-a",
+          kind: "drawing",
+          blob: blobA,
+          mimeType: "image/png",
+          width: 1280,
+          height: 720,
+        },
+      ],
+    });
+    const draftB = validDraft({
+      panels: [{ id: "draw-b", source: PANEL_SOURCE_DRAWING }],
+      cuts: [],
+      timelines: [],
+      motions: [],
+      media: [
+        {
+          panelId: "draw-b",
+          kind: "drawing",
+          blob: blobB,
+          mimeType: "image/png",
+          width: 1280,
+          height: 720,
+        },
+      ],
+    });
+    await writeCompleteProject("user-1", "proj-a", draftA);
+    await writeCompleteProject("user-1", "proj-b", draftB);
+    const a = await readProject("user-1", "proj-a");
+    const b = await readProject("user-1", "proj-b");
+    assert.equal(a.media.length, 1);
+    assert.equal(b.media.length, 1);
+    assert.equal(a.media[0].panelId, "draw-a");
+    assert.equal(b.media[0].panelId, "draw-b");
+    assert.equal(
+      db.maps.media.has(projectMediaKey("user-1", "proj-a", "draw-a")),
+      true,
+    );
+    assert.equal(
+      db.maps.media.has(projectMediaKey("user-1", "proj-b", "draw-a")),
+      false,
+    );
+  } finally {
+    resetDraftDbForTests();
+  }
+});
+
+test("Test 12: Auth teardown does not delete projects", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const app = await readFile(new URL("./app.js", import.meta.url), "utf8");
+  const gate = await readFile(new URL("./access-gate.js", import.meta.url), "utf8");
+  assert.equal(app.includes("draftController.clearUser"), false);
+  assert.equal(app.includes("deleteUserDraft"), false);
+  assert.match(
+    gate,
+    /enterUnauthenticated\(\)[\s\S]*?teardownApp\(\{ clearPersistence: false \}\)/,
+  );
+  assert.match(
+    gate,
+    /network_error[\s\S]*?teardownApp\(\)/,
+  );
+});
+
+test("validateDraft still accepts a version 1 state snapshot", () => {
+  const draft = validDraft();
+  draft.state.schemaVersion = 1;
+  delete draft.state.projectId;
+  const result = validateDraft(draft, "user-1");
+  assert.equal(result.ok, true);
+});
+
+test("createProjectId returns a non-empty id", () => {
+  assert.equal(typeof createProjectId(), "string");
+  assert.ok(createProjectId().length > 4);
+  assert.equal(projectRecordKey("u", "p"), "u::p");
+});
+

@@ -17,9 +17,9 @@ import {
   DEV_BYPASS_USER_ID,
   isLocalDevBypassEnabled,
   isSilentAuthRecheck,
-} from "./gate-policy.js?v=draft-2";
+} from "./gate-policy.js?v=draft-3";
 
-const APP_MODULE_URL = new URL("./app.js?v=draft-2", import.meta.url).href;
+const APP_MODULE_URL = new URL("./app.js?v=draft-3", import.meta.url).href;
 const AUTH_MODULE_URL = new URL("./auth-client.js?v=m11-4", import.meta.url).href;
 
 const gateEl = document.querySelector("#auth-gate");
@@ -457,7 +457,7 @@ async function handleLogout() {
   signingOut = true;
   setBusy(true);
   try {
-    await teardownApp({ clearPersistence: true });
+    await teardownApp({ clearPersistence: false });
     if (devBypassActive) {
       await enterDevBypass();
       return;
@@ -472,7 +472,7 @@ async function handleLogout() {
     }
     await enterUnauthenticated();
     setLoginMessage(
-      "ログアウトに失敗したため、この端末の制作データは破棄しました。",
+      "ログアウトに失敗しました。この端末の制作データは残しています。",
       true,
     );
   } finally {

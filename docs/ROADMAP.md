@@ -475,7 +475,9 @@ Live E2E:
 
 ### 端末内クラッシュ保護（実装済み。クラウド保存ではない）
 
-ログインユーザーごとに、PDF / Panel / Cut / Timeline / Motion / 手描き・Upload を端末内 IndexedDB へ自動保存する。Gate 通過後の起動で前回状態を自動復元する。サーバーへ制作データは送らない。明示ログアウトでその端末のドラフトを削除する。境界は [DATA_MODEL.md](DATA_MODEL.md) と D142 / D145。
+ログインユーザーごとに複数 project を端末内 IndexedDB へ自動保存する。同時に開くのは 1 つ。Gate 通過後は `lastActiveProjectId` を復元する。サーバーへ制作データは送らない。ログアウトではメモリだけ閉じ、IndexedDB は残す。境界は [DATA_MODEL.md](DATA_MODEL.md) と D142 / D145 / D147。
+
+P2（未着手）: Project 一覧 / Open / Rename / Delete / Save As / Duplicate / `.conterush`。P1 の `listUserProjects` / `readProject` / `readActiveProject` / `writeUserMeta` / `deleteProject` を使う。1000 Cut 向け entity 分割は別件。
 
 ### 正式有料公開
 

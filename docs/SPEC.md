@@ -92,7 +92,7 @@ M7 の MP4 は実行時の書き出しである。Panel / Cut / Timeline / Motio
 - 表示には PDF.js を使う
 - Panel、Cut、Timeline、Rush の再生状態はブラウザのメモリ上を正本とする。クラウドへは保存しない
 - 制作データを localStorage に置かない。Auth session の保持だけ supabase-js の既定 storage を使ってよい
-- 再読み込み / タブ discard 用の端末内 IndexedDB ドラフトは許可する（クラウド保存ではない。D142）
+- 再読み込み / タブ discard 用の端末内 IndexedDB project は許可する（1 user = 複数 project。同時オープンは 1。クラウド保存ではない。D142 / D147）
 - M0 の PDF 読み込み・描画の責務を、Panel 操作と混ぜない
 - 表示用 canvas と切り出し用 canvas を分けて使う
 - Panel 本体に画像データ、CUT 番号、尺を持たせない
@@ -217,7 +217,7 @@ PDF 表示中にだけ有効とする。未選択・読み込み中は Panel 操
 
 - 新しい PDF の読み込みに成功したら、Panel をすべて破棄する
 - 新しい PDF の読み込みに失敗し、直前の PDF を表示し続ける場合は、Panel を残す
-- プロジェクト保存、リロード後の復元はしない
+- プロジェクト保存、リロード後の復元はしない（当時の M1 範囲。端末内 IndexedDB の複数 project 復元は D142 / D147）
 
 ### 6. 座標
 
@@ -2553,7 +2553,7 @@ M11.0 の第一候補は **C. Email OTP**。目標の流れは次のとおり。
 - PDF / Panel Data / Cut Data / Timeline / Motion
 - Drawing PNG / Upload 画像 / Rush / MP4 / Timesheet PDF
 
-制作データの正本はブラウザのメモリ上である。クラッシュ保護として、ログインユーザーごとの端末内 IndexedDB にドラフトを置く。サーバーへ制作データを送る機能ではない。
+制作データの正本はブラウザのメモリ上である。端末内 IndexedDB には user ごとの複数 project を置く。同時に開くのは 1 つ。サーバーへ制作データを送る機能ではない。
 
 ### 5. テーブル
 
@@ -2667,7 +2667,7 @@ fail-closed の例外にしないこと: `network_error` を `denied`（未契�
 - `allowed` になるまで PDF 選択 / Panel / Timeline / Rush を隠すか disabled
 - 初期化前に操作イベントで制作データを作らない
 
-ログアウト（Account からの明示操作）後は制作データと端末内ドラフトを捨てて Gate へ戻る。再 `allowed` なら改めて initialize してよい。token 失効や通信失敗ではドラフトを残す。
+ログアウト（Account からの明示操作）後はメモリ上の制作データを捨てて Gate へ戻る。IndexedDB の project は残す。再 `allowed` なら `lastActiveProjectId` を復元する。token 失効や通信失敗でも IndexedDB は残す。
 
 ### 11. UI
 
@@ -2712,6 +2712,8 @@ Account からログアウトできる。
 3. idle 相当の UI に戻す
 4. Supabase `signOut`
 5. Auth Gate を `unauthenticated` にする
+
+IndexedDB の project は消さない。
 
 制作データを残したまま Auth だけ切らない。別ユーザーに前の PDF / Panel が見える事故を防ぐ。
 
@@ -2815,7 +2817,7 @@ Free プロジェクトは非活動で pause され得る。これは M11 の運
 | service role 漏洩 | ブラウザと repo に置かない。M11.0 では導入しない |
 | Auth なしで app initialization できないか | Gate が `allowed` になるまで initialize しない。localhost の `devBypass=1` だけ例外（D143）。本番 hostname では無効 |
 | access check 失敗時に fail-open しないか | `network_error` ではアプリを開かない。ただし `denied` にもしない。IndexedDB ドラフトは消さない |
-| ログアウト後に前ユーザーの制作データが残らないか | 明示ログアウトだけ `clearSessionData` + PDF 破棄 + その user id の IndexedDB ドラフト削除 |
+| ログアウト後に前ユーザーの制作データがメモリに残らないか | `clearSessionData` + PDF 破棄。IndexedDB は user 別に残り、別 user では開かない |
 
 原則は fail-closed。`network_error` を未契約と誤表示しない。
 
@@ -2833,7 +2835,7 @@ Free プロジェクトは非活動で pause され得る。これは M11 の運
 - 通信失敗は `network_error` であり、`denied` と同一文にしない
 - クライアントから internal / subscriptions を変更できない
 - service role がフロントに無い
-- ログアウト後に PDF / Panel / Timeline / Drawing が残らない
+- ログアウト後にメモリ上の PDF / Panel / Timeline / Drawing が残らない。IndexedDB の project は残る
 - 制作ファイルを Supabase へ送っていない
 - Stripe / Checkout / webhook / OAuth / Cloudflare 必須化 / repo private 化をしていない
 
@@ -3699,8 +3701,9 @@ M11.4 で完成した課金モデルを Stripe Live Mode へ移行する。`PAID
 - 履歴の永続化
 - 一覧のソート UI / フィルタ UI
 - 制作データの localStorage（Auth session の保持は M11.0 で許可）
-- 制作データのクラウド保存 / 複数プロジェクト管理
-- プロジェクト保存
+- 制作データのクラウド保存
+- P2 以降の Project 一覧 UI / Save As / Duplicate / `.conterush`
+- クラウドのプロジェクト保存
 - JSON エクスポート
 - 切り出し画像のファイル書き出し
 - Storyboard Data の完全定義

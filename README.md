@@ -99,7 +99,7 @@
 - 話数とタイトルを PDF セッション単位で入力する
 - 手描き overlay から 1280×720 の Panel を追加・再編集する
 - ローカルの PNG / JPEG / WebP を Upload Panel として追加・差し替える
-- 再読み込みやタブ discard のあと、同じ端末・同じログインユーザーの直前の PDF と制作状態を復元する（端末内 IndexedDB。クラウド保存ではない）
+- 再読み込みやタブ discard のあと、同じ端末・同じログインユーザーの直前の PDF と制作状態を復元する（端末内 IndexedDB。1 user = 複数 project。同時に開くのは 1 つ。クラウド保存ではない）
 - drawing / upload も Cut / Timeline / Repeat / Motion / Rush / MP4 / タイムシート番号に使う
 - Timeline の手描き placement から Drawing Editor を開き、前後 Panel を Onion Skin で参照する
 - Timeline の追加候補と配置済みを、サムネイルと Cut.panelIds 順の Panel 番号で見分ける
@@ -110,7 +110,7 @@
 - ＋から手描きを足すと、左右の絵が Onion Skin として最初から見える
 - メールのログインリンクでログインする（暫定 Magic Link。Supabase 設定後）
 - 利用権が internal または paid のときだけ本体を操作する
-- Account からログアウトすると、ブラウザ内の制作データと端末内ドラフトを破棄する
+- Account からログアウトすると、ブラウザ内の制作メモリは破棄する。端末内の project は残し、再ログインで復元できる
 - 社内利用者は、ログイン後に配布コードで登録できる（M11.6。GitHub Pages 公開環境で確認済み。社内配布可能な状態）。管理者による SQL 付与も残る（管理画面なし）
 - 利用権がないときは、月額100円（税込）の Stripe Checkout Session へ進める（Test Mode）。決済後は webhook が利用権を付ける。既存契約があるときは新規契約せず契約管理へ。すぐ反映されないときは「利用権を再確認」する
 - ログイン画面、購入前、Account の「解約・表記」から法務ページ（`legal/`）を開ける。ログインは不要
@@ -130,12 +130,12 @@
 - AI 解析
 - カメラワークの自動解析
 - ラッシュの自動生成
-- プロジェクト保存
+- Project 一覧 UI / Save As / Duplicate / `.conterush`（P2）
 - 制作データのクラウド保存
 
 ## プライバシー
 
-法務ページは [legal/index.html](legal/index.html) です。PDF と Upload 画像はユーザーのローカルファイルから読み込み、ブラウザ内だけで処理します。サーバーや外部サービスへアップロードしません。再読み込みに備えて、制作データの一部を端末内 IndexedDB に置くことがあります。ログアウトまたはブラウザのサイトデータを消すと復元できなくなります。
+法務ページは [legal/index.html](legal/index.html) です。PDF と Upload 画像はユーザーのローカルファイルから読み込み、ブラウザ内だけで処理します。サーバーや外部サービスへアップロードしません。再読み込みに備えて、制作データの一部を端末内 IndexedDB に置くことがあります。ブラウザのサイトデータを消すと復元できなくなります。ログアウトではメモリ上の作業を閉じますが、同じ端末の IndexedDB 上の project は残します。
 
 PDF.js のライブラリ本体は CDN から取得する想定です。PDF の中身はその通信に含めません。
 
@@ -195,7 +195,7 @@ GitHub Pages で公開する場合は、リポジトリのルートを配信元�
 http://localhost:8080/?devBypass=1
 ```
 
-`dev-local-user` として IndexedDB の自動保存 / 復元が動きます。GitHub Pages など本番相当の hostname に `?devBypass=1` を付けても無効です。Account のログアウトは Supabase を呼ばず、このローカル id の制作データだけ捨てます。
+`dev-local-user` として IndexedDB の自動保存 / 復元が動きます。GitHub Pages など本番相当の hostname に `?devBypass=1` を付けても無効です。Account のログアウトは Supabase を呼ばず、メモリだけ閉じて同じローカル id で本体に戻します。IndexedDB の project は消しません。
 
 ### Stripe Test Mode（M11.4）
 

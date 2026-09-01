@@ -119,13 +119,13 @@ test("TOKEN_REFRESHED is silent once the app is initialized", () => {
   );
 });
 
-test("IndexedDB draft is cleared only on explicit logout", () => {
-  assert.equal(shouldClearIndexedDbDraft({ explicitLogout: true }), true);
+test("IndexedDB projects are never cleared by logout policy", () => {
+  assert.equal(shouldClearIndexedDbDraft({ explicitLogout: true }), false);
   assert.equal(shouldClearIndexedDbDraft({ explicitLogout: false }), false);
   assert.equal(shouldClearIndexedDbDraft({}), false);
 });
 
-test("access-gate keeps draft on unauth and deletes it only in handleLogout", async () => {
+test("access-gate keeps IndexedDB projects on unauth and logout", async () => {
   const { readFile } = await import("node:fs/promises");
   const gate = await readFile(new URL("./access-gate.js", import.meta.url), "utf8");
   assert.equal(gate.includes("isSilentAuthRecheck"), true);
@@ -136,11 +136,12 @@ test("access-gate keeps draft on unauth and deletes it only in handleLogout", as
   );
   assert.match(
     gate,
-    /async function handleLogout\(\)[\s\S]*?teardownApp\(\{ clearPersistence: true \}\)/,
+    /async function handleLogout\(\)[\s\S]*?teardownApp\(\{ clearPersistence: false \}\)/,
   );
   assert.equal(gate.includes("auth.signOut()"), true);
   const logout = gate.slice(gate.indexOf("async function handleLogout"));
   const logoutBody = logout.slice(0, logout.indexOf("async function handleDeniedCheckout"));
   assert.equal(logoutBody.includes("if (devBypassActive)"), true);
   assert.equal(logoutBody.includes("await auth.signOut()"), true);
+  assert.equal(logoutBody.includes("clearPersistence: true"), false);
 });

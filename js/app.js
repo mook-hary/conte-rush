@@ -85,11 +85,12 @@ import {
 import {
   applyDraftToStores,
   createDraftController,
+  createProjectId,
   DRAFT_SCHEMA_VERSION,
   readUserDraft,
   serializeProjectState,
   validateDraft,
-} from "./project-persistence.js?v=draft-1";
+} from "./project-persistence.js?v=draft-2";
 
 const pdfInput = document.querySelector("#pdf-input");
 const fileNameEl = document.querySelector("#file-name");
@@ -204,6 +205,7 @@ let timesheetExporting = false;
 let motionFixMessage = "";
 let motionFixPanelId = null;
 let persistenceUserId = null;
+let currentProjectId = null;
 let restoringDraft = false;
 let persistToastTimer = 0;
 let historyAutosaveBound = false;
@@ -3589,6 +3591,8 @@ async function handleFileChange(event) {
         document: loaded.document,
       });
     } else {
+      draftController.forgetMedia();
+      currentProjectId = createProjectId();
       clearSessionData();
       await replaceSession({
         fileName: file.name,
@@ -3723,6 +3727,7 @@ function showPersistToast(message) {
 function collectDraftState() {
   return serializeProjectState({
     userId: persistenceUserId,
+    projectId: currentProjectId,
     currentPage: session?.currentPage ?? 1,
     panels: panelStore.listInRegistrationOrder(),
     cuts: cutStore.listAll(),
@@ -3745,6 +3750,7 @@ function collectDraftMedia() {
 
 const draftController = createDraftController({
   getUserId: () => persistenceUserId,
+  getProjectId: () => currentProjectId,
   hasSession: () => Boolean(session) && appActive && !restoringDraft,
   collectState: collectDraftState,
   collectMedia: collectDraftMedia,
@@ -3755,15 +3761,16 @@ const draftController = createDraftController({
 });
 
 function scheduleDraftSave() {
-  if (!appActive || restoringDraft || !persistenceUserId || !session) {
+  if (!appActive || restoringDraft || !persistenceUserId || !currentProjectId || !session) {
     return;
   }
   draftController.schedule();
 }
 
-function emptyDraftState(userId) {
+function emptyDraftState(userId, projectId = null) {
   return serializeProjectState({
     userId,
+    projectId,
     currentPage: 1,
     panels: [],
     cuts: [],
@@ -3795,7 +3802,7 @@ function bindPersistFlushListenersOnce() {
   }
   persistListenersBound = true;
   const flushDraft = () => {
-    if (!appActive || restoringDraft || !persistenceUserId || !session) {
+    if (!appActive || restoringDraft || !persistenceUserId || !currentProjectId || !session) {
       return;
     }
     void draftController.flush();
@@ -3886,21 +3893,24 @@ async function tryRestoreDraft() {
       return;
     }
     if (!raw) {
+      currentProjectId = null;
       return;
     }
+    currentProjectId = raw.projectId ?? null;
     const withState = raw.state
       ? raw
       : {
           ...raw,
-          state: emptyDraftState(userId),
+          state: emptyDraftState(userId, currentProjectId),
         };
     if (withState.state) {
       withState.state.schemaVersion =
         withState.state.schemaVersion ?? DRAFT_SCHEMA_VERSION;
       withState.state.userId = withState.state.userId ?? userId;
+      withState.state.projectId = withState.state.projectId ?? currentProjectId;
       withState.state.currentPage = withState.state.currentPage ?? 1;
     }
-    const checked = validateDraft(withState, userId);
+    const checked = validateDraft(withState, userId, currentProjectId);
     if (!checked.ok) {
       showIdle();
       showPersistToast("作業の復元に失敗しました。保存データは残しています。");
@@ -3917,6 +3927,7 @@ async function tryRestoreDraft() {
       showPersistToast("作業の復元に失敗しました。保存データは残しています。");
       return;
     }
+    draftController.rememberSummary(raw.summary ?? null);
     showPersistToast("前回の作業を復元しました");
     restoringDraft = false;
     scheduleDraftSave();
@@ -4143,11 +4154,12 @@ export async function initializeConteRush(userId) {
 }
 
 export async function resetConteRushSession({ clearPersistence = false } = {}) {
+  void clearPersistence;
   appActive = false;
   restoringDraft = false;
   draftController.cancel();
-  const userId = persistenceUserId;
   persistenceUserId = null;
+  currentProjectId = null;
   handleExportCancel();
   if (exportJobPromise) {
     try {
@@ -4162,15 +4174,7 @@ export async function resetConteRushSession({ clearPersistence = false } = {}) {
   if (pdfInput) {
     pdfInput.value = "";
   }
-  if (clearPersistence && userId) {
-    try {
-      await draftController.clearUser(userId);
-    } catch (error) {
-      console.error(error);
-    }
-  } else {
-    draftController.forgetMedia();
-  }
+  draftController.forgetMedia();
   try {
     showIdle();
   } catch (error) {

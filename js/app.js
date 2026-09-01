@@ -80,10 +80,19 @@ import {
   inspectCuts,
   uniquePanelIds,
 } from "./rush-player.js?v=m8-1";
+import {
+  applyDraftToStores,
+  createDraftController,
+  DRAFT_SCHEMA_VERSION,
+  readUserDraft,
+  serializeProjectState,
+  validateDraft,
+} from "./project-persistence.js?v=draft-1";
 
 const pdfInput = document.querySelector("#pdf-input");
 const fileNameEl = document.querySelector("#file-name");
 const statusEl = document.querySelector("#status");
+const persistToastEl = document.querySelector("#persist-toast");
 const pageInfoEl = document.querySelector("#page-info");
 const prevButton = document.querySelector("#prev-page");
 const nextButton = document.querySelector("#next-page");
@@ -192,6 +201,11 @@ let timesheetPreviewOpen = false;
 let timesheetExporting = false;
 let motionFixMessage = "";
 let motionFixPanelId = null;
+let persistenceUserId = null;
+let restoringDraft = false;
+let persistToastTimer = 0;
+let historyAutosaveBound = false;
+let persistListenersBound = false;
 
 const queuedThumbnails = [];
 const queuedThumbnailIds = new Set();
@@ -797,6 +811,7 @@ function handleUndo() {
   history.undo();
   updatePlaceUi();
   renderTimelineViews();
+  scheduleDraftSave();
 }
 
 function handleRedo() {
@@ -809,6 +824,7 @@ function handleRedo() {
   history.redo();
   updatePlaceUi();
   renderTimelineViews();
+  scheduleDraftSave();
 }
 
 function panelExists(panelId) {
@@ -2308,6 +2324,7 @@ function maybeInitSinglePanelTimeline(cut) {
     { panelId: cut.panelIds[0], startFrame: 0 },
   ]);
   markRushDirty();
+  scheduleDraftSave();
 }
 
 function closeTimelineEditor() {
@@ -3063,6 +3080,7 @@ function createCutMemberEl(cutId, panelId) {
     renderCutList();
     renderCutDetail();
     renderTimelineViews();
+    scheduleDraftSave();
   });
   item.append(removeButton);
 
@@ -3155,6 +3173,7 @@ function deleteSelectedCut() {
   markRushDirty();
   setCutMessage("");
   clearCutSelection();
+  scheduleDraftSave();
 }
 
 function saveSelectedCut(event) {
@@ -3200,6 +3219,7 @@ function saveSelectedCut(event) {
   renderCutList();
   renderCutDetail();
   renderTimelineViews();
+  scheduleDraftSave();
 }
 
 function addSelectedPanelsToCut(cutId) {
@@ -3254,6 +3274,7 @@ function addSelectedPanelsToCut(cutId) {
   renderCutList();
   renderCutDetail();
   renderTimelineViews();
+  scheduleDraftSave();
 }
 
 function handleCutFormSubmit(event) {
@@ -3311,6 +3332,7 @@ function handleCutFormSubmit(event) {
   setCutMessage("");
   renderPanelList();
   selectCut(created.id);
+  scheduleDraftSave();
   if (!even.ok) {
     setTimelineMessage(even.message);
   }
@@ -3523,6 +3545,9 @@ async function handleFileChange(event) {
     return;
   }
 
+  restoringDraft = false;
+  draftController.cancel();
+  const pdfBlob = file.slice(0, file.size, file.type || "application/pdf");
   const token = ++loadToken;
   fileNameEl.textContent = file.name;
   prevButton.disabled = true;
@@ -3543,6 +3568,12 @@ async function handleFileChange(event) {
       pageCount: loaded.pageCount,
       currentPage: 1,
       document: loaded.document,
+    });
+    await draftController.replacePdf({
+      blob: pdfBlob,
+      fileName: file.name,
+      fileSize: file.size,
+      pageCount: loaded.pageCount,
     });
     renderPanelList();
     renderCutList();
@@ -3614,6 +3645,7 @@ async function goToPage(pageNumber) {
   }
   session.currentPage = nextPage;
   updatePager();
+  scheduleDraftSave();
   try {
     await viewer.renderPage(session.document, session.currentPage);
     setState("viewing", "");
@@ -3643,11 +3675,246 @@ function scheduleRefit() {
   }, 100);
 }
 
+function showPersistToast(message) {
+  if (!persistToastEl || !message) {
+    return;
+  }
+  persistToastEl.textContent = message;
+  persistToastEl.hidden = false;
+  window.clearTimeout(persistToastTimer);
+  persistToastTimer = window.setTimeout(() => {
+    persistToastEl.hidden = true;
+    persistToastEl.textContent = "";
+  }, 3200);
+}
+
+function collectDraftState() {
+  return serializeProjectState({
+    userId: persistenceUserId,
+    currentPage: session?.currentPage ?? 1,
+    panels: panelStore.listInRegistrationOrder(),
+    cuts: cutStore.listAll(),
+    timelines: cutStore
+      .listAll()
+      .map((cut) => timelineStore.getByCutId(cut.id))
+      .filter(Boolean),
+    motions: motionStore.listAll(),
+    metadata: {
+      timesheetEpisode,
+      timesheetTitle,
+      selectedCutId,
+    },
+  });
+}
+
+function collectDraftMedia() {
+  return panelMediaStore.listEntries();
+}
+
+const draftController = createDraftController({
+  getUserId: () => persistenceUserId,
+  hasSession: () => Boolean(session) && appActive && !restoringDraft,
+  collectState: collectDraftState,
+  collectMedia: collectDraftMedia,
+  onError(error) {
+    console.error(error);
+    showPersistToast("自動保存に失敗しました");
+  },
+});
+
+function scheduleDraftSave() {
+  if (!appActive || restoringDraft || !persistenceUserId || !session) {
+    return;
+  }
+  draftController.schedule();
+}
+
+function emptyDraftState(userId) {
+  return serializeProjectState({
+    userId,
+    currentPage: 1,
+    panels: [],
+    cuts: [],
+    timelines: [],
+    motions: [],
+    metadata: {
+      timesheetEpisode: "",
+      timesheetTitle: "",
+      selectedCutId: null,
+    },
+  });
+}
+
+function bindHistoryAutosaveOnce() {
+  if (historyAutosaveBound) {
+    return;
+  }
+  historyAutosaveBound = true;
+  const push = history.push.bind(history);
+  history.push = (entry) => {
+    push(entry);
+    scheduleDraftSave();
+  };
+}
+
+function bindPersistFlushListenersOnce() {
+  if (persistListenersBound) {
+    return;
+  }
+  persistListenersBound = true;
+  const flushDraft = () => {
+    if (!appActive || restoringDraft || !persistenceUserId || !session) {
+      return;
+    }
+    void draftController.flush();
+  };
+  window.addEventListener("pagehide", flushDraft);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      flushDraft();
+    }
+  });
+}
+
+function requestAllThumbnails() {
+  for (const panel of panelStore.listInRegistrationOrder()) {
+    requestThumbnail(panel);
+  }
+}
+
+async function discardBrokenDraft(userId) {
+  try {
+    await draftController.clearUser(userId);
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+async function restoreDraftSession(draft, token) {
+  const file = new File([draft.pdf.blob], draft.pdf.fileName, {
+    type: "application/pdf",
+  });
+  const loaded = await loadPdfFromFile(file);
+  if (token !== loadToken) {
+    await destroyPdfDocument(loaded.document);
+    return { ok: false, stale: true };
+  }
+
+  clearSessionData();
+  const pageCount = loaded.pageCount;
+  const currentPage = Math.min(
+    Math.max(draft.state.currentPage || 1, 1),
+    pageCount,
+  );
+  await replaceSession({
+    fileName: draft.pdf.fileName,
+    fileSize: draft.pdf.fileSize ?? draft.pdf.blob.size,
+    pageCount,
+    currentPage,
+    document: loaded.document,
+  });
+  if (token !== loadToken) {
+    return { ok: false, stale: true };
+  }
+
+  applyDraftToStores(draft, {
+    panelStore,
+    panelMediaStore,
+    cutStore,
+    timelineStore,
+    motionStore,
+  });
+  draftController.rememberMedia(collectDraftMedia());
+
+  timesheetEpisode = String(draft.state.metadata?.timesheetEpisode ?? "");
+  timesheetTitle = String(draft.state.metadata?.timesheetTitle ?? "");
+  syncTimesheetInputs();
+
+  fileNameEl.textContent = draft.pdf.fileName;
+  setState("viewing", "");
+  void viewerEl.offsetHeight;
+  await showPage();
+  if (token !== loadToken) {
+    return { ok: false, stale: true };
+  }
+  initSelectionFrame();
+  const selectedId = draft.state.metadata?.selectedCutId ?? null;
+  if (selectedId && cutStore.getById(selectedId)) {
+    selectCut(selectedId);
+  }
+  requestAllThumbnails();
+  syncPanels();
+  return { ok: true };
+}
+
+async function tryRestoreDraft() {
+  if (!persistenceUserId || restoringDraft) {
+    return;
+  }
+  restoringDraft = true;
+  const userId = persistenceUserId;
+  const token = ++loadToken;
+  try {
+    const raw = await readUserDraft(userId);
+    if (token !== loadToken) {
+      return;
+    }
+    if (!raw) {
+      return;
+    }
+    const withState = raw.state
+      ? raw
+      : {
+          ...raw,
+          state: emptyDraftState(userId),
+        };
+    if (withState.state) {
+      withState.state.schemaVersion =
+        withState.state.schemaVersion ?? DRAFT_SCHEMA_VERSION;
+      withState.state.userId = withState.state.userId ?? userId;
+      withState.state.currentPage = withState.state.currentPage ?? 1;
+    }
+    const checked = validateDraft(withState, userId);
+    if (!checked.ok) {
+      await discardBrokenDraft(userId);
+      showIdle();
+      return;
+    }
+    const restored = await restoreDraftSession(checked.draft, token);
+    if (token !== loadToken || restored.stale) {
+      return;
+    }
+    if (!restored.ok) {
+      await discardBrokenDraft(userId);
+      clearSessionData();
+      await replaceSession(null);
+      showIdle();
+      return;
+    }
+    showPersistToast("前回の作業を復元しました");
+    restoringDraft = false;
+    scheduleDraftSave();
+  } catch (error) {
+    console.error(error);
+    if (token !== loadToken) {
+      return;
+    }
+    await discardBrokenDraft(userId);
+    clearSessionData();
+    await replaceSession(null);
+    showIdle();
+  } finally {
+    restoringDraft = false;
+  }
+}
+
 function bindAppListenersOnce() {
   if (appListenersBound) {
     return;
   }
   appListenersBound = true;
+  bindHistoryAutosaveOnce();
+  bindPersistFlushListenersOnce();
 
   cutForm.addEventListener("submit", handleCutFormSubmit);
   cutDetailForm.addEventListener("submit", saveSelectedCut);
@@ -3688,11 +3955,19 @@ function bindAppListenersOnce() {
       updateTimesheetUi();
     }
   });
+  timesheetEpisodeInput?.addEventListener("change", () => {
+    timesheetEpisode = timesheetEpisodeInput.value;
+    scheduleDraftSave();
+  });
   timesheetTitleInput?.addEventListener("input", () => {
     timesheetTitle = timesheetTitleInput.value;
     if (timesheetPreviewOpen) {
       updateTimesheetUi();
     }
+  });
+  timesheetTitleInput?.addEventListener("change", () => {
+    timesheetTitle = timesheetTitleInput.value;
+    scheduleDraftSave();
   });
   timesheetPreviewButton?.addEventListener("click", () => {
     handleTimesheetPreview();
@@ -3816,14 +4091,19 @@ function bindAppListenersOnce() {
   window.addEventListener("resize", scheduleRefit);
 }
 
-export function initializeConteRush() {
+export async function initializeConteRush(userId) {
   bindAppListenersOnce();
-  if (appActive) {
+  if (!userId) {
     return;
   }
+  if (appActive && persistenceUserId === userId) {
+    return;
+  }
+  persistenceUserId = userId;
   appActive = true;
   try {
     showIdle();
+    await tryRestoreDraft();
   } catch (error) {
     console.error(error);
     if (statusEl) {
@@ -3833,8 +4113,12 @@ export function initializeConteRush() {
   }
 }
 
-export async function resetConteRushSession() {
+export async function resetConteRushSession({ clearPersistence = false } = {}) {
   appActive = false;
+  restoringDraft = false;
+  draftController.cancel();
+  const userId = persistenceUserId;
+  persistenceUserId = null;
   handleExportCancel();
   if (exportJobPromise) {
     try {
@@ -3848,6 +4132,15 @@ export async function resetConteRushSession() {
   await replaceSession(null);
   if (pdfInput) {
     pdfInput.value = "";
+  }
+  if (clearPersistence && userId) {
+    try {
+      await draftController.clearUser(userId);
+    } catch (error) {
+      console.error(error);
+    }
+  } else {
+    draftController.forgetMedia();
   }
   try {
     showIdle();

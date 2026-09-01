@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>conte-rush</title>
-    <link rel="stylesheet" href="css/style.css?v=m11-7" />
+    <link rel="stylesheet" href="css/style.css?v=draft-1" />
   </head>
   <body data-state="idle" data-auth-state="loading">
     <div id="auth-gate" class="auth-gate">
@@ -116,6 +116,7 @@
 
     <main class="app">
       <p id="status" class="status" role="status">PDFファイルを選択してください</p>
+      <p id="persist-toast" class="persist-toast" hidden role="status"></p>
 
       <div class="workspace">
         <div class="stage-column">
@@ -457,7 +458,7 @@
       });
     </script>
     <script type="module">
-      import("./js/access-gate.js?v=m11-8-gate-fix").catch((error) => {
+      import("./js/access-gate.js?v=draft-1").catch((error) => {
         console.error(error);
         const loading = document.querySelector(
           '#auth-gate [data-gate-panel="loading"] p',

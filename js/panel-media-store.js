@@ -39,11 +39,19 @@ export function createPanelMediaStore() {
     items.clear();
   }
 
+  function listEntries() {
+    return [...items.entries()].map(([panelId, media]) => ({
+      panelId,
+      media: cloneMedia(media),
+    }));
+  }
+
   return {
     get,
     set,
     has,
     delete: remove,
     clear,
+    listEntries,
   };
 }

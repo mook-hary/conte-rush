@@ -4,7 +4,7 @@
 
 ## 現行
 
-制作データはサーバーを持たない。Panel / Cut / Timeline / Motion / Rush / 画像 / MP4 / Timesheet はブラウザのメモリ上にだけ存在する。リロードすると消える。
+制作データはサーバーを持たない。作業中の正本はブラウザのメモリ上にある。クラッシュや再読み込みに備えて、ログインユーザーごとの端末内 IndexedDB にドラフトを置く（クラウド保存ではない）。ログアウトするとその端末のドラフトは削除する。
 
 M11.0 で足す Auth / 利用権は Supabase 側の最小データである。制作素材とは別境界とする。M11.0〜M11.4 と M11.6 は実装済み。現行の課金経路は M11.4（Checkout Session → webhook → subscriptions）。
 
@@ -31,8 +31,21 @@ M11.0 で足す Auth / 利用権は Supabase 側の最小データである。�
 補足:
 
 - ブラウザはローカルファイルのフルパスを渡さない。パスは持たない
-- PDF のバイト列は表示のためにメモリ上へ読む。ファイルとしては保存しない
-- 別 PDF を開いたら、直前の `PdfSession` は破棄する
+- PDF のバイト列は表示のためにメモリ上へ読む。クラッシュ保護として、同一ユーザーの端末内 IndexedDB にも置く（D142）。サーバーへは送らない
+- 別 PDF を開いたら、直前の `PdfSession` は破棄する。端末内ドラフトも新しい PDF の状態へ置き換える
+
+### DraftSnapshot（端末内クラッシュ保護）
+
+クラウドのプロジェクト保存ではない。Gate 通過後の本体起動時に、同じ user id のドラフトがあれば自動復元する。
+
+IndexedDB:
+
+- DB 名: `conte-rush-draft`
+- object store: `pdf`（key = user id。Blob + fileName + fileSize + pageCount）
+- object store: `state`（key = user id。schemaVersion 付きの Panel / Cut / Timeline / Motion / 話数・タイトル / selectedCutId / currentPage）
+- object store: `media`（key = `userId::panelId`。手描き / Upload の Blob）
+
+`schemaVersion` は 1。未対応バージョンや参照切れは破棄して空画面で起動する。PDF.js の `document`、ObjectURL、Undo、Rush 再生位置、各種キャッシュは保存しない。
 
 ### Panel（M1）
 
@@ -165,7 +178,7 @@ M1 の 6 フィールドは **PDF Panel だけ**維持する。drawing / upload 
 - 実行時に ImageBitmap をキャッシュしてよい。正本は Blob
 - drawing の正本画素は 1280×720
 - upload は元画像の画素。16:9 にリサンプルしない
-- ファイルへ保存しない
+- ObjectURL は保存しない。クラッシュ保護として Blob を端末内 IndexedDB に置く（D142）
 
 寿命:
 
@@ -640,7 +653,7 @@ Rush 表示用の Panel 画像だけを、メモリ上に持つ。M2 の Thumbna
 
 ### UI 状態（M5.1 / M5.2 / M5.3 / M5.4 / M6 / M7 / M10）
 
-Panel / Cut / Timeline / Rush の保存構造ではない。メモリ上の操作状態だけとする。ファイルへ保存しない。`localStorage` にも入れない。
+Panel / Cut / Timeline / Rush の保存構造ではない。作業中はメモリ上の操作状態とする。ファイルへ保存しない。`localStorage` にも入れない。話数 / タイトル / selectedCutId だけ端末内ドラフト（D142）に含めてよい。
 
 #### PanelTemplate（M5.1）
 
@@ -894,9 +907,10 @@ Play 時だけ持つ Motion の複製。RushPlayback snapshot の項目ではな
 - Undo / Redo 履歴の永続化
 - 横 Timeline ドラッグ候補の永続化
 - 秒とコマの保存フィールド
-- タイムシート View Model / 話数 / タイトルの永続化
+- タイムシート View Model の永続化（話数 / タイトルは端末内ドラフトの metadata として復元してよい）
 - Storyboard Data の完全なスキーマ
-- 制作データの localStorage / IndexedDB（Auth session の保持は M11。制作データではない）
+- 制作データの localStorage（Auth session の保持は M11。制作データではない）
+- 制作データのクラウド保存 / 複数プロジェクト管理
 - PDF / Panel / Cut / Timeline / Motion / Drawing / Upload / Rush / MP4 / Timesheet の Supabase 保存
 
 Panel は後に Storyboard Data へ入り得るが、Storyboard Data 自体は未定義のままとする。
@@ -1123,8 +1137,8 @@ M7 では MP4 書き出しを定義する。ExportSnapshot / ExportImageCache / 
 
 M8 では Timeline placement に `id` を足し、同一 `panelId` の複数配置を許す。Repeat 設定は保存しない。Motion は panelId のまま。
 
-M9 では Timesheet View Model を導出するだけとする。Panel / Cut / Timeline / Motion の項目は増やさない。話数 / タイトルは PDF セッションの UI 状態とする。
+M9 では Timesheet View Model を導出するだけとする。Panel / Cut / Timeline / Motion の項目は増やさない。話数 / タイトルは PDF セッションの UI 状態とし、端末内ドラフトの metadata として復元してよい。
 
 M10 では Panel の `source` に `"drawing"` / `"upload"` を足す。画像バイトは PanelMediaStore。Timeline / Motion / Rush / タイムシートの保存項目は増やさない。Onion（M10.2）は UI 状態だけとする。M10.3で保存構造変更なし。M10.4で永続構造変更なし。InsertionContextはUI状態のみ。
 
-M11.0 では Auth / 利用権だけを Supabase に置く。制作データの保存項目は増やさない。プロジェクト保存とクラウド素材保存はまだ定義しない。M11.4 の `stripe_customers` は利用権の正ではない。M11.7 は COMPLETE。法務ページは静的 HTML であり、新しい保存項目は増やさない。M11.8 は Live 切替であり、制作データの保存項目は増やさない。
+M11.0 では Auth / 利用権だけを Supabase に置く。プロジェクト保存とクラウド素材保存はまだ定義しない。端末内 IndexedDB のクラッシュ保護は D142。M11.4 の `stripe_customers` は利用権の正ではない。M11.7 は COMPLETE。法務ページは静的 HTML である。M11.8 は Live 切替であり、制作データのクラウド保存項目は増やさない。

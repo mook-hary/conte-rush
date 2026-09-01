@@ -30,6 +30,18 @@ export function createCutStore() {
     return cloneCut(cut);
   }
 
+  function restore(cut) {
+    if (!cut?.id) {
+      return null;
+    }
+    if (cuts.some((item) => item.id === cut.id)) {
+      return cloneCut(cuts.find((item) => item.id === cut.id));
+    }
+    const copy = cloneCut(cut);
+    cuts.push(copy);
+    return cloneCut(copy);
+  }
+
   function update(id, patch) {
     const cut = cuts.find((item) => item.id === id);
     if (!cut) {
@@ -109,6 +121,7 @@ export function createCutStore() {
 
   return {
     add,
+    restore,
     update,
     remove,
     clear,

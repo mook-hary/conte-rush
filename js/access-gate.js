@@ -14,7 +14,7 @@ import {
   shouldShowAccountPortal,
 } from "./billing-ui.js?v=m11-8-gate-fix";
 
-const APP_MODULE_URL = new URL("./app.js?v=m11-2", import.meta.url).href;
+const APP_MODULE_URL = new URL("./app.js?v=draft-1", import.meta.url).href;
 const AUTH_MODULE_URL = new URL("./auth-client.js?v=m11-4", import.meta.url).href;
 
 const gateEl = document.querySelector("#auth-gate");
@@ -211,18 +211,18 @@ async function initializeAppIfNeeded(userId) {
     await teardownApp();
   }
   const app = await loadAppModule();
-  app.initializeConteRush();
+  await app.initializeConteRush(userId);
   appInitialized = true;
   initializedUserId = userId;
 }
 
-async function teardownApp() {
+async function teardownApp({ clearPersistence = false } = {}) {
   if (!appModule) {
     appInitialized = false;
     initializedUserId = null;
     return;
   }
-  await appModule.resetConteRushSession();
+  await appModule.resetConteRushSession({ clearPersistence });
   appInitialized = false;
   initializedUserId = null;
 }
@@ -251,7 +251,7 @@ async function enterUnauthenticated() {
     inviteCodeInput.value = "";
   }
   setInviteMessage("");
-  await teardownApp();
+  await teardownApp({ clearPersistence: true });
   setAuthState("unauthenticated");
   setBusy(false);
   settleCheckoutSuccessQuery();
@@ -397,7 +397,7 @@ async function handleLogout() {
   signingOut = true;
   setBusy(true);
   try {
-    await teardownApp();
+    await teardownApp({ clearPersistence: true });
     const auth = await loadAuthApi();
     await auth.signOut();
   } catch (error) {

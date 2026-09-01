@@ -473,6 +473,10 @@ Live E2E:
 
 依存: M11.4（済）、M11.7（済）。仕様は [SPEC.md](SPEC.md) の M11.8 節を正とする。
 
+### 端末内クラッシュ保護（実装済み。クラウド保存ではない）
+
+ログインユーザーごとに、PDF / Panel / Cut / Timeline / Motion / 手描き・Upload を端末内 IndexedDB へ自動保存する。Gate 通過後の起動で前回状態を自動復元する。サーバーへ制作データは送らない。ログアウトでその端末のドラフトを削除する。境界は [DATA_MODEL.md](DATA_MODEL.md) と D142。
+
 ### 正式有料公開
 
 M11.8 の完了後、既存 GitHub Pages（`https://mook-hary.github.io/conte-rush/`）を本番課金の入口にする。新規ホスト移行は必須にしない。M11.5 Cloudflare Pages は公開後の候補であり、正式公開の blocker ではない。

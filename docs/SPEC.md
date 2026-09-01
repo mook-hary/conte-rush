@@ -90,8 +90,9 @@ M7 の MP4 は実行時の書き出しである。Panel / Cut / Timeline / Motio
 - 生成した MP4 もサーバーへ送信しない。ブラウザ内の Blob として保存する
 - PDF の処理はブラウザ内で完結させる
 - 表示には PDF.js を使う
-- Panel、Cut、Timeline、Rush の再生状態はブラウザのメモリ上のみとする。保存しない
-- 制作データを localStorage / IndexedDB に置かない。Auth session の保持だけ supabase-js の既定 storage を使ってよい
+- Panel、Cut、Timeline、Rush の再生状態はブラウザのメモリ上を正本とする。クラウドへは保存しない
+- 制作データを localStorage に置かない。Auth session の保持だけ supabase-js の既定 storage を使ってよい
+- 再読み込み / タブ discard 用の端末内 IndexedDB ドラフトは許可する（クラウド保存ではない。D142）
 - M0 の PDF 読み込み・描画の責務を、Panel 操作と混ぜない
 - 表示用 canvas と切り出し用 canvas を分けて使う
 - Panel 本体に画像データ、CUT 番号、尺を持たせない
@@ -2552,7 +2553,7 @@ M11.0 の第一候補は **C. Email OTP**。目標の流れは次のとおり。
 - PDF / Panel Data / Cut Data / Timeline / Motion
 - Drawing PNG / Upload 画像 / Rush / MP4 / Timesheet PDF
 
-制作データは現状どおりブラウザセッション内である。
+制作データの正本はブラウザのメモリ上である。クラッシュ保護として、ログインユーザーごとの端末内 IndexedDB にドラフトを置く。サーバーへ制作データを送る機能ではない。
 
 ### 5. テーブル
 
@@ -2666,7 +2667,7 @@ fail-closed の例外にしないこと: `network_error` を `denied`（未契�
 - `allowed` になるまで PDF 選択 / Panel / Timeline / Rush を隠すか disabled
 - 初期化前に操作イベントで制作データを作らない
 
-ログアウト後は制作データを捨てて Gate へ戻る。再 `allowed` なら改めて initialize してよい。
+ログアウト後は制作データと端末内ドラフトを捨てて Gate へ戻る。再 `allowed` なら改めて initialize してよい。
 
 ### 11. UI
 
@@ -2814,7 +2815,7 @@ Free プロジェクトは非活動で pause され得る。これは M11 の運
 | service role 漏洩 | ブラウザと repo に置かない。M11.0 では導入しない |
 | Auth なしで app initialization できないか | Gate が `allowed` になるまで initialize しない |
 | access check 失敗時に fail-open しないか | `network_error` ではアプリを開かない。ただし `denied` にもしない |
-| ログアウト後に前ユーザーの制作データが残らないか | `clearSessionData` + PDF 破棄 |
+| ログアウト後に前ユーザーの制作データが残らないか | `clearSessionData` + PDF 破棄 + その user id の IndexedDB ドラフト削除 |
 
 原則は fail-closed。`network_error` を未契約と誤表示しない。
 
@@ -3697,7 +3698,8 @@ M11.4 で完成した課金モデルを Stripe Live Mode へ移行する。`PAID
 - 選択フレームの移動・リサイズ・aspect lock の Undo / Redo
 - 履歴の永続化
 - 一覧のソート UI / フィルタ UI
-- 制作データの localStorage / IndexedDB（Auth session の保持は M11.0 で許可）
+- 制作データの localStorage（Auth session の保持は M11.0 で許可）
+- 制作データのクラウド保存 / 複数プロジェクト管理
 - プロジェクト保存
 - JSON エクスポート
 - 切り出し画像のファイル書き出し

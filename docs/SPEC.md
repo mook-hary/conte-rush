@@ -319,7 +319,7 @@ M1 の Panel 座標を使い、PDF から矩形範囲の画像を得る。確認
 - 登録済みの全 Cut を一覧表示する
 - 各行に CUT 番号、総尺、所属 Panel 数が分かる表示を置く
 - 所属 Panel は、可能なら M2 のサムネイルキャッシュを参照して示す。無ければ id で足りる
-- 並びは登録順とする。ソート UI は置かない
+- 並びは `cutNumber` の数値昇順とする（Player / Rush と同じ）。ソート UI は置かない。Store の登録順は変えない
 
 ### 6. Cut の編集と削除
 
@@ -440,7 +440,7 @@ M4 実装開始時点では、M3 までに作った Cut が残っていること
 
 ## M5 で実装する機能（実装済み）
 
-配置完了した Cut を登録順に連結し、24fps の静止画ラッシュとして再生する。MP4 は出力しない。Panel / Cut / Timeline の保存構造は変えない。
+配置完了した Cut を `cutNumber` の数値昇順に連結し、24fps の静止画ラッシュとして再生する。MP4 は出力しない。Panel / Cut / Timeline の保存構造は変えない。
 
 ### 1. 再生対象
 
@@ -452,9 +452,9 @@ M4 実装開始時点では、M3 までに作った Cut が残っていること
 
 ### 2. 再生順と全体時間軸
 
-- 再生順は Cut Store の登録順とする。CUT 番号の数値順・文字列順には並べない
-- 並べ替え UI は置かない
-- 各 Cut の `durationFrames` を登録順に連結し、global 区間を再生時に導出する
+- 再生順は `cutNumber` の数値昇順とする。Cut Store の登録順・文字列 sort にはしない
+- 並べ替え UI は置かない。保存配列は登録順のまま
+- 各 Cut の `durationFrames` をこの再生順に連結し、global 区間を再生時に導出する
 - global 開始 / 終了は Cut に保存しない
 - 例: 84f + 48f + 72f なら、CUT 001 は global 0〜83、002 は 84〜131、003 は 132〜203。総尺は 204f
 
@@ -462,7 +462,7 @@ M4 実装開始時点では、M3 までに作った Cut が残っていること
 
 Play 時にだけ作る一時構造とする。ファイルへ保存しない。
 
-- 含むもの: `totalFrames` と、登録順の segment（`cutId`、`cutNumber`、`durationFrames`、導出した `globalStart` / `globalEndExclusive`、`placements`）
+- 含むもの: `totalFrames` と、`cutNumber` 昇順の segment（`cutId`、`cutNumber`、`durationFrames`、導出した `globalStart` / `globalEndExclusive`、`placements`）
 - Panel / Cut / Timeline 本体へ埋め込まない
 - 再生中は live の M3/M4 データを読まず、このスナップショットだけを使う
 
@@ -1588,7 +1588,7 @@ Chrome / Edge を第一の動作対象とする。Safari / Firefox は WebCodecs
 
 書き出し開始時点の次を凍結する。書き出し途中で live の Store を読まない。
 
-- Cut 一覧（登録順）と各 Cut の `durationFrames` / `panelIds`
+- Cut 一覧（`cutNumber` 昇順。`buildSnapshot` と同じ）と各 Cut の `durationFrames` / `panelIds`
 - 各 Timeline の `placements`（`buildSnapshot` と同じ）
 - Motion 全件（Play 時の `motionStore.listAll()` 凍結と同じ）
 - 参照する Panel の `id` / `pageNumber` / `x` / `y` / `width` / `height`（rasterize に必要）
@@ -1866,7 +1866,7 @@ Panel / Cut / Timeline / Motion のフィールドは増やさない。MP4 Blob 
 
 ### 22. 完成条件
 
-- Timeline 完成済みの全 Cut を登録順に書き出せる
+- Timeline 完成済みの全 Cut を `cutNumber` 昇順に書き出せる（Rush と同じ `buildSnapshot`）
 - Motionなし / PAN / TU / TB / PAN+TU が Rush と同じ見た目になる（解像度は 720p 固定なので画素はプレビューより細かい／粗い差はあり得るが、crop 式は同一）
 - 1280×720、24fps、H.264 MP4、映像のみ
 - frame 数と MP4 尺が `totalFrames` / 24 秒と一致する

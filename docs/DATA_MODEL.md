@@ -33,10 +33,11 @@ M11.0 で足す Auth / 利用権は Supabase 側の最小データである。�
 - ブラウザはローカルファイルのフルパスを渡さない。パスは持たない
 - PDF のバイト列は表示のためにメモリ上へ読む。クラッシュ保護として、同一ユーザーの端末内 IndexedDB にも置く（D142）。サーバーへは送らない
 - 別 PDF を開いたら、直前の `PdfSession` は破棄する。端末内ドラフトも新しい PDF の状態へ置き換える
+- 同じ `fileName` + `fileSize` の再選択は PDF の再接続とし、Panel / Cut / Timeline は消さない
 
 ### DraftSnapshot（端末内クラッシュ保護）
 
-クラウドのプロジェクト保存ではない。Gate 通過後の本体起動時に、同じ user id のドラフトがあれば自動復元する。
+クラウドのプロジェクト保存ではない。Gate 通過後、app-shell を表示してから同じ user id のドラフトを自動復元する（D146）。
 
 IndexedDB:
 
@@ -45,7 +46,7 @@ IndexedDB:
 - object store: `state`（key = user id。schemaVersion 付きの Panel / Cut / Timeline / Motion / 話数・タイトル / selectedCutId / currentPage）
 - object store: `media`（key = `userId::panelId`。手描き / Upload の Blob）
 
-`schemaVersion` は 1。未対応バージョンや参照切れは破棄して空画面で起動する。PDF.js の `document`、ObjectURL、Undo、Rush 再生位置、各種キャッシュは保存しない。
+`schemaVersion` は 1。未対応バージョンや PDF 復元失敗では IndexedDB を消さず、メモリだけ空画面にする。PDF.js の `document`、ObjectURL、Undo、Rush 再生位置、各種キャッシュは保存しない。復元時は保存済み Blob から File を組み立て、`loadPdfFromFile(file, { restoring: true })` する。
 
 ### Panel（M1）
 
@@ -332,7 +333,7 @@ M3 のアプリ実装は、この定義に従う。
 
 一覧の並び（表示専用。ソート UI は持たない）:
 
-- Cut の登録順
+- Cut の `cutNumber` 数値昇順（Player / Rush と同じ。Store 配列は登録順のまま）
 
 ### Timeline（M4）
 
@@ -559,7 +560,7 @@ M5 のアプリ実装は、この定義に従う。
 | 項目 | 意味 |
 |---|---|
 | `totalFrames` | 連結した総尺（フレーム） |
-| `segments` | 登録順の Cut 区間 |
+| `segments` | `cutNumber` 昇順の Cut 区間 |
 
 segment:
 
@@ -595,7 +596,7 @@ segment:
 
 導出:
 
-- 再生順は Cut の登録順
+- 再生順は `cutNumber` の数値昇順。Cut Store の配列順は変えない
 - `globalStart` は直前までの `durationFrames` の合計
 - `globalEndExclusive = globalStart + durationFrames`
 - `totalFrames` は全 `durationFrames` の合計
@@ -803,7 +804,7 @@ Play 時だけ持つ Motion の複製。RushPlayback snapshot の項目ではな
 
 含むもの:
 
-- `buildSnapshot` と同じ Cut 登録順セグメント（`totalFrames` を含む）
+- `buildSnapshot` と同じ `cutNumber` 昇順セグメント（`totalFrames` を含む）
 - Motion 全件の複製（Play 時の freeze と同じ）
 - 参照 Panel の複製（PDF は矩形、drawing / upload は source + MediaStore）
 - その時点の `pdfDocument` 参照

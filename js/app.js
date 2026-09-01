@@ -1,4 +1,6 @@
 import { destroyPdfDocument, loadPdfFromFile } from "./pdf-loader.js";
+import { isSamePdfReconnect } from "./pdf-session.js";
+import { orderCutsForPlayback } from "./cut-order.js";
 import { createCutStore } from "./cut-store.js";
 import {
   formatDuration,
@@ -79,7 +81,7 @@ import {
   describeIncomplete,
   inspectCuts,
   uniquePanelIds,
-} from "./rush-player.js?v=m8-1";
+} from "./rush-player.js?v=cut-order-1";
 import {
   applyDraftToStores,
   createDraftController,
@@ -3088,7 +3090,7 @@ function createCutMemberEl(cutId, panelId) {
 }
 
 function renderCutList() {
-  const cuts = cutStore.listAll();
+  const cuts = orderCutsForPlayback(cutStore.listAll());
   cutListEl.replaceChildren();
 
   for (const cut of cuts) {
@@ -3512,10 +3514,22 @@ function showIdle() {
   setState("idle", "PDFファイルを選択してください");
 }
 
+function waitForViewerLayout() {
+  if (viewerEl) {
+    void viewerEl.offsetHeight;
+  }
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(resolve);
+    });
+  });
+}
+
 async function showPage() {
   if (!session) {
     return;
   }
+  await waitForViewerLayout();
   await viewer.renderPage(session.document, session.currentPage);
   updatePager();
   syncPanels();
@@ -3547,12 +3561,13 @@ async function handleFileChange(event) {
 
   restoringDraft = false;
   draftController.cancel();
+  const reconnecting = isSamePdfReconnect(session, file);
   const pdfBlob = file.slice(0, file.size, file.type || "application/pdf");
   const token = ++loadToken;
   fileNameEl.textContent = file.name;
   prevButton.disabled = true;
   nextButton.disabled = true;
-  setState("loading", "読み込み中…");
+  setState("loading", reconnecting ? "PDFを再接続しています…" : "読み込み中…");
 
   try {
     const loaded = await loadPdfFromFile(file);
@@ -3561,14 +3576,28 @@ async function handleFileChange(event) {
       return;
     }
 
-    clearSessionData();
-    await replaceSession({
-      fileName: file.name,
-      fileSize: file.size,
-      pageCount: loaded.pageCount,
-      currentPage: 1,
-      document: loaded.document,
-    });
+    if (reconnecting) {
+      const currentPage = Math.min(
+        Math.max(session.currentPage || 1, 1),
+        loaded.pageCount,
+      );
+      await replaceSession({
+        fileName: file.name,
+        fileSize: file.size,
+        pageCount: loaded.pageCount,
+        currentPage,
+        document: loaded.document,
+      });
+    } else {
+      clearSessionData();
+      await replaceSession({
+        fileName: file.name,
+        fileSize: file.size,
+        pageCount: loaded.pageCount,
+        currentPage: 1,
+        document: loaded.document,
+      });
+    }
     await draftController.replacePdf({
       blob: pdfBlob,
       fileName: file.name,
@@ -3602,6 +3631,9 @@ async function handleFileChange(event) {
     }
     setState("viewing", "");
     initSelectionFrame();
+    if (reconnecting) {
+      requestAllThumbnails();
+    }
     syncPanels();
   } catch (error) {
     if (token !== loadToken) {
@@ -3782,24 +3814,18 @@ function requestAllThumbnails() {
   }
 }
 
-async function discardBrokenDraft(userId) {
-  try {
-    await draftController.clearUser(userId);
-  } catch (error) {
-    console.error(error);
-  }
-}
-
 async function restoreDraftSession(draft, token) {
   const file = new File([draft.pdf.blob], draft.pdf.fileName, {
-    type: "application/pdf",
+    type: draft.pdf.blob.type || "application/pdf",
   });
-  const loaded = await loadPdfFromFile(file);
+  const loaded = await loadPdfFromFile(file, { restoring: true });
   if (token !== loadToken) {
     await destroyPdfDocument(loaded.document);
     return { ok: false, stale: true };
   }
 
+  // Empty live UI/stores only, then apply the saved draft. IndexedDB is not
+  // deleted and this is not the user "new PDF" path.
   clearSessionData();
   const pageCount = loaded.pageCount;
   const currentPage = Math.min(
@@ -3832,7 +3858,7 @@ async function restoreDraftSession(draft, token) {
 
   fileNameEl.textContent = draft.pdf.fileName;
   setState("viewing", "");
-  void viewerEl.offsetHeight;
+  await waitForViewerLayout();
   await showPage();
   if (token !== loadToken) {
     return { ok: false, stale: true };
@@ -3876,8 +3902,8 @@ async function tryRestoreDraft() {
     }
     const checked = validateDraft(withState, userId);
     if (!checked.ok) {
-      await discardBrokenDraft(userId);
       showIdle();
+      showPersistToast("作業の復元に失敗しました。保存データは残しています。");
       return;
     }
     const restored = await restoreDraftSession(checked.draft, token);
@@ -3885,10 +3911,10 @@ async function tryRestoreDraft() {
       return;
     }
     if (!restored.ok) {
-      await discardBrokenDraft(userId);
       clearSessionData();
       await replaceSession(null);
       showIdle();
+      showPersistToast("作業の復元に失敗しました。保存データは残しています。");
       return;
     }
     showPersistToast("前回の作業を復元しました");
@@ -3899,10 +3925,10 @@ async function tryRestoreDraft() {
     if (token !== loadToken) {
       return;
     }
-    await discardBrokenDraft(userId);
     clearSessionData();
     await replaceSession(null);
     showIdle();
+    showPersistToast("作業の復元に失敗しました。保存データは残しています。");
   } finally {
     restoringDraft = false;
   }
@@ -4104,6 +4130,9 @@ export async function initializeConteRush(userId) {
   try {
     showIdle();
     await tryRestoreDraft();
+    if (session?.document) {
+      await showPage();
+    }
   } catch (error) {
     console.error(error);
     if (statusEl) {

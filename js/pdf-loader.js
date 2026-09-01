@@ -12,15 +12,19 @@ function isPdfFile(file) {
   return file.name.toLowerCase().endsWith(".pdf");
 }
 
-export async function loadPdfFromFile(file) {
+export async function loadPdfFromFile(file, options = {}) {
   if (!file) {
     throw new Error("ファイルが選択されていません。");
   }
-  if (!isPdfFile(file)) {
+  if (!isPdfFile(file) && !options.restoring) {
     throw new Error("PDFファイルを選択してください。");
   }
 
-  const data = await file.arrayBuffer();
+  const buffer = await file.arrayBuffer();
+  if (buffer.byteLength < 1) {
+    throw new Error("PDFファイルを読み込めませんでした。");
+  }
+  const data = new Uint8Array(buffer.slice(0));
   const loadingTask = pdfjsLib.getDocument({ data });
   const document = await loadingTask.promise;
 

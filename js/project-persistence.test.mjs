@@ -114,12 +114,26 @@ test("validateDraft rejects another user's snapshot", () => {
   assert.match(result.message, /userId/);
 });
 
-test("validateDraft rejects missing PDF blob", () => {
+test("validateDraft requires a PDF blob so metadata cannot restore alone", () => {
   const draft = validDraft();
-  draft.pdf.blob = null;
+  draft.pdf = {
+    fileName: "board.pdf",
+    fileSize: 4,
+    pageCount: 3,
+  };
   const result = validateDraft(draft, "user-1");
   assert.equal(result.ok, false);
   assert.match(result.message, /PDF Blob/);
+});
+
+test("saved PDF blob can be rebuilt into a File for restore", () => {
+  const blob = pdfBlob();
+  const file = new File([blob], "board.pdf", {
+    type: blob.type || "application/pdf",
+  });
+  assert.equal(file.name, "board.pdf");
+  assert.equal(file.size, blob.size);
+  assert.equal(file.type, "application/pdf");
 });
 
 test("validateDraft rejects duplicate panel ids", () => {

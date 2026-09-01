@@ -11,7 +11,7 @@ import {
   cutNumberForPanel,
   resolveFrame,
   uniquePanelIds,
-} from "./rush-player.js?v=m8-1";
+} from "./rush-player.js?v=cut-order-1";
 
 export const MEDIABUNNY_VERSION = "1.51.0";
 export const KEYFRAME_INTERVAL_SECONDS = 2;

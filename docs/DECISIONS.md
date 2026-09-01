@@ -119,7 +119,7 @@
 - 判断: Cut は `cutNumber`、`durationFrames`、`panelIds` までとする。各 Panel の開始フレームは持たない
 - 理由: 「どのコマがこの CUT か」と「いつ出すか」を混ぜると、所属と配置が二重管理になる
 - 採用しなかった案: Cut に `placements` や `startFrame` を入れる。Panel に `cutId` を持たせる
-- 結果: 所属は Cut 側の `panelIds` のみ。並べ替え UI は置かない。M5 の再生順はこの登録順を使う。Timeline は `js/timeline-store.js` で持ち、Cut には `placements` を足さない
+- 結果: 所属は Cut 側の `panelIds` のみ。並べ替え UI は置かない。M5 の再生順は D27。Timeline は `js/timeline-store.js` で持ち、Cut には `placements` を足さない
 
 ## D16. 尺の正規値は `durationFrames`、換算は 24fps
 
@@ -211,11 +211,11 @@
 
 ## D27. 再生順は Cut の登録順とする
 
-- 状態: 採用（M5）
-- 判断: `cutStore.listAll()` の順。CUT 番号では並べない。並べ替え UI は置かない
-- 理由: M3 の所属順と同様、自動ソートは入力と表示をずらす
-- 採用しなかった案: `cutNumber` の数値順・文字列順
-- 結果: 将来の並べ替えは配列順を変える余地だけ残す
+- 状態: 改訂（Player / Rush / MP4 を `cutNumber` 順にする）
+- 判断: 再生順と Cut 一覧の表示順は `cutNumber` の数値昇順。Cut Store の配列は登録順のまま。`id` / 所属 / Timeline placement は並べ替えない
+- 理由: 制作上の CUT 番号が再生順の正本。Cut 2 を先に作っても Player は 1 → 2
+- 採用しなかった案: `listAll()` の登録順のまま再生する。文字列 sort（`"10"` が `"2"` より前になる）
+- 結果: `buildSnapshot` / `inspectCuts` で sort する。MP4 も同じ snapshot。数字だけの番号は `Number` 比較。数字以外は数字の後で `localeCompare numeric`。保存データは書き換えない
 
 ## D28. 再生クロックは経過実時間から frame を求める
 
@@ -1135,7 +1135,7 @@
 - 判断: PDF Blob / Panel / Cut / Timeline / Motion / 手描き・Upload 画像を IndexedDB に自動保存し、Gate 通過後の起動で同じ user id のドラフトを自動復元する。localStorage / sessionStorage は使わない。確認ダイアログは出さない
 - 理由: タブ discard や手動 reload でメモリ上の制作状態が消える。PDF を含むため容量の小さい Web Storage は不適。サーバーへ制作データを送る機能ではない
 - 採用しなかった案: クラウドプロジェクト保存。複数プロジェクト。Undo 履歴の保存。タブ間ロック
-- 結果: 編集は debounce（750ms）で state を書く。PDF Blob は読み込み成功時だけ置き換える。`pagehide` / `visibilitychange`（hidden）では未保存があれば flush するがメモリは消さない。明示ログアウトと別 PDF 読み込み成功でドラフトを置き換えるか削除する。Auth 異常ではドラフトを残す（D145）。壊れた schema は破棄して空画面。保存失敗は作業を止めず短い通知にする。同一ユーザーの複数タブは last-write-wins
+- 結果: 編集は debounce（750ms）で state を書く。PDF Blob は読み込み成功時だけ置き換える。`pagehide` / `visibilitychange`（hidden）では未保存があれば flush するがメモリは消さない。明示ログアウトと **別** PDF 読み込み成功でドラフトを置き換える。同じ `fileName` + `fileSize` の再選択は PDF 再接続とし、Panel / Cut は消さない。Auth 異常ではドラフトを残す（D145）。復元失敗でも IndexedDB は消さず空画面にする。PDF 描画は app-shell 表示後に行う（D146）。保存失敗は作業を止めず短い通知にする。同一ユーザーの複数タブは last-write-wins
 
 ## D143. localhost の Gate bypass は hostname と query の両方を必須にする
 
@@ -1160,6 +1160,14 @@
 - 理由: 一時的な Auth / 通信失敗で制作物まで失わない。支払い復旧や再ログインで復元できるようにする
 - 採用しなかった案: session 消失のたびにドラフト削除。利用不可のままアプリを操作させる
 - 結果: 利用不可とドラフト削除を分ける。fail-closed の表示は維持する
+
+## D146. reload 復元は app-shell を出してから PDF を描画する
+
+- 状態: 採用
+- 判断: `allowed` にして本体レイアウトを取ってから IndexedDB の PDF Blob を `loadPdfFromFile(file, { restoring: true })` する。通常のファイル選択経路とは分ける
+- 理由: Gate 表示中は `.app-shell` が `display: none` のため、先に描画すると PDF.js が約 1px の canvas を塗り、Panel だけ残って PDF が見えない状態になる
+- 採用しなかった案: Blob 未保存とみなして PDF を捨てる。復元失敗で IndexedDB を消す
+- 結果: 復元用 load は `clearSessionData` のあと保存済み draft を stores へ戻すだけ。新しいプロジェクトにはしない。描画失敗時はメモリを空にし、保存データは残す
 
 ## 未決
 

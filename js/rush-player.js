@@ -1,5 +1,8 @@
 import { FRAMES_PER_SECOND } from "./duration.js";
+import { compareCutNumbers, orderCutsForPlayback } from "./cut-order.js";
 import { isTimelineComplete } from "./timeline-store.js?v=m8-1";
+
+export { compareCutNumbers, orderCutsForPlayback };
 
 function hasPlacementId(id) {
   return typeof id === "string" && id.length > 0;
@@ -46,7 +49,8 @@ export function describeIncomplete(cut, timeline) {
 }
 
 export function inspectCuts(cuts, getTimelineByCutId) {
-  if (!cuts || cuts.length === 0) {
+  const ordered = orderCutsForPlayback(cuts);
+  if (ordered.length === 0) {
     return {
       ok: false,
       issues: [{ cutNumber: null, reason: "Cutがありません。" }],
@@ -54,7 +58,7 @@ export function inspectCuts(cuts, getTimelineByCutId) {
   }
 
   const issues = [];
-  for (const cut of cuts) {
+  for (const cut of ordered) {
     const timeline = getTimelineByCutId(cut.id);
     if (isTimelineComplete(cut, timeline)) {
       continue;
@@ -76,7 +80,8 @@ export function buildSnapshot(cuts, getTimelineByCutId) {
   let globalStart = 0;
   const segments = [];
 
-  for (const cut of cuts) {
+  const ordered = orderCutsForPlayback(cuts);
+  for (const cut of ordered) {
     const timeline = getTimelineByCutId(cut.id);
     const durationFrames = cut.durationFrames;
     segments.push({

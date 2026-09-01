@@ -19,7 +19,7 @@ import {
   isSilentAuthRecheck,
 } from "./gate-policy.js?v=draft-2";
 
-const APP_MODULE_URL = new URL("./app.js?v=draft-1", import.meta.url).href;
+const APP_MODULE_URL = new URL("./app.js?v=draft-2", import.meta.url).href;
 const AUTH_MODULE_URL = new URL("./auth-client.js?v=m11-4", import.meta.url).href;
 
 const gateEl = document.querySelector("#auth-gate");
@@ -214,6 +214,18 @@ async function loadAppModule() {
   return appModule;
 }
 
+function waitForAppShellLayout() {
+  const shell = document.querySelector(".app-shell");
+  if (shell) {
+    void shell.offsetHeight;
+  }
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(resolve);
+    });
+  });
+}
+
 async function initializeAppIfNeeded(userId) {
   if (appInitialized && initializedUserId === userId) {
     return;
@@ -336,6 +348,9 @@ async function checkAccess(session, { silent = false } = {}) {
   checkoutConfirming = false;
   clearCheckoutAutoRecheck();
 
+  setAuthState("allowed");
+  await waitForAppShellLayout();
+
   try {
     await initializeAppIfNeeded(userId);
   } catch (error) {
@@ -354,7 +369,6 @@ async function checkAccess(session, { silent = false } = {}) {
     return;
   }
 
-  setAuthState("allowed");
   setBusy(false);
   settleCheckoutSuccessQuery();
 }
@@ -429,9 +443,10 @@ async function enterDevBypass() {
   currentSubscription = null;
   deniedForcePortal = false;
   clearCheckoutAutoRecheck();
-  await initializeAppIfNeeded(DEV_BYPASS_USER_ID);
   renderAccount(null, "internal");
   setAuthState("allowed");
+  await waitForAppShellLayout();
+  await initializeAppIfNeeded(DEV_BYPASS_USER_ID);
   setBusy(false);
 }
 

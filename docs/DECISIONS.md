@@ -1188,9 +1188,9 @@
 ## D149. Save は checkpoint、Save As は切替、Duplicate は一覧コピー
 
 - 状態: 採用（P3。`.conterush` はまだ無い）
-- 判断: 明示 Save は開いている project を flush し `lastExplicitSaveAt` を付ける。Save As は現在の PDF/state/media を新しい `projectId` へコピーしてそこへ切替、元 project は残す。Duplicate は一覧の対象をコピーし、開いている project は変えない。Blob は `slice` して独立させる。大きなコピーは確認する。失敗したコピー先は消す
+- 判断: 明示 Save は開いている project を flush し `lastExplicitSaveAt` を付ける。Save As は現在の PDF/state/media を新しい `projectId` へコピーしてそこへ切替、元 project は残す。コピー先は切替前に検証し、途中失敗ではコピー先を消して元の `lastActiveProjectId` を維持する。Duplicate は一覧の対象をコピーし、開いている project は変えない。Save As のコピーは `lastExplicitSaveAt = now`。Duplicate のコピーは `lastExplicitSaveAt = null`。Blob は `slice` して独立させる。大きなコピーは確認する
 - 理由: autosave だけでは「今の状態を名前付きで残す」「元を残したまま分岐する」ができない
-- 採用しなかった案: 正式 save と recovery draft の二重 Blob。Save As と Duplicate を同じ切替にする
+- 採用しなかった案: 正式 save と recovery draft の二重 Blob。Save As と Duplicate を同じ切替にする。Duplicate にも明示 Save 時刻を付ける
 - 結果: 容量は project ごとに増える。クラウド保存ではない。ファイル書き出しは P4
 
 ## 未決

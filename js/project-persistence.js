@@ -17,6 +17,7 @@ const PROJECTS_STORE = "projects";
 let dbPromise = null;
 let testDb = null;
 let opChain = Promise.resolve();
+let copyProjectTestHook = null;
 
 function withLock(fn) {
   const run = opChain.then(fn, fn);
@@ -127,6 +128,17 @@ function transactionDone(tx) {
   });
 }
 
+export function setCopyProjectTestHook(hook) {
+  copyProjectTestHook = typeof hook === "function" ? hook : null;
+}
+
+async function runCopyProjectTestHook(stage, context) {
+  if (typeof copyProjectTestHook !== "function") {
+    return;
+  }
+  await copyProjectTestHook(stage, context);
+}
+
 export function setDraftDbForTests(db) {
   testDb = db ?? null;
   dbPromise = db ? Promise.resolve(db) : null;
@@ -135,6 +147,7 @@ export function setDraftDbForTests(db) {
 export function resetDraftDbForTests() {
   testDb = null;
   dbPromise = null;
+  copyProjectTestHook = null;
 }
 
 export function openDraftDb() {
@@ -875,6 +888,19 @@ export async function writeProjectSummary(userId, projectId, summary) {
   await transactionDone(tx);
 }
 
+async function readStoredSummary(userId, projectId) {
+  if (!isNonEmptyString(userId) || !isNonEmptyString(projectId)) {
+    return null;
+  }
+  const db = await openDraftDb();
+  const tx = db.transaction(PROJECTS_STORE, "readonly");
+  const summary = await requestToPromise(
+    tx.objectStore(PROJECTS_STORE).get(projectRecordKey(userId, projectId)),
+  );
+  await transactionDone(tx);
+  return summary ?? null;
+}
+
 async function assertWritableSchema(userId, projectId) {
   const db = await openDraftDb();
   const key = projectRecordKey(userId, projectId);
@@ -1006,6 +1032,14 @@ export async function markExplicitSave(userId, projectId, savedAt = new Date().t
   });
 }
 
+async function deleteIncompleteCopy(userId, destId, sourceProjectId) {
+  const meta = await readUserMeta(userId);
+  await deleteProject(userId, destId);
+  if (meta?.lastActiveProjectId === destId) {
+    await writeUserMeta(userId, { lastActiveProjectId: sourceProjectId });
+  }
+}
+
 export async function copyProject(
   userId,
   sourceProjectId,
@@ -1054,8 +1088,11 @@ export async function copyProject(
       if (pdf) {
         await writeProjectPdf(userId, destId, pdf);
       }
+      await runCopyProjectTestHook("pdf", { userId, destId, sourceProjectId });
       await writeProjectState(userId, destId, destState);
+      await runCopyProjectTestHook("state", { userId, destId, sourceProjectId });
       await syncProjectMedia(userId, destId, mediaEntries, new Map());
+      await runCopyProjectTestHook("media", { userId, destId, sourceProjectId });
       const summary = buildProjectSummary({
         userId,
         projectId: destId,
@@ -1064,12 +1101,18 @@ export async function copyProject(
         media: mediaEntries.map((entry) => ({ blob: entry.media.blob })),
         existing: {
           createdAt: now,
-          lastExplicitSaveAt: now,
+          lastExplicitSaveAt: switchToCopy ? now : null,
         },
         projectName: name,
         now,
       });
       await writeProjectSummary(userId, destId, summary);
+      await runCopyProjectTestHook("summary", { userId, destId, sourceProjectId });
+      const checked = await inspectProjectForOpen(userId, destId);
+      if (!checked.ok) {
+        await deleteIncompleteCopy(userId, destId, sourceProjectId);
+        return { ...checked, copied: false, projectId: destId, sourceProjectId };
+      }
       if (switchToCopy) {
         await writeUserMeta(userId, { lastActiveProjectId: destId });
       }
@@ -1083,7 +1126,7 @@ export async function copyProject(
       };
     } catch (error) {
       try {
-        await deleteProject(userId, destId);
+        await deleteIncompleteCopy(userId, destId, sourceProjectId);
       } catch (cleanupError) {
         console.error(cleanupError);
       }
@@ -1454,17 +1497,18 @@ async function persistProjectSnapshot({
   const mediaForEstimate = mediaEntries.map((entry) => ({
     blob: entry.media?.blob,
   }));
+  const existing = existingSummary ?? (await readStoredSummary(userId, projectId));
   const summary = buildProjectSummary({
     userId,
     projectId,
     pdf: pdf ?? {
-      fileName: existingSummary?.fileName,
-      fileSize: existingSummary?.fileSize,
-      pageCount: existingSummary?.pageCount,
+      fileName: existing?.fileName,
+      fileSize: existing?.fileSize,
+      pageCount: existing?.pageCount,
     },
     state,
     media: mediaForEstimate,
-    existing: existingSummary,
+    existing,
   });
   await writeProjectSummary(userId, projectId, summary);
   await writeUserMeta(userId, { lastActiveProjectId: projectId });

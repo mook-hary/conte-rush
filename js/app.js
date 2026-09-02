@@ -102,7 +102,7 @@ import {
   serializeProjectState,
   shouldWarnLargeProjectCopy,
   validateDraft,
-} from "./project-persistence.js?v=draft-7";
+} from "./project-persistence.js?v=draft-8";
 
 const pdfInput = document.querySelector("#pdf-input");
 const fileNameEl = document.querySelector("#file-name");

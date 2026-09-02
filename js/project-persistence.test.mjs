@@ -39,6 +39,7 @@ import {
   repairActiveProject,
   resetDraftDbForTests,
   serializeProjectState,
+  setCopyProjectTestHook,
   setDraftDbForTests,
   shouldWarnLargeProjectCopy,
   syncProjectMedia,
@@ -597,6 +598,50 @@ async function stampUpdatedAt(userId, projectId, updatedAt) {
   await writeProjectSummary(userId, projectId, {
     ...project.summary,
     updatedAt,
+  });
+}
+
+function leftoverDestRecords(db, userId, destId) {
+  const key = projectRecordKey(userId, destId);
+  return {
+    pdf: db.maps.pdf.has(key),
+    state: db.maps.state.has(key),
+    projects: db.maps.projects.has(key),
+    media: [...db.maps.media.keys()].filter((mediaKey) =>
+      isProjectMediaKeyFor(mediaKey, userId, destId),
+    ),
+  };
+}
+
+async function blobBytes(blob) {
+  return Buffer.from(await blob.arrayBuffer());
+}
+
+function drawingDraft(blob, overrides = {}) {
+  return validDraft({
+    media: [
+      {
+        panelId: "draw-1",
+        kind: "drawing",
+        blob,
+        mimeType: "image/png",
+        width: 1280,
+        height: 720,
+      },
+    ],
+    panels: [
+      {
+        id: "panel-1",
+        pageNumber: 1,
+        x: 0.1,
+        y: 0.1,
+        width: 0.4,
+        height: 0.4,
+        source: PANEL_SOURCE_MANUAL,
+      },
+      { id: "draw-1", source: PANEL_SOURCE_DRAWING },
+    ],
+    ...overrides,
   });
 }
 
@@ -1615,6 +1660,8 @@ test("P3-2: Save As copies the project and switches lastActive", async () => {
     assert.equal(dest.media[0].panelId, "draw-1");
     assert.notEqual(dest.pdf.blob, original.pdf.blob);
     assert.notEqual(dest.media[0].blob, original.media[0].blob);
+    assert.equal(dest.summary.lastExplicitSaveAt, dest.summary.updatedAt);
+    assert.equal(original.summary.lastExplicitSaveAt, null);
     assert.equal((await listUserProjects("user-1")).length, 2);
   } finally {
     resetDraftDbForTests();
@@ -1645,6 +1692,7 @@ test("P3-3: Duplicate copies without switching the active project", async () => 
       listed.some((item) => item.projectName === "OP のコピー"),
       true,
     );
+    assert.equal((await readProject("user-1", copied.projectId)).summary.lastExplicitSaveAt, null);
     assert.equal((await readProject("user-1", "project-b")).pdf.fileName, "b.pdf");
   } finally {
     resetDraftDbForTests();
@@ -1779,5 +1827,239 @@ test("P3-8: app Save As switches and Duplicate does not", async () => {
   );
   assert.match(dupBody, /switchToCopy: false/);
   assert.equal(dupBody.includes("currentProjectId = copied.projectId"), false);
+});
+
+test("P3-9: Save As media-copy failure rolls back to A", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    const blob = imageBlob();
+    await writeCompleteProject("user-1", "project-a", drawingDraft(blob));
+    await markExplicitSave("user-1", "project-a", "2026-09-02T10:00:00.000Z");
+    await writeUserMeta("user-1", { lastActiveProjectId: "project-a" });
+    const before = await readProject("user-1", "project-a");
+    let destId = null;
+    setCopyProjectTestHook(async (stage, context) => {
+      if (stage === "media") {
+        destId = context.destId;
+        throw new Error("injected media copy failure");
+      }
+    });
+    await assert.rejects(
+      () =>
+        copyProject("user-1", "project-a", {
+          projectName: "Broken Save As",
+          switchToCopy: true,
+        }),
+      /injected media copy failure/,
+    );
+    assert.equal((await readUserMeta("user-1")).lastActiveProjectId, "project-a");
+    const after = await readProject("user-1", "project-a");
+    assert.equal(after.summary.projectName, before.summary.projectName);
+    assert.equal(after.summary.lastExplicitSaveAt, "2026-09-02T10:00:00.000Z");
+    assert.equal(after.pdf.fileName, "board.pdf");
+    assert.equal(after.media[0].panelId, "draw-1");
+    assert.equal((await listUserProjects("user-1")).length, 1);
+    const leftover = leftoverDestRecords(db, "user-1", destId);
+    assert.equal(leftover.pdf, false);
+    assert.equal(leftover.state, false);
+    assert.equal(leftover.projects, false);
+    assert.deepEqual(leftover.media, []);
+  } finally {
+    resetDraftDbForTests();
+  }
+});
+
+test("P3-10: Duplicate media-copy failure leaves A and the current project intact", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    await writeCompleteProject("user-1", "project-a", drawingDraft(imageBlob()));
+    await writeCompleteProject(
+      "user-1",
+      "project-b",
+      validDraft({ pdf: { fileName: "b.pdf", fileSize: 8, pageCount: 2, blob: pdfBlob() } }),
+    );
+    await writeUserMeta("user-1", { lastActiveProjectId: "project-b" });
+    let destId = null;
+    setCopyProjectTestHook(async (stage, context) => {
+      if (stage === "media") {
+        destId = context.destId;
+        throw new Error("injected duplicate failure");
+      }
+    });
+    await assert.rejects(
+      () =>
+        copyProject("user-1", "project-a", {
+          projectName: nextCopiedProjectName("OP"),
+          switchToCopy: false,
+        }),
+      /injected duplicate failure/,
+    );
+    assert.equal((await readUserMeta("user-1")).lastActiveProjectId, "project-b");
+    assert.equal((await readProject("user-1", "project-a")).pdf.fileName, "board.pdf");
+    assert.equal((await readProject("user-1", "project-b")).pdf.fileName, "b.pdf");
+    const listed = await listUserProjects("user-1");
+    assert.equal(listed.length, 2);
+    assert.equal(listed.some((item) => item.projectName.includes("コピー")), false);
+    const leftover = leftoverDestRecords(db, "user-1", destId);
+    assert.equal(leftover.pdf, false);
+    assert.equal(leftover.state, false);
+    assert.equal(leftover.projects, false);
+    assert.deepEqual(leftover.media, []);
+  } finally {
+    resetDraftDbForTests();
+  }
+});
+
+test("P3-11: deleting one copy never makes the other PDF or media unreadable", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    const pdf = {
+      blob: new Blob([new Uint8Array([37, 80, 68, 70, 9, 9, 9])], { type: "application/pdf" }),
+      fileName: "unique-a.pdf",
+      fileSize: 7,
+      pageCount: 3,
+    };
+    const mediaBlob = new Blob([new Uint8Array([11, 22, 33, 44, 55])], { type: "image/png" });
+    await writeCompleteProject(
+      "user-1",
+      "project-a",
+      drawingDraft(mediaBlob, { pdf }),
+    );
+    const originalPdf = await blobBytes((await readProject("user-1", "project-a")).pdf.blob);
+    const originalMedia = await blobBytes((await readProject("user-1", "project-a")).media[0].blob);
+
+    const copyB = await copyProject("user-1", "project-a", {
+      projectName: "Copy B",
+      switchToCopy: false,
+    });
+    await deleteProjectAndRepair("user-1", copyB.projectId);
+    const afterDeleteB = await readProject("user-1", "project-a");
+    assert.deepEqual(await blobBytes(afterDeleteB.pdf.blob), originalPdf);
+    assert.deepEqual(await blobBytes(afterDeleteB.media[0].blob), originalMedia);
+    const storesA = {
+      panelStore: createPanelStore(),
+      panelMediaStore: createPanelMediaStore(),
+      cutStore: createCutStore(),
+      timelineStore: createTimelineStore(),
+      motionStore: createMotionStore(),
+    };
+    const checkedA = validateDraft(
+      { pdf: afterDeleteB.pdf, state: afterDeleteB.state, media: afterDeleteB.media },
+      "user-1",
+      "project-a",
+    );
+    assert.equal(checkedA.ok, true);
+    applyDraftToStores(checkedA.draft, storesA);
+    assert.equal(storesA.panelMediaStore.get("draw-1")?.width, 1280);
+
+    const copyC = await copyProject("user-1", "project-a", {
+      projectName: "Copy C",
+      switchToCopy: false,
+    });
+    const copyPdf = await blobBytes((await readProject("user-1", copyC.projectId)).pdf.blob);
+    const copyMedia = await blobBytes((await readProject("user-1", copyC.projectId)).media[0].blob);
+    await deleteProjectAndRepair("user-1", "project-a");
+    const afterDeleteA = await readProject("user-1", copyC.projectId);
+    assert.equal(afterDeleteA.pdf.fileName, "unique-a.pdf");
+    assert.deepEqual(await blobBytes(afterDeleteA.pdf.blob), copyPdf);
+    assert.deepEqual(await blobBytes(afterDeleteA.media[0].blob), copyMedia);
+    const storesC = {
+      panelStore: createPanelStore(),
+      panelMediaStore: createPanelMediaStore(),
+      cutStore: createCutStore(),
+      timelineStore: createTimelineStore(),
+      motionStore: createMotionStore(),
+    };
+    const checkedC = validateDraft(
+      { pdf: afterDeleteA.pdf, state: afterDeleteA.state, media: afterDeleteA.media },
+      "user-1",
+      copyC.projectId,
+    );
+    assert.equal(checkedC.ok, true);
+    applyDraftToStores(checkedC.draft, storesC);
+    assert.equal(storesC.panelMediaStore.get("draw-1")?.blob?.size, 5);
+    assert.equal((await listUserProjects("user-1")).length, 1);
+  } finally {
+    resetDraftDbForTests();
+  }
+});
+
+test("P3-12: lastExplicitSaveAt changes only for explicit Save and Save As", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    await writeCompleteProject("user-1", "project-a", validDraft());
+    const createdAt = (await readProject("user-1", "project-a")).summary.createdAt;
+    await markExplicitSave("user-1", "project-a", "2026-09-02T11:00:00.000Z");
+    const controller = createDraftController({
+      getUserId: () => "user-1",
+      getProjectId: () => "project-a",
+      hasSession: () => true,
+      collectState: () => validDraft().state,
+      collectMedia: () => [],
+    });
+    controller.schedule();
+    await controller.flush();
+    const afterAutosave = await readProject("user-1", "project-a");
+    assert.equal(afterAutosave.summary.lastExplicitSaveAt, "2026-09-02T11:00:00.000Z");
+    assert.equal(afterAutosave.summary.createdAt, createdAt);
+
+    await renameProject("user-1", "project-a", "Renamed A");
+    assert.equal(
+      (await readProject("user-1", "project-a")).summary.lastExplicitSaveAt,
+      "2026-09-02T11:00:00.000Z",
+    );
+
+    await writeCompleteProject(
+      "user-1",
+      "project-b",
+      validDraft({ pdf: { fileName: "b.pdf", fileSize: 8, pageCount: 2, blob: pdfBlob() } }),
+    );
+    await writeUserMeta("user-1", { lastActiveProjectId: "project-a" });
+    const opened = await openProjectSafely({
+      userId: "user-1",
+      targetProjectId: "project-b",
+      currentProjectId: "project-a",
+      prepareProjectSwitch: async () => {},
+      applyDraft: async () => ({ ok: true }),
+    });
+    assert.equal(opened.ok, true);
+    assert.equal(
+      (await readProject("user-1", "project-a")).summary.lastExplicitSaveAt,
+      "2026-09-02T11:00:00.000Z",
+    );
+    assert.equal((await readProject("user-1", "project-b")).summary.lastExplicitSaveAt, null);
+
+    const duplicated = await copyProject("user-1", "project-a", {
+      projectName: nextCopiedProjectName("Renamed A"),
+      switchToCopy: false,
+    });
+    assert.equal(
+      (await readProject("user-1", "project-a")).summary.lastExplicitSaveAt,
+      "2026-09-02T11:00:00.000Z",
+    );
+    assert.equal(
+      (await readProject("user-1", duplicated.projectId)).summary.lastExplicitSaveAt,
+      null,
+    );
+
+    await writeUserMeta("user-1", { lastActiveProjectId: "project-a" });
+    const savedAs = await copyProject("user-1", "project-a", {
+      projectName: "Saved As B",
+      switchToCopy: true,
+    });
+    assert.equal(
+      (await readProject("user-1", "project-a")).summary.lastExplicitSaveAt,
+      "2026-09-02T11:00:00.000Z",
+    );
+    const savedAsSummary = (await readProject("user-1", savedAs.projectId)).summary;
+    assert.equal(savedAsSummary.lastExplicitSaveAt, savedAsSummary.updatedAt);
+    assert.equal((await readUserMeta("user-1")).lastActiveProjectId, savedAs.projectId);
+  } finally {
+    resetDraftDbForTests();
+  }
 });
 

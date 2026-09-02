@@ -51,7 +51,7 @@ IndexedDB:
 
 `schemaVersion` は 2（state / project 包み）。Cut / Panel / Timeline / Motion の内部形は 1 のまま。未対応バージョンや PDF 復元失敗では IndexedDB を消さず、メモリだけ空画面にする。`lastActiveProjectId` が欠ける / 存在しない id を指すときは、その user の `updatedAt` 最新 project へ repair する。project が 0 件なら `null`。Rename は `projects` メタの `projectName` だけを変える。Delete は当該 `projectId` の pdf / state / media / projects だけを消す。
 
-P2 API: `listUserProjects` / `inspectProjectForOpen` / `openProjectSafely` / `renameProject` / `deleteProjectAndRepair` / `repairActiveProject` / `prepareProjectSwitch` / `createProjectOpGate`。P3 API: `markExplicitSave` / `copyProject`。明示 Save は flush + `lastExplicitSaveAt`。Save As は現在 project をコピーして切替。Duplicate はコピーして現在の編集対象は変えない。容量が大きいコピーは確認する。`.conterush` はまだ無い。
+P2 API: `listUserProjects` / `inspectProjectForOpen` / `openProjectSafely` / `renameProject` / `deleteProjectAndRepair` / `repairActiveProject` / `prepareProjectSwitch` / `createProjectOpGate`。P3 API: `markExplicitSave` / `copyProject`。明示 Save は flush + `lastExplicitSaveAt`。Save As は現在 project をコピーして切替（コピー先の `lastExplicitSaveAt = now`）。Duplicate はコピーして現在の編集対象は変えない（コピー先の `lastExplicitSaveAt` は null）。コピー途中の失敗ではコピー先を消し、元 project を維持する。容量が大きいコピーは確認する。`.conterush` はまだ無い。
 
 ### Panel（M1）
 

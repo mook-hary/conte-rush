@@ -479,7 +479,7 @@ Live E2E:
 
 P2（実装済み）: Project 一覧 / Open / Rename / Delete / New。切替前に `prepareProjectSwitch` で flush する。Open 失敗では現在 project を失わない。保存は端末ごと。
 
-P3（実装済み）: Save / Save As / Duplicate。Save は flush + `lastExplicitSaveAt`。Save As はコピーして切替。Duplicate はコピーして現在の編集対象は残す。`.conterush` と 1000 Cut 向け entity 分割は未着手。
+P3（実装済み）: Save / Save As / Duplicate。Save は flush + `lastExplicitSaveAt`。Save As はコピーして切替（コピー先に明示 Save 時刻を付ける）。Duplicate はコピーして現在の編集対象は残す（コピー先の明示 Save 時刻は付けない）。途中失敗のコピー先は消す。`.conterush` と 1000 Cut 向け entity 分割は未着手。
 
 ### 正式有料公開
 

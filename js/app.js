@@ -86,12 +86,17 @@ import {
   applyDraftToStores,
   createDraftController,
   createProjectId,
+  createProjectOpGate,
+  deleteProjectAndRepair,
   DRAFT_SCHEMA_VERSION,
   isFuturePersistenceSchema,
+  listUserProjects,
+  openProjectSafely,
   readUserDraft,
+  renameProject,
   serializeProjectState,
   validateDraft,
-} from "./project-persistence.js?v=draft-5";
+} from "./project-persistence.js?v=draft-6";
 
 const pdfInput = document.querySelector("#pdf-input");
 const fileNameEl = document.querySelector("#file-name");
@@ -173,6 +178,13 @@ const uploadPanelButton = document.querySelector("#upload-panel");
 const panelPlaceMessageEl = document.querySelector("#panel-place-message");
 const undoButton = document.querySelector("#undo");
 const redoButton = document.querySelector("#redo");
+const projectsButton = document.querySelector("#projects-button");
+const projectsOverlay = document.querySelector("#projects-overlay");
+const projectsListEl = document.querySelector("#projects-list");
+const projectsStatusEl = document.querySelector("#projects-status");
+const projectsNewButton = document.querySelector("#projects-new");
+const projectsCloseButton = document.querySelector("#projects-close");
+const projectsNewPdfInput = document.querySelector("#projects-new-pdf");
 
 let session = null;
 let loadToken = 0;
@@ -211,6 +223,8 @@ let restoringDraft = false;
 let persistToastTimer = 0;
 let historyAutosaveBound = false;
 let persistListenersBound = false;
+const projectOpGate = createProjectOpGate();
+let projectsBusy = false;
 
 const queuedThumbnails = [];
 const queuedThumbnailIds = new Set();
@@ -3546,7 +3560,336 @@ async function replaceSession(nextSession) {
   }
 }
 
-async function handleFileChange(event) {
+function formatProjectUpdatedAt(value) {
+  if (!value) {
+    return "";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return String(value);
+  }
+  return date.toLocaleString("ja-JP");
+}
+
+function setProjectsStatus(message) {
+  if (projectsStatusEl) {
+    projectsStatusEl.textContent = message || "";
+  }
+}
+
+function setProjectsBusy(busy) {
+  projectsBusy = busy;
+  if (projectsOverlay) {
+    projectsOverlay.setAttribute("aria-busy", busy ? "true" : "false");
+  }
+  if (projectsButton) {
+    projectsButton.disabled = busy;
+  }
+  if (projectsNewButton) {
+    projectsNewButton.disabled = busy;
+  }
+  if (projectsCloseButton) {
+    projectsCloseButton.disabled = busy;
+  }
+  projectsListEl?.querySelectorAll("button").forEach((button) => {
+    button.disabled = busy;
+  });
+}
+
+function closeProjectsOverlay() {
+  if (projectsOverlay) {
+    projectsOverlay.hidden = true;
+  }
+}
+
+function escapeProjectText(value) {
+  return String(value ?? "");
+}
+
+async function refreshProjectsList() {
+  if (!projectsListEl) {
+    return;
+  }
+  projectsListEl.replaceChildren();
+  if (!persistenceUserId) {
+    setProjectsStatus("ログイン中のユーザーのプロジェクトを表示します。");
+    return;
+  }
+  const items = await listUserProjects(persistenceUserId);
+  if (items.length === 0) {
+    const empty = document.createElement("li");
+    empty.className = "projects-item";
+    empty.textContent = "プロジェクトはまだありません。";
+    projectsListEl.append(empty);
+    setProjectsStatus("");
+    return;
+  }
+  setProjectsStatus("");
+  for (const item of items) {
+    const li = document.createElement("li");
+    li.className = "projects-item";
+    if (item.projectId === currentProjectId) {
+      li.classList.add("is-current");
+    }
+    li.dataset.projectId = item.projectId;
+
+    const main = document.createElement("div");
+    main.className = "projects-item-main";
+
+    const name = document.createElement("p");
+    name.className = "projects-item-name";
+    name.append(escapeProjectText(item.projectName || "Untitled"));
+    if (item.projectId === currentProjectId) {
+      const badge = document.createElement("span");
+      badge.className = "projects-item-current";
+      badge.textContent = "開いています";
+      name.append(badge);
+    }
+
+    const meta = document.createElement("p");
+    meta.className = "projects-item-meta";
+    const episode = escapeProjectText(item.episode || "—");
+    const title = escapeProjectText(item.title || "—");
+    meta.textContent = `話数 ${episode} / タイトル ${title}`;
+
+    const file = document.createElement("p");
+    file.className = "projects-item-file";
+    file.textContent = `PDF ${escapeProjectText(item.fileName || "—")}`;
+
+    const counts = document.createElement("p");
+    counts.className = "projects-item-counts";
+    counts.textContent = `Cut ${item.cutCount ?? 0} / Panel ${item.panelCount ?? 0}`;
+
+    const updated = document.createElement("p");
+    updated.className = "projects-item-updated";
+    updated.textContent = `更新 ${formatProjectUpdatedAt(item.updatedAt)}`;
+
+    main.append(name, meta, file, counts, updated);
+
+    const actions = document.createElement("div");
+    actions.className = "projects-item-actions";
+    const openButton = document.createElement("button");
+    openButton.type = "button";
+    openButton.textContent = "Open";
+    openButton.disabled = projectsBusy;
+    openButton.addEventListener("click", () => {
+      void handleOpenProject(item.projectId);
+    });
+    const renameButton = document.createElement("button");
+    renameButton.type = "button";
+    renameButton.textContent = "Rename";
+    renameButton.disabled = projectsBusy;
+    renameButton.addEventListener("click", () => {
+      void handleRenameProject(item.projectId, item.projectName);
+    });
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "projects-delete";
+    deleteButton.textContent = "Delete";
+    deleteButton.disabled = projectsBusy;
+    deleteButton.addEventListener("click", () => {
+      void handleDeleteProject(item.projectId, item.projectName);
+    });
+    actions.append(openButton, renameButton, deleteButton);
+    li.append(main, actions);
+    projectsListEl.append(li);
+  }
+}
+
+async function openProjectsOverlay() {
+  if (!appActive) {
+    return;
+  }
+  if (projectsOverlay) {
+    projectsOverlay.hidden = false;
+  }
+  setProjectsStatus("");
+  await refreshProjectsList();
+}
+
+async function applyOpenedDraft(draft, project) {
+  const token = ++loadToken;
+  currentProjectId = project.projectId;
+  const restored = await restoreDraftSession(draft, token);
+  if (token !== loadToken || restored.stale || !restored.ok) {
+    return { ok: false, message: "プロジェクトを表示できませんでした。" };
+  }
+  draftController.rememberSummary(project.summary ?? null);
+  scheduleDraftSave();
+  return { ok: true };
+}
+
+async function handleOpenProject(projectId) {
+  const result = await projectOpGate.run(async () => {
+    setProjectsBusy(true);
+    restoringDraft = true;
+    try {
+      if (!persistenceUserId) {
+        return { ok: false, message: "ログインしてください。" };
+      }
+      if (exportRunning) {
+        return { ok: false, message: "書き出し中はプロジェクトを切り替えできません。" };
+      }
+      const opened = await openProjectSafely({
+        userId: persistenceUserId,
+        targetProjectId: projectId,
+        currentProjectId,
+        prepareProjectSwitch: () => draftController.prepareProjectSwitch(),
+        applyDraft: applyOpenedDraft,
+      });
+      if (opened.ok) {
+        showPersistToast(
+          opened.switched ? "プロジェクトを開きました" : "このプロジェクトはすでに開いています",
+        );
+        closeProjectsOverlay();
+      } else {
+        showPersistToast(opened.message || "プロジェクトを開けませんでした。");
+      }
+      return opened;
+    } finally {
+      restoringDraft = false;
+      setProjectsBusy(false);
+      await refreshProjectsList();
+    }
+  });
+  if (result?.busy) {
+    showPersistToast(result.message);
+  }
+}
+
+async function handleRenameProject(projectId, currentName) {
+  const result = await projectOpGate.run(async () => {
+    setProjectsBusy(true);
+    try {
+      if (!persistenceUserId) {
+        return { ok: false, message: "ログインしてください。" };
+      }
+      const nextName = window.prompt("プロジェクト名", currentName || "");
+      if (nextName === null) {
+        return { ok: true, cancelled: true };
+      }
+      const renamed = await renameProject(persistenceUserId, projectId, nextName);
+      if (!renamed.ok) {
+        showPersistToast(renamed.message || "名前を変更できませんでした。");
+        return renamed;
+      }
+      if (projectId === currentProjectId && renamed.summary) {
+        draftController.rememberSummary(renamed.summary);
+      }
+      return renamed;
+    } finally {
+      setProjectsBusy(false);
+      await refreshProjectsList();
+    }
+  });
+  if (result?.busy) {
+    showPersistToast(result.message);
+  }
+}
+
+async function handleDeleteProject(projectId, projectName) {
+  const label = String(projectName || "").trim() || "Untitled";
+  const confirmed = window.confirm(
+    `「${label}」を削除します。このプロジェクトを削除します。この操作は元に戻せません。`,
+  );
+  if (!confirmed) {
+    return;
+  }
+  const result = await projectOpGate.run(async () => {
+    setProjectsBusy(true);
+    restoringDraft = true;
+    try {
+      if (!persistenceUserId) {
+        return { ok: false, message: "ログインしてください。" };
+      }
+      if (exportRunning) {
+        return { ok: false, message: "書き出し中はプロジェクトを削除できません。" };
+      }
+      const deletingActive = projectId === currentProjectId;
+      if (deletingActive) {
+        try {
+          await draftController.prepareProjectSwitch();
+        } catch (error) {
+          console.error(error);
+          showPersistToast("直前の作業を保存できなかったため、削除を中止しました。");
+          return { ok: false, message: error.message };
+        }
+        draftController.cancel();
+        currentProjectId = null;
+        clearSessionData();
+        await replaceSession(null);
+        showIdle();
+      }
+      const deleted = await deleteProjectAndRepair(persistenceUserId, projectId);
+      if (!deleted.wasActive) {
+        showPersistToast("プロジェクトを削除しました");
+        return { ok: true, ...deleted };
+      }
+      if (!deleted.nextProjectId) {
+        currentProjectId = null;
+        draftController.forgetMedia();
+        showIdle();
+        showPersistToast("プロジェクトを削除しました");
+        return { ok: true, ...deleted };
+      }
+      const opened = await openProjectSafely({
+        userId: persistenceUserId,
+        targetProjectId: deleted.nextProjectId,
+        currentProjectId: null,
+        applyDraft: applyOpenedDraft,
+      });
+      if (opened.ok) {
+        showPersistToast("プロジェクトを削除し、別のプロジェクトを開きました");
+      } else {
+        currentProjectId = null;
+        showIdle();
+        showPersistToast("プロジェクトを削除しました。残りのプロジェクトは一覧から開けます。");
+      }
+      return { ok: true, ...deleted, opened };
+    } finally {
+      restoringDraft = false;
+      setProjectsBusy(false);
+      await refreshProjectsList();
+    }
+  });
+  if (result?.busy) {
+    showPersistToast(result.message);
+  }
+}
+
+async function handleNewProject() {
+  const result = await projectOpGate.run(async () => {
+    setProjectsBusy(true);
+    try {
+      if (!appActive || !persistenceUserId) {
+        return { ok: false, message: "ログインしてください。" };
+      }
+      if (exportRunning) {
+        return { ok: false, message: "書き出し中は新しいプロジェクトを作れません。" };
+      }
+      try {
+        await draftController.prepareProjectSwitch();
+      } catch (error) {
+        console.error(error);
+        showPersistToast("直前の作業を保存できなかったため、新しいプロジェクトを開始できません。");
+        return { ok: false, message: error.message };
+      }
+      closeProjectsOverlay();
+      if (projectsNewPdfInput) {
+        projectsNewPdfInput.value = "";
+        projectsNewPdfInput.click();
+      }
+      return { ok: true };
+    } finally {
+      setProjectsBusy(false);
+    }
+  });
+  if (result?.busy) {
+    showPersistToast(result.message);
+  }
+}
+
+async function handleFileChange(event, { forceNew = false } = {}) {
   if (!appActive) {
     event.target.value = "";
     return;
@@ -3562,124 +3905,134 @@ async function handleFileChange(event) {
     return;
   }
 
-  restoringDraft = false;
-  const reconnecting = isSamePdfReconnect(session, file);
-  const pdfBlob = file.slice(0, file.size, file.type || "application/pdf");
-  const token = ++loadToken;
-  fileNameEl.textContent = file.name;
-  prevButton.disabled = true;
-  nextButton.disabled = true;
-  setState("loading", reconnecting ? "PDFを再接続しています…" : "読み込み中…");
-
-  try {
-    const loaded = await loadPdfFromFile(file);
-    if (token !== loadToken) {
-      await destroyPdfDocument(loaded.document);
-      return;
-    }
-
-    if (reconnecting) {
-      const currentPage = Math.min(
-        Math.max(session.currentPage || 1, 1),
-        loaded.pageCount,
-      );
-      await replaceSession({
-        fileName: file.name,
-        fileSize: file.size,
-        pageCount: loaded.pageCount,
-        currentPage,
-        document: loaded.document,
-      });
-    } else {
-      try {
-        await draftController.prepareProjectSwitch();
-      } catch (error) {
-        console.error(error);
-        await destroyPdfDocument(loaded.document);
-        showPersistToast("直前の作業を保存できなかったため、新しいPDFを開きませんでした。");
-        if (session) {
-          setState("viewing", "");
-        } else {
-          showIdle();
-        }
-        return;
-      }
-      currentProjectId = createProjectId();
-      clearSessionData();
-      await replaceSession({
-        fileName: file.name,
-        fileSize: file.size,
-        pageCount: loaded.pageCount,
-        currentPage: 1,
-        document: loaded.document,
-      });
-    }
-    await draftController.replacePdf({
-      blob: pdfBlob,
-      fileName: file.name,
-      fileSize: file.size,
-      pageCount: loaded.pageCount,
-    });
-    renderPanelList();
-    renderCutList();
-    renderTimelineViews();
-    setState("viewing", "読み込み中…");
-    void viewerEl.offsetHeight;
+  const result = await projectOpGate.run(async () => {
+    setProjectsBusy(true);
+    restoringDraft = false;
+    const reconnecting = !forceNew && isSamePdfReconnect(session, file);
+    const pdfBlob = file.slice(0, file.size, file.type || "application/pdf");
+    const token = ++loadToken;
+    fileNameEl.textContent = file.name;
+    prevButton.disabled = true;
+    nextButton.disabled = true;
+    setState("loading", reconnecting ? "PDFを再接続しています…" : "読み込み中…");
 
     try {
-      await showPage();
-    } catch (renderError) {
+      const loaded = await loadPdfFromFile(file);
       if (token !== loadToken) {
-        return;
+        await destroyPdfDocument(loaded.document);
+        return { ok: false, stale: true };
       }
-      if (renderError?.name === "RenderingCancelledException") {
-        return;
-      }
-      console.error(renderError);
-      setState("error", "ページを表示できませんでした。");
-      updatePager();
-      syncPanels();
-      return;
-    }
 
-    if (token !== loadToken) {
-      return;
-    }
-    setState("viewing", "");
-    initSelectionFrame();
-    if (reconnecting) {
-      requestAllThumbnails();
-    }
-    syncPanels();
-  } catch (error) {
-    if (token !== loadToken) {
-      return;
-    }
-    console.error(error);
-    if (session) {
-      fileNameEl.textContent = session.fileName;
-      stopRushKeepData();
-      setState(
-        "viewing",
-        "新しいPDFを読み込めませんでした。直前のPDFを表示しています。",
-      );
-      updatePager();
+      if (reconnecting) {
+        const currentPage = Math.min(
+          Math.max(session.currentPage || 1, 1),
+          loaded.pageCount,
+        );
+        await replaceSession({
+          fileName: file.name,
+          fileSize: file.size,
+          pageCount: loaded.pageCount,
+          currentPage,
+          document: loaded.document,
+        });
+      } else {
+        try {
+          await draftController.prepareProjectSwitch();
+        } catch (error) {
+          console.error(error);
+          await destroyPdfDocument(loaded.document);
+          showPersistToast("直前の作業を保存できなかったため、新しいPDFを開きませんでした。");
+          if (session) {
+            setState("viewing", "");
+          } else {
+            showIdle();
+          }
+          return { ok: false, message: error.message };
+        }
+        currentProjectId = createProjectId();
+        clearSessionData();
+        await replaceSession({
+          fileName: file.name,
+          fileSize: file.size,
+          pageCount: loaded.pageCount,
+          currentPage: 1,
+          document: loaded.document,
+        });
+      }
+      await draftController.replacePdf({
+        blob: pdfBlob,
+        fileName: file.name,
+        fileSize: file.size,
+        pageCount: loaded.pageCount,
+      });
+      renderPanelList();
+      renderCutList();
+      renderTimelineViews();
+      setState("viewing", "読み込み中…");
+      void viewerEl.offsetHeight;
+
+      try {
+        await showPage();
+      } catch (renderError) {
+        if (token !== loadToken) {
+          return { ok: false, stale: true };
+        }
+        if (renderError?.name === "RenderingCancelledException") {
+          return { ok: false, stale: true };
+        }
+        console.error(renderError);
+        setState("error", "ページを表示できませんでした。");
+        updatePager();
+        syncPanels();
+        return { ok: false };
+      }
+
+      if (token !== loadToken) {
+        return { ok: false, stale: true };
+      }
+      setState("viewing", "");
+      initSelectionFrame();
+      if (reconnecting) {
+        requestAllThumbnails();
+      }
       syncPanels();
-      return;
+      return { ok: true };
+    } catch (error) {
+      if (token !== loadToken) {
+        return { ok: false, stale: true };
+      }
+      console.error(error);
+      if (session) {
+        fileNameEl.textContent = session.fileName;
+        stopRushKeepData();
+        setState(
+          "viewing",
+          "新しいPDFを読み込めませんでした。直前のPDFを表示しています。",
+        );
+        updatePager();
+        syncPanels();
+        return { ok: false };
+      }
+      fileNameEl.textContent = "";
+      viewer.clear();
+      overlay.clear();
+      updatePager();
+      renderPanelList();
+      renderCutList();
+      renderCutDetail();
+      renderTimelineViews();
+      renderRush();
+      setState(
+        "error",
+        "PDFを読み込めませんでした。ファイルが壊れているか、PDFではない可能性があります。",
+      );
+      return { ok: false };
+    } finally {
+      setProjectsBusy(false);
     }
-    fileNameEl.textContent = "";
-    viewer.clear();
-    overlay.clear();
-    updatePager();
-    renderPanelList();
-    renderCutList();
-    renderCutDetail();
-    renderTimelineViews();
-    renderRush();
-    setState(
-      "error",
-      "PDFを読み込めませんでした。ファイルが壊れているか、PDFではない可能性があります。",
-    );
+  });
+  if (result?.busy) {
+    showPersistToast(result.message);
   }
 }
 
@@ -4136,6 +4489,31 @@ function bindAppListenersOnce() {
     handleExportCancel();
   });
   pdfInput.addEventListener("change", handleFileChange);
+  projectsNewPdfInput?.addEventListener("change", (event) => {
+    void handleFileChange(event, { forceNew: true });
+  });
+  projectsButton?.addEventListener("click", () => {
+    void openProjectsOverlay();
+  });
+  projectsCloseButton?.addEventListener("click", () => {
+    if (!projectsBusy) {
+      closeProjectsOverlay();
+    }
+  });
+  projectsNewButton?.addEventListener("click", () => {
+    void handleNewProject();
+  });
+  projectsOverlay?.addEventListener("click", (event) => {
+    if (event.target === projectsOverlay && !projectsBusy) {
+      closeProjectsOverlay();
+    }
+  });
+  window.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !projectsOverlay || projectsOverlay.hidden || projectsBusy) {
+      return;
+    }
+    closeProjectsOverlay();
+  });
   prevButton.addEventListener("click", () => {
     if (session) {
       goToPage(session.currentPage - 1);
@@ -4196,6 +4574,8 @@ export async function resetConteRushSession({ clearPersistence = false } = {}) {
     pdfInput.value = "";
   }
   draftController.forgetMedia();
+  closeProjectsOverlay();
+  setProjectsBusy(false);
   try {
     showIdle();
   } catch (error) {

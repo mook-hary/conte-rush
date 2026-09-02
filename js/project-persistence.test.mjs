@@ -22,12 +22,15 @@ import {
   isQuotaError,
   listUserProjects,
   migrateLegacyUserDraft,
+  openProjectSafely,
   projectMediaKey,
   projectRecordKey,
   readActiveProject,
   readLegacyDraft,
   readProject,
   readUserMeta,
+  renameProject,
+  repairActiveProject,
   resetDraftDbForTests,
   serializeProjectState,
   setDraftDbForTests,
@@ -37,6 +40,8 @@ import {
   writeProjectState,
   writeProjectSummary,
   writeUserMeta,
+  createProjectOpGate,
+  deleteProjectAndRepair,
 } from "./project-persistence.js";
 
 function pdfBlob() {
@@ -580,6 +585,14 @@ async function writeCompleteProject(userId, projectId, draft) {
   await writeUserMeta(userId, { lastActiveProjectId: projectId });
 }
 
+async function stampUpdatedAt(userId, projectId, updatedAt) {
+  const project = await readProject(userId, projectId);
+  await writeProjectSummary(userId, projectId, {
+    ...project.summary,
+    updatedAt,
+  });
+}
+
 test("chooseRecoveredProjectName prefers timesheet title then PDF name", () => {
   assert.equal(
     chooseRecoveredProjectName({
@@ -1095,5 +1108,437 @@ test("app flushes the current project before opening a new PDF project", async (
   assert.ok(flushAt >= 0);
   assert.ok(newIdAt > flushAt);
   assert.match(app, /export async function prepareProjectSwitch/);
+});
+
+test("P2-1: project list is per-user and sorted by updatedAt", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    await writeCompleteProject("user-1", "older", validDraft());
+    await writeCompleteProject("user-1", "newer", validDraft({
+      pdf: { fileName: "new.pdf", fileSize: 8, pageCount: 2, blob: pdfBlob() },
+    }));
+    await writeCompleteProject("user-2", "other", validDraft());
+    await stampUpdatedAt("user-1", "older", "2026-01-01T00:00:00.000Z");
+    await stampUpdatedAt("user-1", "newer", "2026-04-01T00:00:00.000Z");
+    const listed = await listUserProjects("user-1");
+    assert.equal(listed.length, 2);
+    assert.equal(listed[0].projectId, "newer");
+    assert.equal(listed[1].projectId, "older");
+    assert.equal((await listUserProjects("user-2")).length, 1);
+    assert.equal((await listUserProjects("user-2"))[0].projectId, "other");
+  } finally {
+    resetDraftDbForTests();
+  }
+});
+
+test("P2-2: opening B flushes A first", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    const draftA = validDraft({
+      metadata: {
+        timesheetEpisode: "01",
+        timesheetTitle: "A-original",
+        selectedCutId: "cut-1",
+      },
+    });
+    const draftB = validDraft({
+      pdf: { fileName: "b.pdf", fileSize: 8, pageCount: 2, blob: pdfBlob() },
+      metadata: {
+        timesheetEpisode: "02",
+        timesheetTitle: "B-original",
+        selectedCutId: "cut-1",
+      },
+    });
+    await writeCompleteProject("user-1", "project-a", draftA);
+    await writeCompleteProject("user-1", "project-b", draftB);
+    let currentId = "project-a";
+    let title = "A-edited";
+    let flushed = false;
+    const controller = createDraftController({
+      debounceMs: 40,
+      getUserId: () => "user-1",
+      getProjectId: () => currentId,
+      hasSession: () => true,
+      collectState: () =>
+        serializeProjectState({
+          userId: "user-1",
+          projectId: currentId,
+          currentPage: 2,
+          panels: draftA.state.panels,
+          cuts: draftA.state.cuts,
+          timelines: draftA.state.timelines,
+          motions: draftA.state.motions,
+          metadata: {
+            timesheetEpisode: "01",
+            timesheetTitle: title,
+            selectedCutId: "cut-1",
+          },
+        }),
+      collectMedia: () => [],
+    });
+    controller.rememberSummary((await readProject("user-1", "project-a")).summary);
+    controller.schedule();
+    const opened = await openProjectSafely({
+      userId: "user-1",
+      targetProjectId: "project-b",
+      currentProjectId: "project-a",
+      prepareProjectSwitch: async () => {
+        await controller.prepareProjectSwitch();
+        flushed = true;
+        currentId = "project-b";
+        title = "B-original";
+      },
+      applyDraft: async () => ({ ok: true }),
+    });
+    assert.equal(opened.ok, true);
+    assert.equal(flushed, true);
+    assert.equal((await readProject("user-1", "project-a")).state.metadata.timesheetTitle, "A-edited");
+    assert.equal((await readUserMeta("user-1")).lastActiveProjectId, "project-b");
+  } finally {
+    resetDraftDbForTests();
+  }
+});
+
+test("P2-3: failed B restore keeps A", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    await writeCompleteProject("user-1", "project-a", validDraft());
+    await writeCompleteProject(
+      "user-1",
+      "project-b",
+      validDraft({ pdf: { fileName: "b.pdf", fileSize: 8, pageCount: 2, blob: pdfBlob() } }),
+    );
+    await writeUserMeta("user-1", { lastActiveProjectId: "project-a" });
+    const applied = [];
+    const opened = await openProjectSafely({
+      userId: "user-1",
+      targetProjectId: "project-b",
+      currentProjectId: "project-a",
+      prepareProjectSwitch: async () => {},
+      applyDraft: async (_draft, project) => {
+        applied.push(project.projectId);
+        if (project.projectId === "project-b") {
+          return { ok: false, message: "restore failed" };
+        }
+        return { ok: true };
+      },
+    });
+    assert.equal(opened.ok, false);
+    assert.equal(opened.switched, false);
+    assert.equal(opened.restoredPrevious, true);
+    assert.deepEqual(applied, ["project-b", "project-a"]);
+    assert.equal((await readUserMeta("user-1")).lastActiveProjectId, "project-a");
+    assert.equal((await readProject("user-1", "project-a")).pdf.fileName, "board.pdf");
+    assert.equal((await readProject("user-1", "project-b")).pdf.fileName, "b.pdf");
+  } finally {
+    resetDraftDbForTests();
+  }
+});
+
+test("P2-4: future schema B cannot be opened and is not mutated", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    await writeCompleteProject("user-1", "project-a", validDraft());
+    await writeCompleteProject(
+      "user-1",
+      "project-b",
+      validDraft({ pdf: { fileName: "b.pdf", fileSize: 8, pageCount: 2, blob: pdfBlob() } }),
+    );
+    const stored = await readProject("user-1", "project-b");
+    await writeProjectState("user-1", "project-b", {
+      ...stored.state,
+      schemaVersion: 999,
+      extraFutureField: "keep-b",
+    });
+    await writeProjectSummary("user-1", "project-b", {
+      ...stored.summary,
+      schemaVersion: 999,
+    });
+    await writeUserMeta("user-1", { lastActiveProjectId: "project-a" });
+    let prepared = 0;
+    const opened = await openProjectSafely({
+      userId: "user-1",
+      targetProjectId: "project-b",
+      currentProjectId: "project-a",
+      prepareProjectSwitch: async () => {
+        prepared += 1;
+      },
+      applyDraft: async () => ({ ok: true }),
+    });
+    assert.equal(opened.ok, false);
+    assert.equal(opened.future, true);
+    assert.equal(prepared, 0);
+    assert.equal((await readUserMeta("user-1")).lastActiveProjectId, "project-a");
+    assert.equal((await readProject("user-1", "project-b")).state.schemaVersion, 999);
+    assert.equal((await readProject("user-1", "project-b")).state.extraFutureField, "keep-b");
+  } finally {
+    resetDraftDbForTests();
+  }
+});
+
+test("P2-5: rename changes only projects metadata", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    const draft = validDraft({
+      media: [
+        {
+          panelId: "draw-1",
+          kind: "drawing",
+          blob: imageBlob(),
+          mimeType: "image/png",
+          width: 1280,
+          height: 720,
+        },
+      ],
+      panels: [
+        {
+          id: "panel-1",
+          pageNumber: 1,
+          x: 0.1,
+          y: 0.1,
+          width: 0.4,
+          height: 0.4,
+          source: PANEL_SOURCE_MANUAL,
+        },
+        { id: "draw-1", source: PANEL_SOURCE_DRAWING },
+      ],
+      cuts: [
+        {
+          id: "cut-1",
+          cutNumber: "1",
+          durationFrames: 24,
+          panelIds: ["panel-1", "draw-1"],
+        },
+      ],
+      timelines: [
+        {
+          cutId: "cut-1",
+          placements: [
+            { id: "pl-1", panelId: "panel-1", startFrame: 0 },
+            { id: "pl-2", panelId: "draw-1", startFrame: 12 },
+          ],
+        },
+      ],
+    });
+    await writeCompleteProject("user-1", "same-1", draft);
+    const before = await readProject("user-1", "same-1");
+    const renamed = await renameProject("user-1", "same-1", "  New Name  ");
+    assert.equal(renamed.ok, true);
+    assert.equal(renamed.summary.projectName, "New Name");
+    const empty = await renameProject("user-1", "same-1", "   ");
+    assert.equal(empty.ok, false);
+    const after = await readProject("user-1", "same-1");
+    assert.equal(after.summary.projectName, "New Name");
+    assert.equal(after.pdf.fileName, before.pdf.fileName);
+    assert.equal(after.pdf.blob.size, before.pdf.blob.size);
+    assert.equal(after.state.cuts[0].id, before.state.cuts[0].id);
+    assert.equal(after.media[0].panelId, "draw-1");
+    assert.equal(after.media[0].blob.size, before.media[0].blob.size);
+  } finally {
+    resetDraftDbForTests();
+  }
+});
+
+test("P2-6: deleting an inactive project keeps the active one", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    await writeCompleteProject("user-1", "active-1", validDraft());
+    await writeCompleteProject(
+      "user-1",
+      "idle-1",
+      validDraft({ pdf: { fileName: "idle.pdf", fileSize: 8, pageCount: 2, blob: pdfBlob() } }),
+    );
+    await writeUserMeta("user-1", { lastActiveProjectId: "active-1" });
+    const result = await deleteProjectAndRepair("user-1", "idle-1");
+    assert.equal(result.wasActive, false);
+    assert.equal(result.nextProjectId, "active-1");
+    assert.equal((await readUserMeta("user-1")).lastActiveProjectId, "active-1");
+    assert.equal(await readProject("user-1", "idle-1"), null);
+    assert.equal((await readProject("user-1", "active-1")).pdf.fileName, "board.pdf");
+  } finally {
+    resetDraftDbForTests();
+  }
+});
+
+test("P2-7: deleting the active project falls back to the newest remaining", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    await writeCompleteProject("user-1", "older", validDraft());
+    await writeCompleteProject(
+      "user-1",
+      "newer",
+      validDraft({ pdf: { fileName: "new.pdf", fileSize: 8, pageCount: 2, blob: pdfBlob() } }),
+    );
+    await stampUpdatedAt("user-1", "older", "2026-01-01T00:00:00.000Z");
+    await stampUpdatedAt("user-1", "newer", "2026-05-01T00:00:00.000Z");
+    await writeUserMeta("user-1", { lastActiveProjectId: "older" });
+    const result = await deleteProjectAndRepair("user-1", "older");
+    assert.equal(result.wasActive, true);
+    assert.equal(result.nextProjectId, "newer");
+    assert.equal((await readUserMeta("user-1")).lastActiveProjectId, "newer");
+    assert.equal(await readProject("user-1", "older"), null);
+  } finally {
+    resetDraftDbForTests();
+  }
+});
+
+test("P2-8: deleting the last project clears lastActiveProjectId", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    await writeCompleteProject("user-1", "only-1", validDraft());
+    const result = await deleteProjectAndRepair("user-1", "only-1");
+    assert.equal(result.wasActive, true);
+    assert.equal(result.nextProjectId, null);
+    assert.equal((await readUserMeta("user-1")).lastActiveProjectId, null);
+    assert.equal((await listUserProjects("user-1")).length, 0);
+  } finally {
+    resetDraftDbForTests();
+  }
+});
+
+test("P2-9: deleting project A does not remove project B media", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    const blobA = imageBlob();
+    const blobB = new Blob([new Uint8Array([9, 9, 9, 9])], { type: "image/png" });
+    await writeCompleteProject("user-1", "proj-a", validDraft({
+      panels: [{ id: "draw-a", source: PANEL_SOURCE_DRAWING }],
+      cuts: [],
+      timelines: [],
+      motions: [],
+      media: [
+        {
+          panelId: "draw-a",
+          kind: "drawing",
+          blob: blobA,
+          mimeType: "image/png",
+          width: 1280,
+          height: 720,
+        },
+      ],
+    }));
+    await writeCompleteProject("user-1", "proj-b", validDraft({
+      panels: [{ id: "draw-b", source: PANEL_SOURCE_DRAWING }],
+      cuts: [],
+      timelines: [],
+      motions: [],
+      media: [
+        {
+          panelId: "draw-b",
+          kind: "drawing",
+          blob: blobB,
+          mimeType: "image/png",
+          width: 1280,
+          height: 720,
+        },
+      ],
+    }));
+    await deleteProjectAndRepair("user-1", "proj-a");
+    assert.equal(db.maps.media.has(projectMediaKey("user-1", "proj-a", "draw-a")), false);
+    assert.equal(db.maps.media.has(projectMediaKey("user-1", "proj-b", "draw-b")), true);
+    assert.equal((await readProject("user-1", "proj-b")).media[0].panelId, "draw-b");
+  } finally {
+    resetDraftDbForTests();
+  }
+});
+
+test("P2-10: dangling lastActiveProjectId is repaired to the newest project", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    await writeCompleteProject("user-1", "alive-1", validDraft());
+    await stampUpdatedAt("user-1", "alive-1", "2026-06-01T00:00:00.000Z");
+    await writeUserMeta("user-1", { lastActiveProjectId: "missing-1" });
+    const repaired = await repairActiveProject("user-1");
+    assert.equal(repaired.repaired, true);
+    assert.equal(repaired.projectId, "alive-1");
+    const active = await readActiveProject("user-1");
+    assert.equal(active.projectId, "alive-1");
+    assert.equal((await readUserMeta("user-1")).lastActiveProjectId, "alive-1");
+  } finally {
+    resetDraftDbForTests();
+  }
+});
+
+test("P2-11: reload restores the selected lastActive project", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    await writeCompleteProject("user-1", "project-a", validDraft());
+    await writeCompleteProject(
+      "user-1",
+      "project-b",
+      validDraft({ pdf: { fileName: "b.pdf", fileSize: 8, pageCount: 2, blob: pdfBlob() } }),
+    );
+    await writeUserMeta("user-1", { lastActiveProjectId: "project-b" });
+    const active = await readActiveProject("user-1");
+    assert.equal(active.projectId, "project-b");
+    assert.equal(active.pdf.fileName, "b.pdf");
+  } finally {
+    resetDraftDbForTests();
+  }
+});
+
+test("P2-12: logout policy still keeps both projects", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    await writeCompleteProject("user-1", "project-a", validDraft());
+    await writeCompleteProject(
+      "user-1",
+      "project-b",
+      validDraft({ pdf: { fileName: "b.pdf", fileSize: 8, pageCount: 2, blob: pdfBlob() } }),
+    );
+    assert.equal((await listUserProjects("user-1")).length, 2);
+    const { readFile } = await import("node:fs/promises");
+    const app = await readFile(new URL("./app.js", import.meta.url), "utf8");
+    assert.equal(app.includes("deleteUserDraft"), false);
+    const again = await readActiveProject("user-1");
+    assert.equal(["project-a", "project-b"].includes(again.projectId), true);
+  } finally {
+    resetDraftDbForTests();
+  }
+});
+
+test("P2-13: New Project does not create an empty project until a PDF loads", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const app = await readFile(new URL("./app.js", import.meta.url), "utf8");
+  const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
+  assert.match(html, /id="projects-new-pdf"/);
+  const handleNew = app.slice(app.indexOf("async function handleNewProject"));
+  const newBody = handleNew.slice(0, handleNew.indexOf("async function handleFileChange"));
+  assert.equal(newBody.includes("createProjectId"), false);
+  assert.match(newBody, /projectsNewPdfInput\.click/);
+  const handleFile = app.slice(app.indexOf("async function handleFileChange"));
+  const loadAt = handleFile.indexOf("loadPdfFromFile");
+  const newIdAt = handleFile.indexOf("createProjectId");
+  assert.ok(loadAt >= 0 && newIdAt > loadAt);
+});
+
+test("P2-14: overlapping project operations are rejected", async () => {
+  const gate = createProjectOpGate();
+  let release;
+  const first = gate.run(
+    () =>
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+  );
+  const second = await gate.run(async () => ({ ok: true }));
+  assert.equal(second.ok, false);
+  assert.equal(second.busy, true);
+  release({ ok: true });
+  assert.equal((await first).ok, true);
+  const third = await gate.run(async () => ({ ok: true, done: true }));
+  assert.equal(third.done, true);
 });
 

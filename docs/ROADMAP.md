@@ -475,9 +475,9 @@ Live E2E:
 
 ### 端末内クラッシュ保護（実装済み。クラウド保存ではない）
 
-ログインユーザーごとに複数 project を端末内 IndexedDB へ自動保存する。同時に開くのは 1 つ。Gate 通過後は `lastActiveProjectId` を復元する。サーバーへ制作データは送らない。ログアウトではメモリだけ閉じ、IndexedDB は残す。境界は [DATA_MODEL.md](DATA_MODEL.md) と D142 / D145 / D147。
+ログインユーザーごとに複数 project を端末内 IndexedDB へ自動保存する。同時に開くのは 1 つ。Gate 通過後は `lastActiveProjectId` を復元する。サーバーへ制作データは送らない。ログアウトではメモリだけ閉じ、IndexedDB は残す。境界は [DATA_MODEL.md](DATA_MODEL.md) と D142 / D145 / D147 / D148。
 
-P2（未着手）: Project 一覧 / Open / Rename / Delete / Save As / Duplicate / `.conterush`。P1 の `listUserProjects` / `readProject` / `readActiveProject` / `writeUserMeta` / `deleteProject` / `prepareProjectSwitch` を使う。切替前に現在 project を flush する。1000 Cut 向け entity 分割は別件。
+P2（実装済み）: Project 一覧 / Open / Rename / Delete / New。切替前に `prepareProjectSwitch` で flush する。Open 失敗では現在 project を失わない。保存は端末ごと。Save As / Duplicate / `.conterush` と 1000 Cut 向け entity 分割は未着手。
 
 ### 正式有料公開
 

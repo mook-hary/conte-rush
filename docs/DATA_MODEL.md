@@ -37,7 +37,7 @@ M11.0 で足す Auth / 利用権は Supabase 側の最小データである。�
 
 ### DraftSnapshot / Project（端末内保存）
 
-クラウドのプロジェクト保存ではない。Gate 通過後、app-shell を表示してから `lastActiveProjectId` の project を自動復元する（D146 / D147）。P1 では一覧 UI は無い。
+クラウドのプロジェクト保存ではない。Gate 通過後、app-shell を表示してから `lastActiveProjectId` の project を自動復元する（D146 / D147 / D148）。P2 で Project 一覧から Open / Rename / Delete / New できる。保存は端末内 IndexedDB のみで、ブラウザ / 端末ごとに独立する。
 
 IndexedDB:
 
@@ -49,7 +49,9 @@ IndexedDB:
 - object store: `state`（key = `userId::projectId`。schemaVersion 付きの Panel / Cut / Timeline / Motion / 話数・タイトル / selectedCutId / currentPage / projectId）
 - object store: `media`（key = `userId::projectId::panelId`。手描き / Upload の Blob）
 
-`schemaVersion` は 2（state / project 包み）。Cut / Panel / Timeline / Motion の内部形は 1 のまま。未対応バージョンや PDF 復元失敗では IndexedDB を消さず、メモリだけ空画面にする。PDF.js の `document`、ObjectURL、Undo、Rush 再生位置、各種キャッシュは保存しない。version 1 の `pdf[userId]` / `state[userId]` / `media[userId::panelId]` は初回起動で新しい `projectId` へコピーし、検証成功後に旧 key を消す。projectName は timesheetTitle → PDF fileName → `"Recovered Project"`。途中失敗では旧 records を残し、不完全な新 project を消して次回再試行する。
+`schemaVersion` は 2（state / project 包み）。Cut / Panel / Timeline / Motion の内部形は 1 のまま。未対応バージョンや PDF 復元失敗では IndexedDB を消さず、メモリだけ空画面にする。`lastActiveProjectId` が欠ける / 存在しない id を指すときは、その user の `updatedAt` 最新 project へ repair する。project が 0 件なら `null`。Rename は `projects` メタの `projectName` だけを変える。Delete は当該 `projectId` の pdf / state / media / projects だけを消す。
+
+P2 API: `listUserProjects` / `inspectProjectForOpen` / `openProjectSafely` / `renameProject` / `deleteProjectAndRepair` / `repairActiveProject` / `prepareProjectSwitch` / `createProjectOpGate`。Save As / Duplicate / `.conterush` はまだ無い。
 
 ### Panel（M1）
 

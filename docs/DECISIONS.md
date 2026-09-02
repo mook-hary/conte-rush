@@ -1171,11 +1171,19 @@
 
 ## D147. 1 user は複数 project を IndexedDB に持てる
 
-- 状態: 採用（P1。一覧 UI はまだ無い）
+- 状態: 改訂（D148。一覧 UI あり）
 - 判断: DB version 2。key は `userId::projectId`。同時オープンは 1。起動は `lastActiveProjectId`。新規 PDF は新 project。version 1 の user 単位 draft は Recovered Project へ移行する
 - 理由: 1 draft 上書きでは PDF を差し替えるたびに制作物が消える。P2 の一覧の土台が必要
 - 採用しなかった案: まだ 1 user = 1 draft のまま。entity store 分割。常時二重 recovery copy
 - 結果: autosave は開いている project が正本。logout で消さない。Cut / Panel 内部 schema は変えない。未対応の future schema は開かず上書きしない。P2 の切替は `prepareProjectSwitch` で現在 project を flush してから行う。v1 移行は copy + lastActive + legacy 削除を同一 transaction にし、lastActive 済みの leftover は再 Recovered しない
+
+## D148. Project 一覧から Open / Rename / Delete / New する
+
+- 状態: 採用（P2。Save As / Duplicate / `.conterush` はまだ無い）
+- 判断: Account 付近の Projects modal で一覧する。Open は target を先に検証し、失敗したら現在 project から切り替えない。flush 後の restore 失敗では元 project を IDB から戻す。New は PDF 読込成功後にだけ `projectId` を作る。Delete は確認後に当該 project の records だけ消す。active 削除は残存の `updatedAt` 最新へ fallback。dangling `lastActiveProjectId` は起動時に repair する
+- 理由: P1 の複数 project をユーザーが開けないと、別 PDF を読むたびに戻れない
+- 採用しなかった案: Open 失敗時に空画面へ落とす。New 時点で空 project を先に作る
+- 結果: 保存は端末内 IndexedDB。ブラウザ / 端末ごとに独立。クラウド保存ではない
 
 ## 未決
 

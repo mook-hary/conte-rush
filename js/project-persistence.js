@@ -773,7 +773,9 @@ export async function writeUserMeta(userId, patch) {
   const previous = (await requestToPromise(store.get(userId))) ?? {};
   const next = {
     userId,
-    lastActiveProjectId: patch.lastActiveProjectId ?? previous.lastActiveProjectId ?? null,
+    lastActiveProjectId: Object.hasOwn(patch, "lastActiveProjectId")
+      ? patch.lastActiveProjectId ?? null
+      : previous.lastActiveProjectId ?? null,
     schemaVersion: PROJECT_SCHEMA_VERSION,
   };
   store.put(next, userId);
@@ -915,6 +917,174 @@ export async function deleteProject(userId, projectId) {
     );
   }
   await transactionDone(tx);
+}
+
+export async function renameProject(userId, projectId, name) {
+  const projectName = String(name ?? "").trim();
+  if (!isNonEmptyString(userId) || !isNonEmptyString(projectId)) {
+    return { ok: false, message: "プロジェクトが見つかりません。" };
+  }
+  if (!projectName) {
+    return { ok: false, message: "名前を入力してください。" };
+  }
+  return withLock(async () => {
+    const db = await openDraftDb();
+    const key = projectRecordKey(userId, projectId);
+    const tx = db.transaction(PROJECTS_STORE, "readwrite");
+    const existing = await requestToPromise(tx.objectStore(PROJECTS_STORE).get(key));
+    if (!existing) {
+      await transactionDone(tx);
+      return { ok: false, message: "プロジェクトが見つかりません。" };
+    }
+    const next = {
+      ...existing,
+      projectName,
+      updatedAt: new Date().toISOString(),
+    };
+    tx.objectStore(PROJECTS_STORE).put(next, key);
+    await transactionDone(tx);
+    return { ok: true, summary: next };
+  });
+}
+
+export async function repairActiveProject(userId) {
+  if (!isNonEmptyString(userId)) {
+    return { projectId: null, repaired: false };
+  }
+  return withLock(async () => {
+    const listed = await listUserProjects(userId);
+    const meta = await readUserMeta(userId);
+    const current = meta?.lastActiveProjectId ?? null;
+    if (current && listed.some((item) => item.projectId === current)) {
+      return { projectId: current, repaired: false };
+    }
+    const nextId = listed[0]?.projectId ?? null;
+    await writeUserMeta(userId, { lastActiveProjectId: nextId });
+    return { projectId: nextId, repaired: true };
+  });
+}
+
+export async function deleteProjectAndRepair(userId, projectId) {
+  if (!isNonEmptyString(userId) || !isNonEmptyString(projectId)) {
+    return { deletedProjectId: projectId, wasActive: false, nextProjectId: null };
+  }
+  const meta = await readUserMeta(userId);
+  const wasActive = meta?.lastActiveProjectId === projectId;
+  await deleteProject(userId, projectId);
+  if (!wasActive) {
+    return {
+      deletedProjectId: projectId,
+      wasActive: false,
+      nextProjectId: meta?.lastActiveProjectId ?? null,
+    };
+  }
+  const repaired = await repairActiveProject(userId);
+  return {
+    deletedProjectId: projectId,
+    wasActive: true,
+    nextProjectId: repaired.projectId,
+  };
+}
+
+export async function inspectProjectForOpen(userId, projectId) {
+  if (!isNonEmptyString(userId) || !isNonEmptyString(projectId)) {
+    return { ok: false, message: "プロジェクトが見つかりません。" };
+  }
+  const project = await readProject(userId, projectId);
+  if (!project) {
+    return { ok: false, message: "プロジェクトが見つかりません。" };
+  }
+  if (isFuturePersistenceSchema(project)) {
+    return {
+      ok: false,
+      future: true,
+      message: "このバージョンでは開けないプロジェクトです。保存データは変更していません。",
+    };
+  }
+  const checked = validateDraft(
+    {
+      pdf: project.pdf,
+      state: project.state,
+      media: project.media ?? [],
+    },
+    userId,
+    projectId,
+  );
+  if (!checked.ok) {
+    return { ok: false, message: checked.message || "プロジェクトを開けません。" };
+  }
+  return { ok: true, project, draft: checked.draft };
+}
+
+export async function openProjectSafely({
+  userId,
+  targetProjectId,
+  currentProjectId,
+  prepareProjectSwitch,
+  applyDraft,
+} = {}) {
+  const inspected = await inspectProjectForOpen(userId, targetProjectId);
+  if (!inspected.ok) {
+    return { ...inspected, switched: false };
+  }
+  if (targetProjectId === currentProjectId) {
+    await writeUserMeta(userId, { lastActiveProjectId: targetProjectId });
+    return { ok: true, switched: false, projectId: targetProjectId };
+  }
+
+  const previousId = currentProjectId || null;
+  if (typeof prepareProjectSwitch === "function") {
+    await prepareProjectSwitch();
+  }
+
+  try {
+    await writeUserMeta(userId, { lastActiveProjectId: targetProjectId });
+    const applied = await applyDraft?.(inspected.draft, inspected.project);
+    if (!applied?.ok) {
+      throw new Error(applied?.message || "プロジェクトを開けませんでした。");
+    }
+    return { ok: true, switched: true, projectId: targetProjectId };
+  } catch (error) {
+    let restoredPrevious = false;
+    if (previousId) {
+      await writeUserMeta(userId, { lastActiveProjectId: previousId });
+      const previous = await inspectProjectForOpen(userId, previousId);
+      if (previous.ok) {
+        try {
+          const restored = await applyDraft?.(previous.draft, previous.project);
+          restoredPrevious = Boolean(restored?.ok);
+        } catch (restoreError) {
+          console.error(restoreError);
+        }
+      }
+    }
+    return {
+      ok: false,
+      switched: false,
+      restoredPrevious,
+      message: error?.message || "プロジェクトを開けませんでした。",
+    };
+  }
+}
+
+export function createProjectOpGate() {
+  let busy = false;
+  return {
+    isBusy() {
+      return busy;
+    },
+    async run(fn) {
+      if (busy) {
+        return { ok: false, busy: true, message: "別のプロジェクト操作が完了するまで待ってください。" };
+      }
+      busy = true;
+      try {
+        return await fn();
+      } finally {
+        busy = false;
+      }
+    },
+  };
 }
 
 async function deleteLegacyDraft(userId) {
@@ -1090,8 +1260,8 @@ export async function readActiveProject(userId) {
     return null;
   }
   await migrateLegacyUserDraft(userId);
-  const meta = await readUserMeta(userId);
-  const projectId = meta?.lastActiveProjectId;
+  const repaired = await repairActiveProject(userId);
+  const projectId = repaired.projectId;
   if (!projectId) {
     return null;
   }

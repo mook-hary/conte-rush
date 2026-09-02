@@ -1984,3 +1984,129 @@ body[data-auth-state="allowed"] .app-shell {
   font: inherit;
   cursor: pointer;
 }
+
+.projects-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 2.5rem 1rem 1.5rem;
+  background: rgba(8, 8, 8, 0.72);
+}
+
+.projects-overlay[hidden] {
+  display: none;
+}
+
+.projects-dialog {
+  width: min(42rem, 100%);
+  max-height: calc(100vh - 4rem);
+  overflow: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+.projects-dialog-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.projects-dialog-header h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.projects-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.projects-dialog-actions button,
+.projects-item-actions button {
+  padding: 0.25rem 0.55rem;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.projects-dialog-actions button:disabled,
+.projects-item-actions button:disabled,
+#projects-button:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.projects-status {
+  margin: 0;
+  padding: 0.5rem 1rem 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+  min-height: 1.4em;
+}
+
+.projects-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.5rem 0 1rem;
+}
+
+.projects-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.projects-item.is-current {
+  background: var(--current);
+}
+
+.projects-item-main {
+  min-width: 0;
+  flex: 1 1 16rem;
+}
+
+.projects-item-name {
+  margin: 0 0 0.2rem;
+  font-weight: 700;
+}
+
+.projects-item-current {
+  margin-left: 0.45rem;
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--accent);
+}
+
+.projects-item-meta,
+.projects-item-file,
+.projects-item-counts,
+.projects-item-updated {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.projects-item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.projects-item-actions .projects-delete {
+  color: var(--danger);
+}

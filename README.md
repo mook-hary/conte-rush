@@ -99,7 +99,8 @@
 - 話数とタイトルを PDF セッション単位で入力する
 - 手描き overlay から 1280×720 の Panel を追加・再編集する
 - ローカルの PNG / JPEG / WebP を Upload Panel として追加・差し替える
-- 再読み込みやタブ discard のあと、同じ端末・同じログインユーザーの直前の PDF と制作状態を復元する（端末内 IndexedDB。1 user = 複数 project。同時に開くのは 1 つ。クラウド保存ではない）
+- 再読み込みやタブ discard のあと、同じ端末・同じログインユーザーの直前の PDF と制作状態を復元する（端末内 IndexedDB。1 user = 複数 project。同時に開くのは 1 つ。クラウド保存ではない。ブラウザ / 端末ごとに独立）
+- Account 付近の Projects から一覧・Open / Rename / Delete / New Project ができる（ローカル保存。Save As / Duplicate / `.conterush` はまだない）
 - drawing / upload も Cut / Timeline / Repeat / Motion / Rush / MP4 / タイムシート番号に使う
 - Timeline の手描き placement から Drawing Editor を開き、前後 Panel を Onion Skin で参照する
 - Timeline の追加候補と配置済みを、サムネイルと Cut.panelIds 順の Panel 番号で見分ける
@@ -130,12 +131,12 @@
 - AI 解析
 - カメラワークの自動解析
 - ラッシュの自動生成
-- Project 一覧 UI / Save As / Duplicate / `.conterush`（P2）
+- Save As / Duplicate / `.conterush`（P3 以降）
 - 制作データのクラウド保存
 
 ## プライバシー
 
-法務ページは [legal/index.html](legal/index.html) です。PDF と Upload 画像はユーザーのローカルファイルから読み込み、ブラウザ内だけで処理します。サーバーや外部サービスへアップロードしません。再読み込みに備えて、制作データの一部を端末内 IndexedDB に置くことがあります。ブラウザのサイトデータを消すと復元できなくなります。ログアウトではメモリ上の作業を閉じますが、同じ端末の IndexedDB 上の project は残します。
+法務ページは [legal/index.html](legal/index.html) です。PDF と Upload 画像はユーザーのローカルファイルから読み込み、ブラウザ内だけで処理します。サーバーや外部サービスへアップロードしません。再読み込みに備えて、制作データの一部を端末内 IndexedDB に置くことがあります。これはローカル保存であり、ブラウザ / 端末ごとに project は独立します。ブラウザのサイトデータを消すと復元できなくなります。ログアウトではメモリ上の作業を閉じますが、同じ端末の IndexedDB 上の project は残します。
 
 PDF.js のライブラリ本体は CDN から取得する想定です。PDF の中身はその通信に含めません。
 

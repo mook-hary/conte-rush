@@ -1,6 +1,8 @@
 export const DRAFT_SCHEMA_VERSION = 2;
 export const MIN_STATE_SCHEMA_VERSION = 1;
 export const PROJECT_SCHEMA_VERSION = 2;
+export const UNSUPPORTED_SCHEMA_MESSAGE =
+  "未対応のschemaVersionです。保存データを上書きしません。";
 export const DRAFT_DB_NAME = "conte-rush-draft";
 export const DRAFT_DB_VERSION = 2;
 export const DRAFT_AUTOSAVE_MS = 750;
@@ -43,6 +45,29 @@ export function isQuotaError(error) {
     error?.code === 22 ||
     error?.name === "NS_ERROR_DOM_QUOTA_REACHED"
   );
+}
+
+export function isSupportedStateSchemaVersion(version) {
+  return version === MIN_STATE_SCHEMA_VERSION || version === DRAFT_SCHEMA_VERSION;
+}
+
+export function isSupportedProjectSchemaVersion(version) {
+  return version == null || version === PROJECT_SCHEMA_VERSION;
+}
+
+export function isFuturePersistenceSchema({ state, summary } = {}) {
+  const stateVersion = state?.schemaVersion;
+  const projectVersion = summary?.schemaVersion;
+  return (
+    (typeof stateVersion === "number" && stateVersion > DRAFT_SCHEMA_VERSION) ||
+    (typeof projectVersion === "number" && projectVersion > PROJECT_SCHEMA_VERSION)
+  );
+}
+
+function unsupportedSchemaError() {
+  const error = new Error(UNSUPPORTED_SCHEMA_MESSAGE);
+  error.name = "UnsupportedSchemaError";
+  return error;
 }
 
 export function createProjectId() {
@@ -272,10 +297,7 @@ export function validateDraft(record, expectedUserId, expectedProjectId = null) 
   if (!state || typeof state !== "object") {
     return fail("編集状態がありません。");
   }
-  if (
-    state.schemaVersion !== DRAFT_SCHEMA_VERSION &&
-    state.schemaVersion !== MIN_STATE_SCHEMA_VERSION
-  ) {
+  if (!isSupportedStateSchemaVersion(state.schemaVersion)) {
     return fail("未対応のschemaVersionです。");
   }
   if (!isNonEmptyString(state.userId) || state.userId !== expectedUserId) {
@@ -818,6 +840,18 @@ export async function writeProjectSummary(userId, projectId, summary) {
   await transactionDone(tx);
 }
 
+async function assertWritableSchema(userId, projectId) {
+  const db = await openDraftDb();
+  const key = projectRecordKey(userId, projectId);
+  const tx = db.transaction([STATE_STORE, PROJECTS_STORE], "readonly");
+  const state = await requestToPromise(tx.objectStore(STATE_STORE).get(key));
+  const summary = await requestToPromise(tx.objectStore(PROJECTS_STORE).get(key));
+  await transactionDone(tx);
+  if (isFuturePersistenceSchema({ state, summary })) {
+    throw unsupportedSchemaError();
+  }
+}
+
 export async function syncProjectMedia(userId, projectId, entries, previouslySavedIds) {
   const db = await openDraftDb();
   const nextIds = new Set(entries.map((entry) => entry.panelId));
@@ -896,7 +930,7 @@ function legacyDraftHasContent(legacy) {
   return Boolean(legacy?.pdf || legacy?.state || (legacy?.media ?? []).length > 0);
 }
 
-async function copyLegacyToProject(userId, projectId, legacy, now) {
+function buildMigratedProject(userId, projectId, legacy, now) {
   const state = {
     ...(legacy.state ?? {}),
     schemaVersion: DRAFT_SCHEMA_VERSION,
@@ -913,31 +947,92 @@ async function copyLegacyToProject(userId, projectId, legacy, now) {
         pageCount: legacy.pdf.pageCount,
       }
     : null;
-  if (pdf) {
-    await writeProjectPdf(userId, projectId, pdf);
-  }
-  await writeProjectState(userId, projectId, state);
-  const mediaEntries = (legacy.media ?? []).map((entry) => ({
+  const media = (legacy.media ?? []).map((entry) => ({
     panelId: entry.panelId,
-    media: {
-      kind: entry.kind,
-      blob: entry.blob,
-      mimeType: entry.mimeType,
-      width: entry.width,
-      height: entry.height,
-    },
+    kind: entry.kind,
+    blob: entry.blob,
+    mimeType: entry.mimeType,
+    width: entry.width,
+    height: entry.height,
   }));
-  await syncProjectMedia(userId, projectId, mediaEntries, new Map());
   const summary = buildProjectSummary({
     userId,
     projectId,
     pdf,
     state,
-    media: legacy.media,
+    media,
     now,
     projectName: chooseRecoveredProjectName({ state, pdf }),
   });
-  await writeProjectSummary(userId, projectId, summary);
+  return { pdf, state, media, summary };
+}
+
+function deleteLegacyMediaInStore(mediaStore, userId) {
+  return new Promise((resolve, reject) => {
+    const request = mediaStore.openCursor(legacyMediaKeyRange(userId));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) {
+        resolve();
+        return;
+      }
+      if (isLegacyMediaKeyForUser(cursor.key, userId)) {
+        cursor.delete();
+      }
+      cursor.continue();
+    };
+    request.onerror = () => reject(request.error ?? new Error("legacy media delete failed"));
+  });
+}
+
+async function commitMigratedProjectAndDeleteLegacy(userId, projectId, built) {
+  const db = await openDraftDb();
+  const key = projectRecordKey(userId, projectId);
+  const tx = db.transaction(
+    [PDF_STORE, STATE_STORE, MEDIA_STORE, PROJECTS_STORE, META_STORE],
+    "readwrite",
+  );
+  if (built.pdf) {
+    tx.objectStore(PDF_STORE).put(
+      {
+        blob: built.pdf.blob,
+        fileName: built.pdf.fileName,
+        fileSize: built.pdf.fileSize,
+        pageCount: built.pdf.pageCount,
+      },
+      key,
+    );
+  }
+  tx.objectStore(STATE_STORE).put(built.state, key);
+  const mediaStore = tx.objectStore(MEDIA_STORE);
+  for (const entry of built.media ?? []) {
+    mediaStore.put(
+      {
+        userId,
+        projectId,
+        panelId: entry.panelId,
+        kind: entry.kind,
+        blob: entry.blob,
+        mimeType: entry.mimeType,
+        width: entry.width,
+        height: entry.height,
+      },
+      projectMediaKey(userId, projectId, entry.panelId),
+    );
+  }
+  tx.objectStore(PROJECTS_STORE).put(built.summary, key);
+  tx.objectStore(META_STORE).put(
+    {
+      userId,
+      lastActiveProjectId: projectId,
+      schemaVersion: PROJECT_SCHEMA_VERSION,
+    },
+    userId,
+  );
+  tx.objectStore(PDF_STORE).delete(userId);
+  tx.objectStore(STATE_STORE).delete(userId);
+  await deleteLegacyMediaInStore(mediaStore, userId);
+  await transactionDone(tx);
 }
 
 export async function migrateLegacyUserDraft(userId, options = {}) {
@@ -952,30 +1047,32 @@ export async function migrateLegacyUserDraft(userId, options = {}) {
     const meta = await readUserMeta(userId);
     if (meta?.lastActiveProjectId) {
       const active = await readProject(userId, meta.lastActiveProjectId);
-      if (active?.pdf?.blob) {
+      if (active?.pdf?.blob && active?.state) {
         await deleteLegacyDraft(userId);
-        return { migrated: false, cleanedLegacy: true, projectId: meta.lastActiveProjectId };
+        return {
+          migrated: false,
+          cleanedLegacy: true,
+          projectId: meta.lastActiveProjectId,
+        };
       }
     }
     const projectId = options.createProjectId?.() ?? createProjectId();
+    const built = buildMigratedProject(userId, projectId, legacy, options.now);
+    const checked = validateDraft(
+      {
+        pdf: built.pdf,
+        state: built.state,
+        media: built.media,
+      },
+      userId,
+      projectId,
+    );
+    if (!checked.ok) {
+      throw new Error(checked.message || "移行後の検証に失敗しました。");
+    }
     try {
-      await copyLegacyToProject(userId, projectId, legacy, options.now);
       options.afterCopy?.();
-      const copied = await readProject(userId, projectId);
-      const checked = validateDraft(
-        {
-          pdf: copied?.pdf,
-          state: copied?.state,
-          media: copied?.media ?? [],
-        },
-        userId,
-        projectId,
-      );
-      if (!checked.ok) {
-        throw new Error(checked.message || "移行後の検証に失敗しました。");
-      }
-      await writeUserMeta(userId, { lastActiveProjectId: projectId });
-      await deleteLegacyDraft(userId);
+      await commitMigratedProjectAndDeleteLegacy(userId, projectId, built);
       return { migrated: true, projectId };
     } catch (error) {
       try {
@@ -1028,6 +1125,7 @@ async function persistProjectSnapshot({
   previouslySavedIds,
   existingSummary,
 }) {
+  await assertWritableSchema(userId, projectId);
   if (pdf) {
     await writeProjectPdf(userId, projectId, pdf);
   }
@@ -1100,23 +1198,24 @@ export function createDraftController({
       return;
     }
     pending = false;
+    const state = collectState();
+    const media = collectMedia();
+    const previouslySavedIds = savedMediaIds;
+    const existingSummary = cachedSummary;
     await withLock(async () => {
-      if (getUserId() !== userId || getProjectId?.() !== projectId || !hasSession()) {
-        return;
-      }
-      const state = collectState();
-      const media = collectMedia();
       const result = await persistProjectSnapshot({
         userId,
         projectId,
         pdf: null,
         state,
         mediaEntries: media,
-        previouslySavedIds: savedMediaIds,
-        existingSummary: cachedSummary,
+        previouslySavedIds,
+        existingSummary,
       });
-      savedMediaIds = result.savedMedia;
-      cachedSummary = result.summary;
+      if (getUserId() === userId && getProjectId?.() === projectId) {
+        savedMediaIds = result.savedMedia;
+        cachedSummary = result.summary;
+      }
     });
   }
 
@@ -1152,6 +1251,15 @@ export function createDraftController({
       timer = 0;
       void flush();
     }, debounceMs);
+  }
+
+  async function prepareProjectSwitch() {
+    await flush();
+    if (pending) {
+      throw new Error("作業の保存に失敗したため project を切り替えできません。");
+    }
+    cancel();
+    forgetMedia();
   }
 
   async function replacePdf(pdf) {
@@ -1199,6 +1307,7 @@ export function createDraftController({
     schedule,
     flush,
     cancel,
+    prepareProjectSwitch,
     replacePdf,
     rememberMedia,
     forgetMedia,

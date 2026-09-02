@@ -1175,7 +1175,7 @@
 - 判断: DB version 2。key は `userId::projectId`。同時オープンは 1。起動は `lastActiveProjectId`。新規 PDF は新 project。version 1 の user 単位 draft は Recovered Project へ移行する
 - 理由: 1 draft 上書きでは PDF を差し替えるたびに制作物が消える。P2 の一覧の土台が必要
 - 採用しなかった案: まだ 1 user = 1 draft のまま。entity store 分割。常時二重 recovery copy
-- 結果: autosave は開いている project が正本。logout で消さない。Cut / Panel 内部 schema は変えない
+- 結果: autosave は開いている project が正本。logout で消さない。Cut / Panel 内部 schema は変えない。未対応の future schema は開かず上書きしない。P2 の切替は `prepareProjectSwitch` で現在 project を flush してから行う。v1 移行は copy + lastActive + legacy 削除を同一 transaction にし、lastActive 済みの leftover は再 Recovered しない
 
 ## 未決
 

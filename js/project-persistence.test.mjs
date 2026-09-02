@@ -16,6 +16,7 @@ import {
   createDraftController,
   createProjectId,
   DRAFT_SCHEMA_VERSION,
+  isFuturePersistenceSchema,
   isLegacyMediaKeyForUser,
   isProjectMediaKeyFor,
   isQuotaError,
@@ -917,5 +918,182 @@ test("createProjectId returns a non-empty id", () => {
   assert.equal(typeof createProjectId(), "string");
   assert.ok(createProjectId().length > 4);
   assert.equal(projectRecordKey("u", "p"), "u::p");
+});
+
+test("crash after lastActive is set does not create a second Recovered Project", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    const draft = validDraft();
+    await writeCompleteProject("user-1", "recovered-1", draft);
+    seedLegacy(db, "user-1", draft);
+    assert.equal((await readLegacyDraft("user-1")) != null, true);
+    const result = await migrateLegacyUserDraft("user-1", {
+      createProjectId: () => {
+        throw new Error("must not create another Recovered Project");
+      },
+    });
+    assert.equal(result.cleanedLegacy, true);
+    assert.equal(result.projectId, "recovered-1");
+    assert.equal(result.migrated, false);
+    assert.equal(await readLegacyDraft("user-1"), null);
+    const listed = await listUserProjects("user-1");
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0].projectId, "recovered-1");
+    const kept = await readProject("user-1", "recovered-1");
+    assert.equal(kept.pdf.fileName, "board.pdf");
+    assert.equal(kept.state.cuts[0].id, "cut-1");
+  } finally {
+    resetDraftDbForTests();
+  }
+});
+
+test("schemaVersion 999 is refused and original records stay intact", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    const draft = validDraft();
+    await writeCompleteProject("user-1", "future-1", draft);
+    const stored = await readProject("user-1", "future-1");
+    const futureState = {
+      ...stored.state,
+      schemaVersion: 999,
+      extraFutureField: "keep-me",
+    };
+    const futureSummary = { ...stored.summary, schemaVersion: 999 };
+    await writeProjectState("user-1", "future-1", futureState);
+    await writeProjectSummary("user-1", "future-1", futureSummary);
+
+    const opened = validateDraft(
+      { pdf: stored.pdf, state: futureState, media: stored.media },
+      "user-1",
+      "future-1",
+    );
+    assert.equal(opened.ok, false);
+    assert.match(opened.message, /schemaVersion/);
+    assert.equal(
+      isFuturePersistenceSchema({ state: futureState, summary: futureSummary }),
+      true,
+    );
+
+    const active = await readActiveProject("user-1");
+    assert.equal(active.projectId, "future-1");
+    assert.equal(active.state.schemaVersion, 999);
+    assert.equal(active.state.extraFutureField, "keep-me");
+
+    const controller = createDraftController({
+      getUserId: () => "user-1",
+      getProjectId: () => "future-1",
+      hasSession: () => true,
+      collectState: () =>
+        serializeProjectState({
+          userId: "user-1",
+          projectId: "future-1",
+          currentPage: 1,
+          panels: [],
+          cuts: [],
+          timelines: [],
+          motions: [],
+          metadata: { timesheetTitle: "should-not-write" },
+        }),
+      collectMedia: () => [],
+    });
+    controller.schedule();
+    await controller.flush();
+    const afterFlush = await readProject("user-1", "future-1");
+    assert.equal(afterFlush.state.schemaVersion, 999);
+    assert.equal(afterFlush.state.extraFutureField, "keep-me");
+    assert.notEqual(afterFlush.state.metadata?.timesheetTitle, "should-not-write");
+    assert.equal(afterFlush.summary.schemaVersion, 999);
+
+    seedLegacy(db, "user-1", validDraft());
+    const migrated = await migrateLegacyUserDraft("user-1", {
+      createProjectId: () => {
+        throw new Error("must not migrate over a future schema project");
+      },
+    });
+    assert.equal(migrated.cleanedLegacy, true);
+    const afterMigrate = await readProject("user-1", "future-1");
+    assert.equal(afterMigrate.state.schemaVersion, 999);
+    assert.equal(afterMigrate.state.extraFutureField, "keep-me");
+    assert.equal((await listUserProjects("user-1")).length, 1);
+  } finally {
+    resetDraftDbForTests();
+  }
+});
+
+test("prepareProjectSwitch flushes A and delayed autosave does not write B", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    const draftA = validDraft({
+      metadata: {
+        timesheetEpisode: "01",
+        timesheetTitle: "A-original",
+        selectedCutId: "cut-1",
+      },
+    });
+    const draftB = validDraft({
+      pdf: { fileName: "b.pdf", fileSize: 8, pageCount: 2, blob: pdfBlob() },
+      metadata: {
+        timesheetEpisode: "02",
+        timesheetTitle: "B-original",
+        selectedCutId: "cut-1",
+      },
+    });
+    await writeCompleteProject("user-1", "project-a", draftA);
+    await writeCompleteProject("user-1", "project-b", draftB);
+
+    let currentId = "project-a";
+    let title = "A-edited";
+    const controller = createDraftController({
+      debounceMs: 40,
+      getUserId: () => "user-1",
+      getProjectId: () => currentId,
+      hasSession: () => true,
+      collectState: () =>
+        serializeProjectState({
+          userId: "user-1",
+          projectId: currentId,
+          currentPage: 2,
+          panels: draftA.state.panels,
+          cuts: draftA.state.cuts,
+          timelines: draftA.state.timelines,
+          motions: draftA.state.motions,
+          metadata: {
+            timesheetEpisode: "01",
+            timesheetTitle: title,
+            selectedCutId: "cut-1",
+          },
+        }),
+      collectMedia: () => [],
+    });
+    controller.rememberSummary((await readProject("user-1", "project-a")).summary);
+    controller.schedule();
+    await controller.prepareProjectSwitch();
+    currentId = "project-b";
+    title = "B-should-not-receive-A";
+    controller.rememberSummary((await readProject("user-1", "project-b")).summary);
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    const a = await readProject("user-1", "project-a");
+    const b = await readProject("user-1", "project-b");
+    assert.equal(a.state.metadata.timesheetTitle, "A-edited");
+    assert.equal(b.state.metadata.timesheetTitle, "B-original");
+    assert.equal(b.pdf.fileName, "b.pdf");
+  } finally {
+    resetDraftDbForTests();
+  }
+});
+
+test("app flushes the current project before opening a new PDF project", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const app = await readFile(new URL("./app.js", import.meta.url), "utf8");
+  const start = app.indexOf("async function handleFileChange");
+  const fn = app.slice(start, start + 3500);
+  const flushAt = fn.indexOf("prepareProjectSwitch");
+  const newIdAt = fn.indexOf("createProjectId");
+  assert.ok(flushAt >= 0);
+  assert.ok(newIdAt > flushAt);
+  assert.match(app, /export async function prepareProjectSwitch/);
 });
 

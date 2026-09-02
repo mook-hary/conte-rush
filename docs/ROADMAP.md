@@ -477,7 +477,7 @@ Live E2E:
 
 ログインユーザーごとに複数 project を端末内 IndexedDB へ自動保存する。同時に開くのは 1 つ。Gate 通過後は `lastActiveProjectId` を復元する。サーバーへ制作データは送らない。ログアウトではメモリだけ閉じ、IndexedDB は残す。境界は [DATA_MODEL.md](DATA_MODEL.md) と D142 / D145 / D147。
 
-P2（未着手）: Project 一覧 / Open / Rename / Delete / Save As / Duplicate / `.conterush`。P1 の `listUserProjects` / `readProject` / `readActiveProject` / `writeUserMeta` / `deleteProject` を使う。1000 Cut 向け entity 分割は別件。
+P2（未着手）: Project 一覧 / Open / Rename / Delete / Save As / Duplicate / `.conterush`。P1 の `listUserProjects` / `readProject` / `readActiveProject` / `writeUserMeta` / `deleteProject` / `prepareProjectSwitch` を使う。切替前に現在 project を flush する。1000 Cut 向け entity 分割は別件。
 
 ### 正式有料公開
 

@@ -87,10 +87,11 @@ import {
   createDraftController,
   createProjectId,
   DRAFT_SCHEMA_VERSION,
+  isFuturePersistenceSchema,
   readUserDraft,
   serializeProjectState,
   validateDraft,
-} from "./project-persistence.js?v=draft-2";
+} from "./project-persistence.js?v=draft-5";
 
 const pdfInput = document.querySelector("#pdf-input");
 const fileNameEl = document.querySelector("#file-name");
@@ -3562,7 +3563,6 @@ async function handleFileChange(event) {
   }
 
   restoringDraft = false;
-  draftController.cancel();
   const reconnecting = isSamePdfReconnect(session, file);
   const pdfBlob = file.slice(0, file.size, file.type || "application/pdf");
   const token = ++loadToken;
@@ -3591,7 +3591,19 @@ async function handleFileChange(event) {
         document: loaded.document,
       });
     } else {
-      draftController.forgetMedia();
+      try {
+        await draftController.prepareProjectSwitch();
+      } catch (error) {
+        console.error(error);
+        await destroyPdfDocument(loaded.document);
+        showPersistToast("直前の作業を保存できなかったため、新しいPDFを開きませんでした。");
+        if (session) {
+          setState("viewing", "");
+        } else {
+          showIdle();
+        }
+        return;
+      }
       currentProjectId = createProjectId();
       clearSessionData();
       await replaceSession({
@@ -3896,6 +3908,12 @@ async function tryRestoreDraft() {
       currentProjectId = null;
       return;
     }
+    if (isFuturePersistenceSchema(raw)) {
+      currentProjectId = null;
+      showIdle();
+      showPersistToast("作業の復元に失敗しました。保存データは残しています。");
+      return;
+    }
     currentProjectId = raw.projectId ?? null;
     const withState = raw.state
       ? raw
@@ -3912,6 +3930,7 @@ async function tryRestoreDraft() {
     }
     const checked = validateDraft(withState, userId, currentProjectId);
     if (!checked.ok) {
+      currentProjectId = null;
       showIdle();
       showPersistToast("作業の復元に失敗しました。保存データは残しています。");
       return;
@@ -3921,6 +3940,7 @@ async function tryRestoreDraft() {
       return;
     }
     if (!restored.ok) {
+      currentProjectId = null;
       clearSessionData();
       await replaceSession(null);
       showIdle();
@@ -3936,6 +3956,7 @@ async function tryRestoreDraft() {
     if (token !== loadToken) {
       return;
     }
+    currentProjectId = null;
     clearSessionData();
     await replaceSession(null);
     showIdle();
@@ -4180,5 +4201,9 @@ export async function resetConteRushSession({ clearPersistence = false } = {}) {
   } catch (error) {
     console.error(error);
   }
+}
+
+export async function prepareProjectSwitch() {
+  await draftController.prepareProjectSwitch();
 }
 

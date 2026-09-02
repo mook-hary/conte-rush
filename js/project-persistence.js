@@ -593,6 +593,39 @@ export function chooseRecoveredProjectName({ state, pdf } = {}) {
   return RECOVERED_PROJECT_NAME;
 }
 
+export const LARGE_PROJECT_COPY_WARN_BYTES = 80 * 1024 * 1024;
+
+export function cloneStoredBlob(blob) {
+  if (!isBlobValue(blob)) {
+    return blob;
+  }
+  return blob.slice(0, blob.size, blob.type || "");
+}
+
+export function nextCopiedProjectName(name) {
+  const base = String(name ?? "").trim() || "Untitled";
+  return `${base} のコピー`;
+}
+
+export function shouldWarnLargeProjectCopy(
+  byteSize,
+  threshold = LARGE_PROJECT_COPY_WARN_BYTES,
+) {
+  return Number(byteSize) >= threshold;
+}
+
+export function formatProjectByteSize(bytes) {
+  const n = Math.max(0, Number(bytes) || 0);
+  if (n < 1024) {
+    return `${Math.round(n)} B`;
+  }
+  if (n < 1024 * 1024) {
+    return `${Math.round(n / 1024)} KB`;
+  }
+  const mb = n / (1024 * 1024);
+  return `${mb >= 10 ? mb.toFixed(0) : mb.toFixed(1)} MB`;
+}
+
 export function estimateProjectBytes({ pdf, state, media } = {}) {
   const pdfSize = Number(pdf?.fileSize ?? pdf?.blob?.size ?? 0) || 0;
   const mediaSize = (media ?? []).reduce(
@@ -944,6 +977,118 @@ export async function renameProject(userId, projectId, name) {
     tx.objectStore(PROJECTS_STORE).put(next, key);
     await transactionDone(tx);
     return { ok: true, summary: next };
+  });
+}
+
+export async function markExplicitSave(userId, projectId, savedAt = new Date().toISOString()) {
+  if (!isNonEmptyString(userId) || !isNonEmptyString(projectId)) {
+    return { ok: false, message: "プロジェクトが見つかりません。" };
+  }
+  return withLock(async () => {
+    const project = await readProject(userId, projectId);
+    if (!project?.summary) {
+      return { ok: false, message: "プロジェクトが見つかりません。" };
+    }
+    if (isFuturePersistenceSchema(project)) {
+      return {
+        ok: false,
+        future: true,
+        message: "このバージョンでは保存できないプロジェクトです。保存データは変更していません。",
+      };
+    }
+    const summary = {
+      ...project.summary,
+      lastExplicitSaveAt: savedAt,
+      updatedAt: savedAt,
+    };
+    await writeProjectSummary(userId, projectId, summary);
+    return { ok: true, summary };
+  });
+}
+
+export async function copyProject(
+  userId,
+  sourceProjectId,
+  { projectName, switchToCopy = false } = {},
+) {
+  if (!isNonEmptyString(userId) || !isNonEmptyString(sourceProjectId)) {
+    return { ok: false, copied: false, message: "プロジェクトが見つかりません。" };
+  }
+  const name = String(projectName ?? "").trim();
+  if (!name) {
+    return { ok: false, copied: false, message: "名前を入力してください。" };
+  }
+  const inspected = await inspectProjectForOpen(userId, sourceProjectId);
+  if (!inspected.ok) {
+    return { ...inspected, copied: false };
+  }
+  const destId = createProjectId();
+  return withLock(async () => {
+    try {
+      const source = inspected.project;
+      const now = new Date().toISOString();
+      const pdf = source.pdf
+        ? {
+            blob: cloneStoredBlob(source.pdf.blob),
+            fileName: source.pdf.fileName,
+            fileSize: source.pdf.fileSize,
+            pageCount: source.pdf.pageCount,
+          }
+        : null;
+      const destState = {
+        ...source.state,
+        userId,
+        projectId: destId,
+        updatedAt: now,
+      };
+      const mediaEntries = (source.media ?? []).map((entry) => ({
+        panelId: entry.panelId,
+        media: {
+          kind: entry.kind,
+          blob: cloneStoredBlob(entry.blob),
+          mimeType: entry.mimeType,
+          width: entry.width,
+          height: entry.height,
+        },
+      }));
+      if (pdf) {
+        await writeProjectPdf(userId, destId, pdf);
+      }
+      await writeProjectState(userId, destId, destState);
+      await syncProjectMedia(userId, destId, mediaEntries, new Map());
+      const summary = buildProjectSummary({
+        userId,
+        projectId: destId,
+        pdf,
+        state: destState,
+        media: mediaEntries.map((entry) => ({ blob: entry.media.blob })),
+        existing: {
+          createdAt: now,
+          lastExplicitSaveAt: now,
+        },
+        projectName: name,
+        now,
+      });
+      await writeProjectSummary(userId, destId, summary);
+      if (switchToCopy) {
+        await writeUserMeta(userId, { lastActiveProjectId: destId });
+      }
+      return {
+        ok: true,
+        copied: true,
+        projectId: destId,
+        sourceProjectId,
+        switched: Boolean(switchToCopy),
+        summary,
+      };
+    } catch (error) {
+      try {
+        await deleteProject(userId, destId);
+      } catch (cleanupError) {
+        console.error(cleanupError);
+      }
+      throw error;
+    }
   });
 }
 
@@ -1409,6 +1554,13 @@ export function createDraftController({
     }
   }
 
+  async function flushOrThrow() {
+    await flush();
+    if (pending) {
+      throw new Error("作業の保存に失敗したため続行できません。");
+    }
+  }
+
   function schedule() {
     if (!getUserId() || !getProjectId?.() || !hasSession()) {
       return;
@@ -1424,10 +1576,7 @@ export function createDraftController({
   }
 
   async function prepareProjectSwitch() {
-    await flush();
-    if (pending) {
-      throw new Error("作業の保存に失敗したため project を切り替えできません。");
-    }
+    await flushOrThrow();
     cancel();
     forgetMedia();
   }
@@ -1473,14 +1622,20 @@ export function createDraftController({
     cachedSummary = summary ?? null;
   }
 
+  function getSummary() {
+    return cachedSummary;
+  }
+
   return {
     schedule,
     flush,
+    flushOrThrow,
     cancel,
     prepareProjectSwitch,
     replacePdf,
     rememberMedia,
     forgetMedia,
     rememberSummary,
+    getSummary,
   };
 }

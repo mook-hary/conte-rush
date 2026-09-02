@@ -1179,11 +1179,19 @@
 
 ## D148. Project 一覧から Open / Rename / Delete / New する
 
-- 状態: 採用（P2。Save As / Duplicate / `.conterush` はまだ無い）
+- 状態: 改訂（D149。Save / Save As / Duplicate あり）
 - 判断: Account 付近の Projects modal で一覧する。Open は target を先に検証し、失敗したら現在 project から切り替えない。flush 後の restore 失敗では元 project を IDB から戻す。New は PDF 読込成功後にだけ `projectId` を作る。Delete は確認後に当該 project の records だけ消す。active 削除は残存の `updatedAt` 最新へ fallback。dangling `lastActiveProjectId` は起動時に repair する
 - 理由: P1 の複数 project をユーザーが開けないと、別 PDF を読むたびに戻れない
 - 採用しなかった案: Open 失敗時に空画面へ落とす。New 時点で空 project を先に作る
 - 結果: 保存は端末内 IndexedDB。ブラウザ / 端末ごとに独立。クラウド保存ではない
+
+## D149. Save は checkpoint、Save As は切替、Duplicate は一覧コピー
+
+- 状態: 採用（P3。`.conterush` はまだ無い）
+- 判断: 明示 Save は開いている project を flush し `lastExplicitSaveAt` を付ける。Save As は現在の PDF/state/media を新しい `projectId` へコピーしてそこへ切替、元 project は残す。Duplicate は一覧の対象をコピーし、開いている project は変えない。Blob は `slice` して独立させる。大きなコピーは確認する。失敗したコピー先は消す
+- 理由: autosave だけでは「今の状態を名前付きで残す」「元を残したまま分岐する」ができない
+- 採用しなかった案: 正式 save と recovery draft の二重 Blob。Save As と Duplicate を同じ切替にする
+- 結果: 容量は project ごとに増える。クラウド保存ではない。ファイル書き出しは P4
 
 ## 未決
 

@@ -84,19 +84,25 @@ import {
 } from "./rush-player.js?v=cut-order-1";
 import {
   applyDraftToStores,
+  copyProject,
   createDraftController,
   createProjectId,
   createProjectOpGate,
   deleteProjectAndRepair,
   DRAFT_SCHEMA_VERSION,
+  formatProjectByteSize,
   isFuturePersistenceSchema,
+  isQuotaError,
   listUserProjects,
+  markExplicitSave,
+  nextCopiedProjectName,
   openProjectSafely,
   readUserDraft,
   renameProject,
   serializeProjectState,
+  shouldWarnLargeProjectCopy,
   validateDraft,
-} from "./project-persistence.js?v=draft-6";
+} from "./project-persistence.js?v=draft-7";
 
 const pdfInput = document.querySelector("#pdf-input");
 const fileNameEl = document.querySelector("#file-name");
@@ -178,6 +184,8 @@ const uploadPanelButton = document.querySelector("#upload-panel");
 const panelPlaceMessageEl = document.querySelector("#panel-place-message");
 const undoButton = document.querySelector("#undo");
 const redoButton = document.querySelector("#redo");
+const saveProjectButton = document.querySelector("#save-project-button");
+const saveAsProjectButton = document.querySelector("#save-as-project-button");
 const projectsButton = document.querySelector("#projects-button");
 const projectsOverlay = document.querySelector("#projects-overlay");
 const projectsListEl = document.querySelector("#projects-list");
@@ -3529,6 +3537,7 @@ function showIdle() {
   renderTimelineViews();
   renderRush();
   setState("idle", "PDFファイルを選択してください");
+  updateSaveActionState();
 }
 
 function waitForViewerLayout() {
@@ -3594,6 +3603,39 @@ function setProjectsBusy(busy) {
   projectsListEl?.querySelectorAll("button").forEach((button) => {
     button.disabled = busy;
   });
+  updateSaveActionState();
+}
+
+function canSaveCurrentProject() {
+  return Boolean(appActive && persistenceUserId && currentProjectId && session);
+}
+
+function confirmLargeProjectCopy(byteSizeEstimate) {
+  if (!shouldWarnLargeProjectCopy(byteSizeEstimate)) {
+    return true;
+  }
+  const sizeLabel = formatProjectByteSize(byteSizeEstimate);
+  return window.confirm(
+    `このプロジェクトは約 ${sizeLabel} あります。複製すると容量が増えます。続けますか？`,
+  );
+}
+
+function updateSaveActionState() {
+  const canSave = canSaveCurrentProject();
+  if (saveProjectButton) {
+    saveProjectButton.disabled = projectsBusy || !canSave;
+    const summary = draftController.getSummary?.();
+    const dirty = Boolean(
+      canSave &&
+        summary &&
+        (!summary.lastExplicitSaveAt ||
+          String(summary.updatedAt ?? "") > String(summary.lastExplicitSaveAt ?? "")),
+    );
+    saveProjectButton.classList.toggle("is-dirty", dirty);
+  }
+  if (saveAsProjectButton) {
+    saveAsProjectButton.disabled = projectsBusy || !canSave;
+  }
 }
 
 function closeProjectsOverlay() {
@@ -3622,6 +3664,7 @@ async function refreshProjectsList() {
     empty.textContent = "プロジェクトはまだありません。";
     projectsListEl.append(empty);
     setProjectsStatus("");
+    updateSaveActionState();
     return;
   }
   setProjectsStatus("");
@@ -3682,6 +3725,13 @@ async function refreshProjectsList() {
     renameButton.addEventListener("click", () => {
       void handleRenameProject(item.projectId, item.projectName);
     });
+    const duplicateButton = document.createElement("button");
+    duplicateButton.type = "button";
+    duplicateButton.textContent = "Duplicate";
+    duplicateButton.disabled = projectsBusy;
+    duplicateButton.addEventListener("click", () => {
+      void handleDuplicateProject(item.projectId, item.projectName, item.byteSizeEstimate);
+    });
     const deleteButton = document.createElement("button");
     deleteButton.type = "button";
     deleteButton.className = "projects-delete";
@@ -3690,10 +3740,11 @@ async function refreshProjectsList() {
     deleteButton.addEventListener("click", () => {
       void handleDeleteProject(item.projectId, item.projectName);
     });
-    actions.append(openButton, renameButton, deleteButton);
+    actions.append(openButton, renameButton, duplicateButton, deleteButton);
     li.append(main, actions);
     projectsListEl.append(li);
   }
+  updateSaveActionState();
 }
 
 async function openProjectsOverlay() {
@@ -3716,6 +3767,7 @@ async function applyOpenedDraft(draft, project) {
   }
   draftController.rememberSummary(project.summary ?? null);
   scheduleDraftSave();
+  updateSaveActionState();
   return { ok: true };
 }
 
@@ -3777,6 +3829,155 @@ async function handleRenameProject(projectId, currentName) {
         draftController.rememberSummary(renamed.summary);
       }
       return renamed;
+    } finally {
+      setProjectsBusy(false);
+      await refreshProjectsList();
+    }
+  });
+  if (result?.busy) {
+    showPersistToast(result.message);
+  }
+}
+
+async function handleSaveProject() {
+  const result = await projectOpGate.run(async () => {
+    setProjectsBusy(true);
+    try {
+      if (!persistenceUserId) {
+        return { ok: false, message: "ログインしてください。" };
+      }
+      if (!canSaveCurrentProject()) {
+        return { ok: false, message: "保存するプロジェクトがありません。" };
+      }
+      if (exportRunning) {
+        return { ok: false, message: "書き出し中は保存できません。" };
+      }
+      try {
+        await draftController.flushOrThrow();
+      } catch (error) {
+        console.error(error);
+        showPersistToast("作業を保存できませんでした。");
+        return { ok: false, message: error.message };
+      }
+      const saved = await markExplicitSave(persistenceUserId, currentProjectId);
+      if (!saved.ok) {
+        showPersistToast(saved.message || "保存できませんでした。");
+        return saved;
+      }
+      draftController.rememberSummary(saved.summary);
+      showPersistToast("保存しました");
+      return saved;
+    } finally {
+      setProjectsBusy(false);
+      await refreshProjectsList();
+    }
+  });
+  if (result?.busy) {
+    showPersistToast(result.message);
+  }
+}
+
+async function handleSaveAsProject() {
+  if (!canSaveCurrentProject()) {
+    showPersistToast("保存するプロジェクトがありません。");
+    return;
+  }
+  const currentName = draftController.getSummary()?.projectName || "";
+  const nextName = window.prompt("名前を付けて保存", currentName || "");
+  if (nextName === null) {
+    return;
+  }
+  const summary = draftController.getSummary();
+  if (!confirmLargeProjectCopy(summary?.byteSizeEstimate)) {
+    return;
+  }
+  const result = await projectOpGate.run(async () => {
+    setProjectsBusy(true);
+    try {
+      if (!persistenceUserId) {
+        return { ok: false, message: "ログインしてください。" };
+      }
+      if (!canSaveCurrentProject()) {
+        return { ok: false, message: "保存するプロジェクトがありません。" };
+      }
+      if (exportRunning) {
+        return { ok: false, message: "書き出し中は保存できません。" };
+      }
+      try {
+        await draftController.flushOrThrow();
+      } catch (error) {
+        console.error(error);
+        showPersistToast("直前の作業を保存できなかったため、名前を付けて保存できません。");
+        return { ok: false, message: error.message };
+      }
+      const copied = await copyProject(persistenceUserId, currentProjectId, {
+        projectName: nextName,
+        switchToCopy: true,
+      });
+      if (!copied.ok) {
+        showPersistToast(copied.message || "名前を付けて保存できませんでした。");
+        return copied;
+      }
+      currentProjectId = copied.projectId;
+      draftController.rememberSummary(copied.summary);
+      showPersistToast("名前を付けて保存しました");
+      return copied;
+    } catch (error) {
+      console.error(error);
+      const message = isQuotaError(error)
+        ? "保存容量が足りないため複製できませんでした。"
+        : "名前を付けて保存できませんでした。";
+      showPersistToast(message);
+      return { ok: false, message };
+    } finally {
+      setProjectsBusy(false);
+      await refreshProjectsList();
+    }
+  });
+  if (result?.busy) {
+    showPersistToast(result.message);
+  }
+}
+
+async function handleDuplicateProject(projectId, projectName, byteSizeEstimate) {
+  if (!confirmLargeProjectCopy(byteSizeEstimate)) {
+    return;
+  }
+  const result = await projectOpGate.run(async () => {
+    setProjectsBusy(true);
+    try {
+      if (!persistenceUserId) {
+        return { ok: false, message: "ログインしてください。" };
+      }
+      if (exportRunning) {
+        return { ok: false, message: "書き出し中は複製できません。" };
+      }
+      if (currentProjectId && session) {
+        try {
+          await draftController.flushOrThrow();
+        } catch (error) {
+          console.error(error);
+          showPersistToast("直前の作業を保存できなかったため、複製を中止しました。");
+          return { ok: false, message: error.message };
+        }
+      }
+      const copied = await copyProject(persistenceUserId, projectId, {
+        projectName: nextCopiedProjectName(projectName),
+        switchToCopy: false,
+      });
+      if (!copied.ok) {
+        showPersistToast(copied.message || "複製できませんでした。");
+        return copied;
+      }
+      showPersistToast("プロジェクトを複製しました");
+      return copied;
+    } catch (error) {
+      console.error(error);
+      const message = isQuotaError(error)
+        ? "保存容量が足りないため複製できませんでした。"
+        : "複製できませんでした。";
+      showPersistToast(message);
+      return { ok: false, message };
     } finally {
       setProjectsBusy(false);
       await refreshProjectsList();
@@ -3965,6 +4166,7 @@ async function handleFileChange(event, { forceNew = false } = {}) {
         fileSize: file.size,
         pageCount: loaded.pageCount,
       });
+      updateSaveActionState();
       renderPanelList();
       renderCutList();
       renderTimelineViews();
@@ -4304,6 +4506,7 @@ async function tryRestoreDraft() {
     showPersistToast("前回の作業を復元しました");
     restoringDraft = false;
     scheduleDraftSave();
+    updateSaveActionState();
   } catch (error) {
     console.error(error);
     if (token !== loadToken) {
@@ -4494,6 +4697,12 @@ function bindAppListenersOnce() {
   });
   projectsButton?.addEventListener("click", () => {
     void openProjectsOverlay();
+  });
+  saveProjectButton?.addEventListener("click", () => {
+    void handleSaveProject();
+  });
+  saveAsProjectButton?.addEventListener("click", () => {
+    void handleSaveAsProject();
   });
   projectsCloseButton?.addEventListener("click", () => {
     if (!projectsBusy) {

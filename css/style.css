@@ -1985,6 +1985,10 @@ body[data-auth-state="allowed"] .app-shell {
   cursor: pointer;
 }
 
+#save-project-button.is-dirty {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
 .projects-overlay {
   position: fixed;
   inset: 0;
@@ -2042,6 +2046,8 @@ body[data-auth-state="allowed"] .app-shell {
 
 .projects-dialog-actions button:disabled,
 .projects-item-actions button:disabled,
+#save-project-button:disabled,
+#save-as-project-button:disabled,
 #projects-button:disabled {
   opacity: 0.55;
   cursor: wait;

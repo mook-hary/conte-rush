@@ -92,7 +92,7 @@ M7 の MP4 は実行時の書き出しである。Panel / Cut / Timeline / Motio
 - 表示には PDF.js を使う
 - Panel、Cut、Timeline、Rush の再生状態はブラウザのメモリ上を正本とする。クラウドへは保存しない
 - 制作データを localStorage に置かない。Auth session の保持だけ supabase-js の既定 storage を使ってよい
-- 再読み込み / タブ discard 用の端末内 IndexedDB project は許可する（1 user = 複数 project。同時オープンは 1。クラウド保存ではない。ブラウザ / 端末ごとに独立。D142 / D147 / D148）
+- 再読み込み / タブ discard 用の端末内 IndexedDB project は許可する（1 user = 複数 project。同時オープンは 1。クラウド保存ではない。ブラウザ / 端末ごとに独立。D142 / D147 / D148 / D149）
 - M0 の PDF 読み込み・描画の責務を、Panel 操作と混ぜない
 - 表示用 canvas と切り出し用 canvas を分けて使う
 - Panel 本体に画像データ、CUT 番号、尺を持たせない
@@ -2553,7 +2553,7 @@ M11.0 の第一候補は **C. Email OTP**。目標の流れは次のとおり。
 - PDF / Panel Data / Cut Data / Timeline / Motion
 - Drawing PNG / Upload 画像 / Rush / MP4 / Timesheet PDF
 
-制作データの正本はブラウザのメモリ上である。端末内 IndexedDB には user ごとの複数 project を置く。同時に開くのは 1 つ。P2 で Projects 一覧から Open / Rename / Delete / New できる。サーバーへ制作データを送る機能ではない。ブラウザ / 端末ごとに独立する。
+制作データの正本はブラウザのメモリ上である。端末内 IndexedDB には user ごとの複数 project を置く。同時に開くのは 1 つ。P2 で Projects 一覧から Open / Rename / Delete / New できる。P3 で Save / Save As / Duplicate できる。サーバーへ制作データを送る機能ではない。ブラウザ / 端末ごとに独立する。
 
 ### 5. テーブル
 
@@ -3702,7 +3702,7 @@ M11.4 で完成した課金モデルを Stripe Live Mode へ移行する。`PAID
 - 一覧のソート UI / フィルタ UI
 - 制作データの localStorage（Auth session の保持は M11.0 で許可）
 - 制作データのクラウド保存
-- P3 以降の Save As / Duplicate / `.conterush`
+- P4 以降の `.conterush`
 - クラウドのプロジェクト保存
 - JSON エクスポート
 - 切り出し画像のファイル書き出し

@@ -100,7 +100,7 @@
 - 手描き overlay から 1280×720 の Panel を追加・再編集する
 - ローカルの PNG / JPEG / WebP を Upload Panel として追加・差し替える
 - 再読み込みやタブ discard のあと、同じ端末・同じログインユーザーの直前の PDF と制作状態を復元する（端末内 IndexedDB。1 user = 複数 project。同時に開くのは 1 つ。クラウド保存ではない。ブラウザ / 端末ごとに独立）
-- Account 付近の Projects から一覧・Open / Rename / Delete / New Project ができる（ローカル保存。Save As / Duplicate / `.conterush` はまだない）
+- Account 付近の Projects から一覧・Open / Rename / Duplicate / Delete / New Project ができる。Save / Save As で明示保存と名前付きコピーができる（ローカル保存。`.conterush` はまだない）
 - drawing / upload も Cut / Timeline / Repeat / Motion / Rush / MP4 / タイムシート番号に使う
 - Timeline の手描き placement から Drawing Editor を開き、前後 Panel を Onion Skin で参照する
 - Timeline の追加候補と配置済みを、サムネイルと Cut.panelIds 順の Panel 番号で見分ける
@@ -131,7 +131,7 @@
 - AI 解析
 - カメラワークの自動解析
 - ラッシュの自動生成
-- Save As / Duplicate / `.conterush`（P3 以降）
+- `.conterush`（P4）
 - 制作データのクラウド保存
 
 ## プライバシー

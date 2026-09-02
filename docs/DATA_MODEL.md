@@ -37,7 +37,7 @@ M11.0 で足す Auth / 利用権は Supabase 側の最小データである。�
 
 ### DraftSnapshot / Project（端末内保存）
 
-クラウドのプロジェクト保存ではない。Gate 通過後、app-shell を表示してから `lastActiveProjectId` の project を自動復元する（D146 / D147 / D148）。P2 で Project 一覧から Open / Rename / Delete / New できる。保存は端末内 IndexedDB のみで、ブラウザ / 端末ごとに独立する。
+クラウドのプロジェクト保存ではない。Gate 通過後、app-shell を表示してから `lastActiveProjectId` の project を自動復元する（D146 / D147 / D148 / D149）。P2 で Project 一覧から Open / Rename / Delete / New できる。P3 で Save / Save As / Duplicate できる。保存は端末内 IndexedDB のみで、ブラウザ / 端末ごとに独立する。
 
 IndexedDB:
 
@@ -51,7 +51,7 @@ IndexedDB:
 
 `schemaVersion` は 2（state / project 包み）。Cut / Panel / Timeline / Motion の内部形は 1 のまま。未対応バージョンや PDF 復元失敗では IndexedDB を消さず、メモリだけ空画面にする。`lastActiveProjectId` が欠ける / 存在しない id を指すときは、その user の `updatedAt` 最新 project へ repair する。project が 0 件なら `null`。Rename は `projects` メタの `projectName` だけを変える。Delete は当該 `projectId` の pdf / state / media / projects だけを消す。
 
-P2 API: `listUserProjects` / `inspectProjectForOpen` / `openProjectSafely` / `renameProject` / `deleteProjectAndRepair` / `repairActiveProject` / `prepareProjectSwitch` / `createProjectOpGate`。Save As / Duplicate / `.conterush` はまだ無い。
+P2 API: `listUserProjects` / `inspectProjectForOpen` / `openProjectSafely` / `renameProject` / `deleteProjectAndRepair` / `repairActiveProject` / `prepareProjectSwitch` / `createProjectOpGate`。P3 API: `markExplicitSave` / `copyProject`。明示 Save は flush + `lastExplicitSaveAt`。Save As は現在 project をコピーして切替。Duplicate はコピーして現在の編集対象は変えない。容量が大きいコピーは確認する。`.conterush` はまだ無い。
 
 ### Panel（M1）
 

@@ -13,15 +13,21 @@ import {
   applyDraftToStores,
   buildProjectSummary,
   chooseRecoveredProjectName,
+  cloneStoredBlob,
+  copyProject,
   createDraftController,
   createProjectId,
   DRAFT_SCHEMA_VERSION,
+  formatProjectByteSize,
   isFuturePersistenceSchema,
   isLegacyMediaKeyForUser,
   isProjectMediaKeyFor,
   isQuotaError,
+  LARGE_PROJECT_COPY_WARN_BYTES,
   listUserProjects,
+  markExplicitSave,
   migrateLegacyUserDraft,
+  nextCopiedProjectName,
   openProjectSafely,
   projectMediaKey,
   projectRecordKey,
@@ -34,6 +40,7 @@ import {
   resetDraftDbForTests,
   serializeProjectState,
   setDraftDbForTests,
+  shouldWarnLargeProjectCopy,
   syncProjectMedia,
   validateDraft,
   writeProjectPdf,
@@ -1540,5 +1547,237 @@ test("P2-14: overlapping project operations are rejected", async () => {
   assert.equal((await first).ok, true);
   const third = await gate.run(async () => ({ ok: true, done: true }));
   assert.equal(third.done, true);
+});
+
+test("P3-1: explicit save stamps lastExplicitSaveAt without adding a project", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    await writeCompleteProject("user-1", "project-a", validDraft());
+    const before = await readProject("user-1", "project-a");
+    assert.equal(before.summary.lastExplicitSaveAt, null);
+    const saved = await markExplicitSave("user-1", "project-a", "2026-09-02T10:00:00.000Z");
+    assert.equal(saved.ok, true);
+    assert.equal(saved.summary.lastExplicitSaveAt, "2026-09-02T10:00:00.000Z");
+    assert.equal((await listUserProjects("user-1")).length, 1);
+    assert.equal((await readUserMeta("user-1")).lastActiveProjectId, "project-a");
+    assert.equal((await readProject("user-1", "project-a")).pdf.fileName, "board.pdf");
+  } finally {
+    resetDraftDbForTests();
+  }
+});
+
+test("P3-2: Save As copies the project and switches lastActive", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    const blob = imageBlob();
+    await writeCompleteProject("user-1", "project-a", validDraft({
+      media: [
+        {
+          panelId: "draw-1",
+          kind: "drawing",
+          blob,
+          mimeType: "image/png",
+          width: 1280,
+          height: 720,
+        },
+      ],
+      panels: [
+        {
+          id: "panel-1",
+          pageNumber: 1,
+          x: 0.1,
+          y: 0.1,
+          width: 0.4,
+          height: 0.4,
+          source: PANEL_SOURCE_MANUAL,
+        },
+        { id: "draw-1", source: PANEL_SOURCE_DRAWING },
+      ],
+    }));
+    await writeUserMeta("user-1", { lastActiveProjectId: "project-a" });
+    const copied = await copyProject("user-1", "project-a", {
+      projectName: "Saved As Name",
+      switchToCopy: true,
+    });
+    assert.equal(copied.ok, true);
+    assert.equal(copied.switched, true);
+    assert.notEqual(copied.projectId, "project-a");
+    assert.equal((await readUserMeta("user-1")).lastActiveProjectId, copied.projectId);
+    const original = await readProject("user-1", "project-a");
+    const dest = await readProject("user-1", copied.projectId);
+    assert.equal(original.summary.projectName, "OP");
+    assert.equal(dest.summary.projectName, "Saved As Name");
+    assert.equal(dest.state.projectId, copied.projectId);
+    assert.equal(dest.pdf.fileName, "board.pdf");
+    assert.equal(dest.media.length, 1);
+    assert.equal(dest.media[0].panelId, "draw-1");
+    assert.notEqual(dest.pdf.blob, original.pdf.blob);
+    assert.notEqual(dest.media[0].blob, original.media[0].blob);
+    assert.equal((await listUserProjects("user-1")).length, 2);
+  } finally {
+    resetDraftDbForTests();
+  }
+});
+
+test("P3-3: Duplicate copies without switching the active project", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    await writeCompleteProject("user-1", "project-a", validDraft());
+    await writeCompleteProject(
+      "user-1",
+      "project-b",
+      validDraft({ pdf: { fileName: "b.pdf", fileSize: 8, pageCount: 2, blob: pdfBlob() } }),
+    );
+    await writeUserMeta("user-1", { lastActiveProjectId: "project-b" });
+    const copied = await copyProject("user-1", "project-a", {
+      projectName: nextCopiedProjectName("OP"),
+      switchToCopy: false,
+    });
+    assert.equal(copied.ok, true);
+    assert.equal(copied.switched, false);
+    assert.equal((await readUserMeta("user-1")).lastActiveProjectId, "project-b");
+    const listed = await listUserProjects("user-1");
+    assert.equal(listed.length, 3);
+    assert.equal(
+      listed.some((item) => item.projectName === "OP のコピー"),
+      true,
+    );
+    assert.equal((await readProject("user-1", "project-b")).pdf.fileName, "b.pdf");
+  } finally {
+    resetDraftDbForTests();
+  }
+});
+
+test("P3-4: future schema cannot be copied and is not mutated", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    await writeCompleteProject("user-1", "project-a", validDraft());
+    await writeCompleteProject(
+      "user-1",
+      "project-b",
+      validDraft({ pdf: { fileName: "b.pdf", fileSize: 8, pageCount: 2, blob: pdfBlob() } }),
+    );
+    const stored = await readProject("user-1", "project-b");
+    await writeProjectState("user-1", "project-b", {
+      ...stored.state,
+      schemaVersion: 999,
+      extraFutureField: "keep-b",
+    });
+    await writeProjectSummary("user-1", "project-b", {
+      ...stored.summary,
+      schemaVersion: 999,
+    });
+    await writeUserMeta("user-1", { lastActiveProjectId: "project-a" });
+    const copied = await copyProject("user-1", "project-b", {
+      projectName: "Should Not Exist",
+      switchToCopy: true,
+    });
+    assert.equal(copied.ok, false);
+    assert.equal(copied.future, true);
+    assert.equal(copied.copied, false);
+    assert.equal((await listUserProjects("user-1")).length, 2);
+    assert.equal((await readUserMeta("user-1")).lastActiveProjectId, "project-a");
+    assert.equal((await readProject("user-1", "project-b")).state.extraFutureField, "keep-b");
+  } finally {
+    resetDraftDbForTests();
+  }
+});
+
+test("P3-5: deleting a copy leaves the original media intact", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    const blob = imageBlob();
+    await writeCompleteProject("user-1", "project-a", validDraft({
+      panels: [{ id: "draw-a", source: PANEL_SOURCE_DRAWING }],
+      cuts: [],
+      timelines: [],
+      motions: [],
+      media: [
+        {
+          panelId: "draw-a",
+          kind: "drawing",
+          blob,
+          mimeType: "image/png",
+          width: 1280,
+          height: 720,
+        },
+      ],
+    }));
+    const copied = await copyProject("user-1", "project-a", {
+      projectName: "Copy A",
+      switchToCopy: false,
+    });
+    await deleteProjectAndRepair("user-1", copied.projectId);
+    assert.equal(db.maps.media.has(projectMediaKey("user-1", copied.projectId, "draw-a")), false);
+    assert.equal(db.maps.media.has(projectMediaKey("user-1", "project-a", "draw-a")), true);
+    assert.equal((await readProject("user-1", "project-a")).media[0].panelId, "draw-a");
+  } finally {
+    resetDraftDbForTests();
+  }
+});
+
+test("P3-6: copy helpers format names and large-copy warnings", () => {
+  assert.equal(nextCopiedProjectName("OP"), "OP のコピー");
+  assert.equal(nextCopiedProjectName("  "), "Untitled のコピー");
+  assert.equal(shouldWarnLargeProjectCopy(LARGE_PROJECT_COPY_WARN_BYTES), true);
+  assert.equal(shouldWarnLargeProjectCopy(LARGE_PROJECT_COPY_WARN_BYTES - 1), false);
+  assert.equal(shouldWarnLargeProjectCopy(10, 10), true);
+  assert.equal(formatProjectByteSize(512), "512 B");
+  assert.equal(formatProjectByteSize(2048), "2 KB");
+  assert.match(formatProjectByteSize(5 * 1024 * 1024), /5(\.0)? MB/);
+  const original = pdfBlob();
+  const cloned = cloneStoredBlob(original);
+  assert.notEqual(cloned, original);
+  assert.equal(cloned.size, original.size);
+});
+
+test("P3-7: empty copy name is rejected", async () => {
+  const db = createMemoryDraftDb();
+  setDraftDbForTests(db);
+  try {
+    await writeCompleteProject("user-1", "project-a", validDraft());
+    const copied = await copyProject("user-1", "project-a", {
+      projectName: "   ",
+      switchToCopy: true,
+    });
+    assert.equal(copied.ok, false);
+    assert.equal((await listUserProjects("user-1")).length, 1);
+    assert.equal((await readUserMeta("user-1")).lastActiveProjectId, "project-a");
+  } finally {
+    resetDraftDbForTests();
+  }
+});
+
+test("P3-8: app Save As switches and Duplicate does not", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const app = await readFile(new URL("./app.js", import.meta.url), "utf8");
+  const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
+  assert.match(html, /id="save-project-button"/);
+  assert.match(html, /id="save-as-project-button"/);
+  assert.match(app, /textContent = "Duplicate"/);
+  assert.equal(app.includes(".conterush"), false);
+  const saveBody = app.slice(
+    app.indexOf("async function handleSaveProject"),
+    app.indexOf("async function handleSaveAsProject"),
+  );
+  assert.equal(saveBody.includes("createProjectId"), false);
+  assert.match(saveBody, /markExplicitSave/);
+  const saveAsBody = app.slice(
+    app.indexOf("async function handleSaveAsProject"),
+    app.indexOf("async function handleDuplicateProject"),
+  );
+  assert.match(saveAsBody, /switchToCopy: true/);
+  assert.match(saveAsBody, /currentProjectId = copied.projectId/);
+  const dupBody = app.slice(
+    app.indexOf("async function handleDuplicateProject"),
+    app.indexOf("async function handleDeleteProject"),
+  );
+  assert.match(dupBody, /switchToCopy: false/);
+  assert.equal(dupBody.includes("currentProjectId = copied.projectId"), false);
 });
 

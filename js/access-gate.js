@@ -19,7 +19,7 @@ import {
   isSilentAuthRecheck,
 } from "./gate-policy.js?v=draft-3";
 
-const APP_MODULE_URL = new URL("./app.js?v=draft-6", import.meta.url).href;
+const APP_MODULE_URL = new URL("./app.js?v=draft-7", import.meta.url).href;
 const AUTH_MODULE_URL = new URL("./auth-client.js?v=m11-4", import.meta.url).href;
 
 const gateEl = document.querySelector("#auth-gate");
